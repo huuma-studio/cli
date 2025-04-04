@@ -14,7 +14,7 @@ async function install(): Promise<void> {
     if (res.success) {
       return;
     }
-    console.log(new TextDecoder().decode(res.stderr));
+    console.error(new TextDecoder().decode(res.stderr));
     throw new Error('Error during installation of "Huuma CLI"');
   } catch (e) {
     throw e;
