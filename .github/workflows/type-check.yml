@@ -1,4 +1,4 @@
-name: Type check
+name: TypeCheck
 run-name: change request by ${{ github.actor }}
 on: [pull_request]
 jobs:
