@@ -2,9 +2,7 @@ import { join } from "@std/path";
 import { create as createFile } from "../file.ts";
 import { create as createDir } from "../directory.ts";
 
-const denoConfigContent = (projectName: string) =>
-  `{
-  "name": "${projectName}",
+const denoConfigContent = `{
   "imports": {
     "@huuma/route": "jsr:@huuma/route@^0.0.1",
     "@huuma/ui": "jsr:@huuma/ui@^0.0.9",
@@ -99,6 +97,6 @@ async function indexPage(projectName: string) {
 async function denoConfig(projectName: string) {
   await createFile(
     join(projectName, "deno.json"),
-    denoConfigContent(projectName),
+    denoConfigContent,
   );
 }
