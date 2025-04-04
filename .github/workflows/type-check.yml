@@ -1,7 +1,7 @@
-name: ci
+name: Type check
 run-name: change request by ${{ github.actor }}
 on: [pull_request]
-jobs: 
+jobs:
   type-check:
     runs-on: ubuntu-latest
     steps:
