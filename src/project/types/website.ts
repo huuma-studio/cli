@@ -7,7 +7,7 @@ const denoConfigContent = (projectName: string) =>
   "name": "${projectName}",
   "imports": {
     "@huuma/route": "jsr:@huuma/route@^0.0.1",
-    "@huuma/ui": "jsr:@huuma/ui@^0.0.8",
+    "@huuma/ui": "jsr:@huuma/ui@^0.0.9",
     "@/": "./src/"
   },
   "compilerOptions": {
