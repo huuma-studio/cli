@@ -33,29 +33,39 @@ export default async (projectName: string) => {
 
 const rootTsContent =
   `import { createUIApp, Launch, Scripts } from "@huuma/ui/server";
+import { AppContext } from "@huuma/route";
+import { loadAssets } from "@huuma/route/http/tasks/assets";
 
-const app = createUIApp(({ children, scripts, islands, transferState }) => {
-  return (
-    <html lang="en">
-      <head>
-        <Scripts nonce={scripts?.nonce} scripts={scripts?.head} />
-        <title>Hello Huuma</title>
-      </head>
-      <body>
-        {children}
-        <Scripts nonce={scripts?.nonce} scripts={scripts?.body} />
-        <Launch
-          nonce={scripts?.nonce}
-          body={scripts?.body}
-          islands={islands}
-          transferState={transferState}
-        />
-      </body>
-    </html>
-  );
-});
+interface UIAppContext extends AppContext {}
+
+const app = createUIApp<UIAppContext>(
+  ({ children, scripts, islands, transferState }) => {
+    return (
+      <html lang="en">
+        <head>
+          <Scripts nonce={scripts?.nonce} scripts={scripts?.head} />
+          <title>Hello Huuma</title>
+        </head>
+        <body>
+          {children}
+          <Scripts nonce={scripts?.nonce} scripts={scripts?.body} />
+          <Launch
+            nonce={scripts?.nonce}
+            body={scripts?.body}
+            islands={islands}
+            transferState={transferState}
+          />
+        </body>
+      </html>
+    );
+  },
+);
+
+// Apply additional tasks or middleware here.
+loadAssets("assets", app);
 
 export default app;
+
 `;
 
 async function rootTs(projectName: string) {
