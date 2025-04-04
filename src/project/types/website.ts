@@ -29,12 +29,12 @@ export default async (projectName: string) => {
   return "Website application created!";
 };
 
-async function appTs(projectName: string) {
+async function appTs(_: string) {
   //await createFile(join(projectName, "app.ts"), appTsContent);
   //await createFile(join(projectName, "dev.ts"), devTsContent);
 }
 
-async function indexPage(projectName: string) {
+async function indexPage(_: string) {
   // await createFile(join(projectName, "pages", "page.tsx"), indexPageContent);
 }
 
