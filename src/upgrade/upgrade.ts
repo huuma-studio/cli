@@ -5,6 +5,7 @@ export default async function (): Promise<string> {
 
 async function install(): Promise<void> {
   const cmd = new Deno.Command("deno", {
+    stdout: "inherit",
     args: ["install", "-A", "-f", "-g", "-r", "-n", "huuma", "jsr:@huuma/cli"],
   });
 
