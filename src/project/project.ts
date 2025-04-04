@@ -2,16 +2,10 @@ import { Registry } from "../command.ts";
 import { create as createDir } from "./directory.ts";
 import { choose, question } from "../input.ts";
 
-import basic from "./types/basic.ts";
 import website from "./types/website.ts";
 
 const registry = new Registry();
 
-registry.add({
-  names: ["basic"],
-  description: "Basic application structure",
-  command: basic,
-});
 registry.add({
   names: ["website"],
   description: "Application structure suitable for websites",

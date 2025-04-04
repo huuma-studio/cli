@@ -1,5 +1,13 @@
 {
+  "name": "@huuma/cli",
+  "version": "0.0.1",
+  "exports": {
+    ".": "./src/mod.ts"
+  },
+  "imports": {
+    "@std/path": "jsr:@std/path@^1.0.8"
+  },
   "tasks": {
-    "check": "deno check src/command.ts"
+    "check": "deno check src/**/*.ts"
   }
 }

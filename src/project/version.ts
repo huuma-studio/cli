@@ -1,6 +1,8 @@
+import type { Command } from "../command.ts";
+
 const latest = new Map<string, string>();
 
-export async function version(
+export const version: Command["command"] = async function (
   module: string,
   fallback: string,
 ): Promise<string> {
@@ -8,12 +10,10 @@ export async function version(
     try {
       latest.set(
         module,
-        await fetch(`https://deno.land/x/${module}`).then(
-          (response) => {
-            const version = response.url.split("@")[1];
-            return version || fallback;
-          },
-        ),
+        await fetch(`https://deno.land/x/${module}`).then((response) => {
+          const version = response.url.split("@")[1];
+          return version || fallback;
+        }),
       );
     } catch (_e) {
       latest.set(module, fallback);
@@ -21,4 +21,4 @@ export async function version(
   }
 
   return <string> latest.get(module);
-}
+};

@@ -1,22 +1,23 @@
-import { Command, Registry } from "./command.ts";
+import { type Command, Registry } from "./command.ts";
+import config from "../deno.json" with { type: "json" };
 
 import project from "./project/project.ts";
 import upgrade from "./upgrade/upgrade.ts";
 
 const [cmd, ...args] = Deno.args;
 
-const CARGO_LOAD_VERSION = `0.0.15`;
+const HUUMA_CLI_VERSION = config.version;
 
 const registry = new Registry();
 
 const defaultArguments: Command[] = [{
   names: ["u", "upgrade"],
-  description: `Upgrade "Cargo Load" executable to the lastest version`,
+  description: `Upgrade "Huuma CLI" to the lastest version`,
   command: upgrade,
 }, {
   names: ["-V", "--version"],
-  description: 'Show current version of "Cargo Load"',
-  command: () => `Cargo Load ${CARGO_LOAD_VERSION}`,
+  description: 'Show current version of "Huuma CLI"',
+  command: () => `Huuma CLI ${HUUMA_CLI_VERSION}`,
 }, {
   names: ["-h", "--help"],
   description: "Show help",
@@ -29,7 +30,7 @@ const defaultCommands: Command[] = [{
   command: project,
 }];
 
-await autoloadCommands(`file://${Deno.cwd()}/config/load.ts`);
+loadCommands();
 
 const command = registry.find(cmd);
 
@@ -44,16 +45,16 @@ ${help()}`);
 
 function help() {
   return `!---
-! "Cargo Load" is not production ready.
+! "Huuma CLI" is not production ready.
 ! OPTIONS and COMMANDS might change in a future version.
 ! Use it with caution!
 !---
 
-"Cargo Load" is a CLI to manage your "Cargo" applications
- 
+"Huuma CLI" is a CLI to manage your "Huuma" applications
+
 USAGE:
-  load [OPTIONS] [COMMAND]
-  
+  huuma [OPTIONS] [COMMAND]
+
 OPTIONS
   -h, --help
   -V, --version
@@ -79,24 +80,8 @@ function expand(value: string, length: number) {
   return chars.join("");
 }
 
-async function autoloadCommands(path: string) {
-  let commands: Command[] = [];
-  try {
-    await Deno.lstat(new URL(path).pathname);
-    const config = await import(path);
-    if (Array.isArray(config.default)) {
-      commands = config.default;
-      console.log(`Configuration loaded from ${path}`);
-    }
-  } catch (_e) {
-    if (!(_e instanceof Deno.errors.NotFound)) {
-      console.error(_e);
-    }
-  } finally {
-    commands = [...defaultCommands, ...commands, ...defaultArguments];
-
-    commands.forEach((command) => {
-      registry.add(command);
-    });
-  }
+function loadCommands() {
+  [...defaultCommands, ...defaultArguments].forEach((command) => {
+    registry.add(command);
+  });
 }

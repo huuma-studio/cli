@@ -1,6 +1,7 @@
 export interface Command {
   names: string[];
   description: string;
+  // deno-lint-ignore no-explicit-any
   command: (...args: any[]) => string | Promise<string>;
 }
 

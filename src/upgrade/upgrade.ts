@@ -1,14 +1,21 @@
 export default async function (): Promise<string> {
   await install();
-  return 'Upgrade of "Cargo Load" successful';
+  return 'Upgrade of "Huuma CLI" successful';
 }
 
 async function install(): Promise<void> {
-  const cmd = Deno.run({
-    cmd: ["deno", "install", "-r", "-f", "-A", "https://cargo.wtf/load"],
+  const cmd = new Deno.Command("deno", {
+    args: ["install", "-r", "-f", "-A", "https://cli.huuma.studio"],
   });
-  if ((await cmd.status()).success) {
-    return;
+
+  try {
+    const res = await cmd.output();
+    if (res.success) {
+      return;
+    }
+    console.log(new TextDecoder().decode(res.stderr));
+    throw new Error('Error during installation of "Huuma CLI"');
+  } catch (e) {
+    throw e;
   }
-  throw new Error('Error during installation of "Cargo Load"');
 }
