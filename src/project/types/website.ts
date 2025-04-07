@@ -32,7 +32,7 @@ export default async (projectName: string) => {
 };
 
 const rootTsContent =
-  `import { createUIApp, Launch, Scripts } from "@huuma/ui/server";
+  `import { createUIApp, Launch, Scripts, Meta } from "@huuma/ui/server";
 import { AppContext } from "@huuma/route";
 import { loadAssets } from "@huuma/route/http/tasks/assets";
 
@@ -43,6 +43,7 @@ const app = createUIApp<UIAppContext>(
     return (
       <html lang="en">
         <head>
+          <Meta />
           <Scripts nonce={scripts?.nonce} scripts={scripts?.head} />
           <title>Hello Huuma</title>
         </head>
