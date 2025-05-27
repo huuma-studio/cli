@@ -1,12 +1,18 @@
 import { join } from "@std/path";
 import { create as createFile } from "../file.ts";
 import { create as createDir } from "../directory.ts";
+import { latest } from "../version.ts";
+
+const modules = ["@huuma/route", "@huuma/ui"] as const;
 
 const denoConfigContent = `{
   "imports": {
-    "@huuma/route": "jsr:@huuma/route@^0.0.1",
-    "@huuma/ui": "jsr:@huuma/ui@^0.0.9",
+    "${modules[0]}": "jsr:${modules[0]}@^${await latest(modules[0])}",
+    "${modules[1]}": "jsr:${modules[1]}@^${await latest(modules[1])}",
     "@/": "./src/"
+  },
+  "lint": {
+    "plugins": ["jsr:@huuma/lint"]
   },
   "compilerOptions": {
     "jsx": "precompile",

@@ -1,24 +1,32 @@
+import { object, string } from "@huuma/validate";
 import type { Command } from "../command.ts";
 
-const latest = new Map<string, string>();
+const _latest = new Map<string, string>();
 
-export const version: Command["command"] = async function (
+const jsrMetaSchema = object({
+  latest: string(),
+});
+
+export const latest: Command["command"] = async function (
   module: string,
   fallback: string,
 ): Promise<string> {
-  if (!latest.get(module)) {
+  if (!_latest.get(module)) {
     try {
-      latest.set(
+      _latest.set(
         module,
-        await fetch(`https://deno.land/x/${module}`).then((response) => {
-          const version = response.url.split("@")[1];
-          return version || fallback;
-        }),
+        await fetch(`https://jsr.io/${module}/meta.json`, {
+          headers: {
+            "Accept": "application/json",
+          },
+        }).then((res) => res.json()).then((json) =>
+          jsrMetaSchema.parse(json).latest
+        ),
       );
     } catch (_e) {
-      latest.set(module, fallback);
+      _latest.set(module, fallback);
     }
   }
 
-  return <string> latest.get(module);
+  return <string> _latest.get(module);
 };
