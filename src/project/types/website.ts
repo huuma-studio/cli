@@ -37,19 +37,18 @@ export default async (projectName: string) => {
   return "Website application created!";
 };
 
-const rootTsContent =
-  `import { createUIApp, Launch, Scripts, Meta } from "@huuma/ui/server";
+const rootTsContent = `import { createUIApp, Launch, Scripts, Meta } from "@huuma/ui/server";
 import { AppContext } from "@huuma/route";
-import { loadAssets } from "@huuma/route/http/tasks/assets";
+import { loadStaticFiles } from "@huuma/route/http/tasks/static-files";
 
 interface UIAppContext extends AppContext {}
 
 const app = createUIApp<UIAppContext>(
-  ({ children, scripts, islands, transferState }) => {
+  ({ children, scripts, islands, meta, transferState }) => {
     return (
       <html lang="en">
         <head>
-          <Meta />
+          <Meta metadata={metadata} />
           <Scripts nonce={scripts?.nonce} scripts={scripts?.head} />
           <title>Hello Huuma</title>
         </head>
@@ -69,7 +68,7 @@ const app = createUIApp<UIAppContext>(
 );
 
 // Apply additional tasks or middleware here.
-loadAssets("assets", app);
+await loadStaticFiles("assets", app);
 
 export default app;
 
@@ -112,8 +111,5 @@ async function indexPage(projectName: string) {
 }
 
 async function denoConfig(projectName: string) {
-  await createFile(
-    join(projectName, "deno.json"),
-    denoConfigContent,
-  );
+  await createFile(join(projectName, "deno.json"), denoConfigContent);
 }
