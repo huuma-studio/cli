@@ -44,7 +44,7 @@ import { loadStaticFiles } from "@huuma/route/http/tasks/static-files";
 interface UIAppContext extends AppContext {}
 
 const app = createUIApp<UIAppContext>(
-  ({ children, scripts, islands, meta, transferState }) => {
+  ({ children, scripts, islands, metadata, transferState }) => {
     return (
       <html lang="en">
         <head>
