@@ -85,7 +85,7 @@ import List from "./.pack/list.ts";
 await pack(app, List);
 Deno.serve(app.deliver());
 `;
-const devTsContent = `import { prepare } from "@huuma/ui/server/pack";
+const devTsContent = `import { prepare } from "@huuma/ui/server/pack/list";
 import app from "./pages/root.tsx";
 
 const handler = (await prepare(app))?.deliver();
