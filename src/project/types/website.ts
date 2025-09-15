@@ -21,7 +21,7 @@ const denoConfigContent = `{
   },
   "tasks": {
     "dev": "deno -ERWN --allow-run --watch dev.ts",
-    "bundle": "deno -ERW --allow-run dev.ts --bundle",
+    "bundle": "deno -ERWN --allow-run dev.ts --bundle",
     "start": "deno -ERN app.ts"
   }
 }`;
