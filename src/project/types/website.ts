@@ -28,7 +28,7 @@ const denoConfigContent = `{
 
 export default async (projectName: string) => {
   await createDir(join(projectName, "src"));
-  await createDir(join(projectName, "assets"));
+  await createDir(join(projectName, "static"));
   await createDir(join(projectName, "pages"));
   await denoConfig(projectName);
   await rootTs(projectName);
