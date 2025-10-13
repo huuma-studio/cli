@@ -12,7 +12,7 @@ const denoConfigContent = `{
     "@/": "./src/"
   },
   "lint": {
-    "plugins": ["jsr:@huuma/lint"]
+    "plugins": ["jsr:@huuma/ui/lint"]
   },
   "compilerOptions": {
     "jsx": "precompile",
@@ -68,7 +68,7 @@ const app = createUIApp<UIAppContext>(
 );
 
 // Apply additional tasks or middleware here.
-await loadStaticFiles("assets", app);
+await loadStaticFiles(app);
 
 export default app;
 
