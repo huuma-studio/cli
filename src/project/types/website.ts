@@ -80,7 +80,7 @@ async function rootTs(projectName: string) {
 
 const appTsContent = `import { pack } from "@huuma/ui/server/pack";
 import app from "./pages/root.tsx";
-import List from "./.pack/list.ts";
+import List from "./.huuma/list.ts";
 
 await pack(app, List);
 Deno.serve(app.deliver());
