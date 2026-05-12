@@ -10,7 +10,8 @@ const denoConfigContent = `{
     "${modules[0]}": "jsr:${modules[0]}@^${await latest(modules[0])}",
     "${modules[1]}": "jsr:${modules[1]}@^${await latest(modules[1])}",
     "@/": "./src/",
-    "@app/": "./app/"
+    "@app/": "./app/",
+    "@manifest/": "./.huuma/"
   },
   "lint": {
     "plugins": ["jsr:@huuma/ui/lint"]
