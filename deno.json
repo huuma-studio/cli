@@ -1,12 +1,12 @@
 {
   "name": "@huuma/cli",
-  "version": "0.0.18",
+  "version": "0.0.19",
   "exports": {
     ".": "./src/mod.ts"
   },
   "imports": {
-    "@huuma/validate": "jsr:@huuma/validate@^0.1.1",
-    "@std/path": "jsr:@std/path@^1.1.2"
+    "@huuma/validate": "jsr:@huuma/validate@^0.1.5",
+    "@std/path": "jsr:@std/path@^1.1.4"
   },
   "tasks": {
     "check": "deno check src/**/*.ts"

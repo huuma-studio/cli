@@ -20,18 +20,17 @@ huuma [OPTIONS] [COMMAND]
 
 ### Options
 
-| Option | Description |
-|--------|-------------|
-| `-h, --help` | Display help information |
+| Option          | Description                       |
+| --------------- | --------------------------------- |
+| `-h, --help`    | Display help information          |
 | `-V, --version` | Show current version of Huuma CLI |
 
 ### Commands
 
-| Command | Description |
-|---------|-------------|
-| `p, project` | Create a new project structure |
+| Command      | Description                             |
+| ------------ | --------------------------------------- |
+| `p, project` | Create a new project structure          |
 | `u, upgrade` | Upgrade Huuma CLI to the latest version |
-
 
 ## Creating a New Project
 
@@ -42,6 +41,7 @@ huuma project
 ```
 
 The CLI will prompt you for:
+
 1. Project name - The name of your new project (will be created as a directory)
 2. Project type - Currently supports website applications
 
@@ -54,7 +54,7 @@ Creates a basic Huuma website application with the following structure:
 ```
 your-project-name/
 ├── assets/
-├── pages/
+├── app/
 │   ├── page.tsx
 │   └── root.tsx
 ├── src/
@@ -64,7 +64,7 @@ your-project-name/
 ```
 
 - `assets/` - Directory for static assets
-- `pages/` - Directory for page components
+- `app/` - Directory for page components
 - `src/` - Directory for application source code
 - `app.ts` - Main application entry point
 - `dev.ts` - Development server entry point
