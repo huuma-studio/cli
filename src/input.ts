@@ -28,6 +28,22 @@ export async function question(q: string, length = 255): Promise<string> {
   return await readLine(length);
 }
 
+export async function confirm(
+  q: string,
+  defaultValue: boolean = false,
+): Promise<boolean> {
+  const hint = defaultValue ? "Y/n" : "y/N";
+  console.log(`${q} (${hint})`);
+  const input = (await readLine(255)).trim().toLowerCase();
+
+  if (input === "") return defaultValue;
+  if (input === "y" || input === "yes") return true;
+  if (input === "n" || input === "no") return false;
+
+  console.error(`\n"${input}" is not a valid value!\n`);
+  return confirm(q, defaultValue);
+}
+
 export async function choose(options: string[]): Promise<string> {
   console.log("---------------");
   options.forEach((option, index) => {

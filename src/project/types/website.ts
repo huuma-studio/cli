@@ -2,6 +2,7 @@ import { join } from "@std/path";
 import { create as createFile } from "../file.ts";
 import { create as createDir } from "../directory.ts";
 import { latest } from "../version.ts";
+import { confirm } from "../../input.ts";
 
 const modules = ["@huuma/route", "@huuma/ui"] as const;
 
@@ -29,6 +30,11 @@ const denoConfigContent = `{
 }`;
 
 export default async (projectName: string) => {
+  const addZedSettings = await confirm("\nAdd .zed/settings.json for Deno?");
+  const addVscodeSettings = await confirm(
+    "\nAdd .vscode/settings.json for Deno?",
+  );
+
   await createDir(join(projectName, "src"));
   await createDir(join(projectName, "static"));
   await createDir(join(projectName, "app"));
@@ -36,6 +42,15 @@ export default async (projectName: string) => {
   await rootTs(projectName);
   await appTs(projectName);
   await indexPage(projectName);
+
+  if (addZedSettings) {
+    await zedSettings(projectName);
+  }
+
+  if (addVscodeSettings) {
+    await vscodeSettings(projectName);
+  }
+
   return "Website application created!";
 };
 
@@ -43,9 +58,7 @@ const rootTsContent = `import { createUIApp, Launch, Scripts, Meta } from "@huum
 import { AppContext } from "@huuma/route";
 import { loadStaticFiles } from "@huuma/route/http/tasks/static-files";
 
-interface UIAppContext extends AppContext {}
-
-const app = createUIApp<UIAppContext>(
+const app = createUIApp(
   ({ children, scripts, islands, metadata, transferState }) => {
     return (
       <html lang="en">
@@ -114,4 +127,87 @@ async function indexPage(projectName: string) {
 
 async function denoConfig(projectName: string) {
   await createFile(join(projectName, "deno.json"), denoConfigContent);
+}
+
+const zedSettingsContent = `{
+  "lsp": {
+    "deno": {
+      "settings": {
+        "deno": {
+          "enable": true
+        }
+      }
+    }
+  },
+  "languages": {
+    "JavaScript": {
+      "language_servers": [
+        "deno",
+        "!typescript-language-server",
+        "!vtsls",
+        "!eslint",
+        "..."
+      ],
+      "formatter": "language_server"
+    },
+    "TypeScript": {
+      "language_servers": [
+        "deno",
+        "!typescript-language-server",
+        "!vtsls",
+        "!eslint",
+        "..."
+      ],
+      "formatter": "language_server"
+    },
+    "TSX": {
+      "language_servers": [
+        "deno",
+        "!typescript-language-server",
+        "!vtsls",
+        "!eslint",
+        "..."
+      ],
+      "formatter": "language_server"
+    }
+  }
+}
+`;
+
+async function zedSettings(projectName: string) {
+  await createDir(join(projectName, ".zed"));
+  await createFile(
+    join(projectName, ".zed", "settings.json"),
+    zedSettingsContent,
+  );
+}
+
+const vscodeSettingsContent = `{
+  "deno.enable": true,
+  "deno.lint": true,
+  "editor.defaultFormatter": "denoland.vscode-deno",
+  "[typescript]": {
+    "editor.defaultFormatter": "denoland.vscode-deno"
+  },
+  "[typescriptreact]": {
+    "editor.defaultFormatter": "denoland.vscode-deno"
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": "denoland.vscode-deno"
+  },
+  "[javascriptreact]": {
+    "editor.defaultFormatter": "denoland.vscode-deno"
+  },
+  "[json]": {
+    "editor.defaultFormatter": "denoland.vscode-deno"
+  }
+}
+`;
+
+async function vscodeSettings(projectName: string) {
+  await createDir(join(projectName, ".vscode"));
+  await createFile(
+    join(projectName, ".vscode", "settings.json"),
+    vscodeSettingsContent,
+  );
 }
