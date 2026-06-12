@@ -1,6 +1,7 @@
 import {
   abortExit,
   bold,
+  type ByteReader,
   CLEAR_DOWN,
   CLEAR_LINE,
   columns,
@@ -21,41 +22,54 @@ const CHECK_MARK = green("✔");
 const CROSS_MARK = red("✖");
 const POINTER = cyan("❯");
 
-const lineDecoder = new TextDecoder();
-let lineBuffer = "";
-let stdinClosed = false;
-
 /**
- * Reads the next line from stdin. Input after the newline is kept for
- * subsequent calls. Returns `null` once stdin is closed and drained.
+ * Buffered line reader. Input after a newline is kept for subsequent
+ * calls. `readLine` returns `null` once the reader is closed and drained.
  */
-export async function readLine(): Promise<string | null> {
-  const buf = new Uint8Array(1024);
+export class LineReader {
+  #decoder = new TextDecoder();
+  #buffer = "";
+  #closed = false;
+  #reader: ByteReader;
 
-  while (true) {
-    const newline = lineBuffer.indexOf("\n");
-    if (newline !== -1) {
-      const line = lineBuffer.slice(0, newline);
-      lineBuffer = lineBuffer.slice(newline + 1);
-      return line.trim();
-    }
-
-    if (stdinClosed) {
-      if (lineBuffer === "") return null;
-      const line = lineBuffer;
-      lineBuffer = "";
-      return line.trim();
-    }
-
-    const byteCount = await Deno.stdin.read(buf);
-    if (byteCount === null) {
-      stdinClosed = true;
-      continue;
-    }
-    lineBuffer += lineDecoder.decode(buf.subarray(0, byteCount), {
-      stream: true,
-    });
+  constructor(reader: ByteReader = Deno.stdin) {
+    this.#reader = reader;
   }
+
+  async readLine(): Promise<string | null> {
+    const buf = new Uint8Array(1024);
+
+    while (true) {
+      const newline = this.#buffer.indexOf("\n");
+      if (newline !== -1) {
+        const line = this.#buffer.slice(0, newline);
+        this.#buffer = this.#buffer.slice(newline + 1);
+        return line.trim();
+      }
+
+      if (this.#closed) {
+        if (this.#buffer === "") return null;
+        const line = this.#buffer;
+        this.#buffer = "";
+        return line.trim();
+      }
+
+      const byteCount = await this.#reader.read(buf);
+      if (byteCount === null) {
+        this.#closed = true;
+        continue;
+      }
+      this.#buffer += this.#decoder.decode(buf.subarray(0, byteCount), {
+        stream: true,
+      });
+    }
+  }
+}
+
+const stdinLines = new LineReader();
+
+export function readLine(): Promise<string | null> {
+  return stdinLines.readLine();
 }
 
 export interface QuestionOptions {

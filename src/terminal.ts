@@ -90,12 +90,18 @@ const ARROW_KEYS: Record<string, KeyName> = {
   F: "end",
 };
 
-export async function* keypresses(): AsyncGenerator<Key, void> {
+export interface ByteReader {
+  read(buffer: Uint8Array): Promise<number | null>;
+}
+
+export async function* keypresses(
+  reader: ByteReader = Deno.stdin,
+): AsyncGenerator<Key, void> {
   const buf = new Uint8Array(1024);
   const decoder = new TextDecoder();
 
   while (true) {
-    const byteCount = await Deno.stdin.read(buf);
+    const byteCount = await reader.read(buf);
     if (byteCount === null) {
       yield { name: "eof" };
       return;
