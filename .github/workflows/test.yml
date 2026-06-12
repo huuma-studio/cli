@@ -1,12 +1,12 @@
-name: TypeCheck
+name: Test
 run-name: change request by ${{ github.actor }}
 on: [pull_request]
 jobs:
-  type-check:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - run: deno task check
+      - run: deno task test

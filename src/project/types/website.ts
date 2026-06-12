@@ -30,9 +30,9 @@ const denoConfigContent = `{
 }`;
 
 export default async (projectName: string) => {
-  const addZedSettings = await confirm("\nAdd .zed/settings.json for Deno?");
+  const addZedSettings = await confirm("Add .zed/settings.json for Deno?");
   const addVscodeSettings = await confirm(
-    "\nAdd .vscode/settings.json for Deno?",
+    "Add .vscode/settings.json for Deno?",
   );
 
   await createDir(join(projectName, "src"));

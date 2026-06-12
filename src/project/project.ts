@@ -13,7 +13,9 @@ registry.add({
 });
 
 export default async () => {
-  const projectName = await ask("Project name:");
+  const projectName = await question("Project name:", {
+    validate: (value) => value ? undefined : "Project name is required",
+  });
 
   await createDir(projectName);
   await type(projectName);
@@ -21,19 +23,16 @@ export default async () => {
   return "";
 };
 
-async function ask(q: string): Promise<string> {
-  const projectName = await question(q);
-  if (!projectName) {
-    return ask(q);
-  }
-  return projectName;
-}
-
 async function type(projectName: string) {
-  console.log("\nSelect the type of application to initialize:");
-  const input = await choose(registry.all().map((cmd) => cmd.names[0]));
+  const input = await choose(
+    registry.all().map((cmd) => ({
+      label: cmd.names[0],
+      description: cmd.description,
+    })),
+    "Select the type of application to initialize:",
+  );
   const type = registry.all().find((type) => {
     return type.names[0] === input;
   });
-  type?.command(projectName);
+  await type?.command(projectName);
 }
