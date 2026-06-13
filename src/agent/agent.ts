@@ -15,7 +15,17 @@ const SYSTEM_PROMPT =
   "Answer concisely in plain text without markdown formatting.";
 
 export default async (args: string[] = []): Promise<string> => {
-  return await chat(await setup(), args);
+  let assistant: Assistant;
+  try {
+    assistant = await setup();
+  } catch (error) {
+    // e.g. a bad HUUMA_AGENT_PROVIDER — render it like a turn error, not a crash.
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`${red("✖")} ${red(message)}\n`);
+    Deno.exitCode = 1;
+    return "";
+  }
+  return await chat(assistant, args);
 };
 
 /** Drives the agent: a single answer when `args` carry a prompt (one-shot),
@@ -57,22 +67,20 @@ export async function chat(
   return "Bye!";
 }
 
-async function setup(): Promise<Assistant> {
-  const provider = await choose(
-    [
-      { label: "anthropic", description: "Anthropic API" },
-      { label: "openai", description: "OpenAI or any OpenAI-compatible API" },
-      { label: "ollama", description: "Local models running via Ollama" },
-    ],
-    "Select a model provider:",
-  );
+export async function setup(): Promise<Assistant> {
+  const provider = envValue("HUUMA_AGENT_PROVIDER")?.toLowerCase() ??
+    await choose(
+      [
+        { label: "anthropic", description: "Anthropic API" },
+        { label: "openai", description: "OpenAI or any OpenAI-compatible API" },
+        { label: "ollama", description: "Local models running via Ollama" },
+      ],
+      "Select a model provider:",
+    );
 
   if (provider === "anthropic") {
-    const apiKey = envValue("ANTHROPIC_API_KEY") ??
-      await question("Anthropic API key:", {
-        validate: (value) => value ? undefined : "API key is required",
-      });
-    const modelId = await question("Model:", { default: "claude-haiku-4-5" });
+    const apiKey = await resolveApiKey("ANTHROPIC_API_KEY", "Anthropic");
+    const modelId = await resolveModel("claude-haiku-4-5");
 
     return agent({
       model: anthropic({ apiKey }),
@@ -82,11 +90,8 @@ async function setup(): Promise<Assistant> {
   }
 
   if (provider === "openai") {
-    const apiKey = envValue("OPENAI_API_KEY") ??
-      await question("OpenAI API key:", {
-        validate: (value) => value ? undefined : "API key is required",
-      });
-    const modelId = await question("Model:", { default: "gpt-4o-mini" });
+    const apiKey = await resolveApiKey("OPENAI_API_KEY", "OpenAI");
+    const modelId = await resolveModel("gpt-4o-mini");
 
     return agent({
       model: openai({ apiKey }),
@@ -95,21 +100,58 @@ async function setup(): Promise<Assistant> {
     });
   }
 
-  const host = await question("Ollama host:", {
-    default: "http://localhost:11434",
-  });
-  const modelId = await question("Model:", { default: "llama3.2" });
+  if (provider === "ollama") {
+    const host = envValue("HUUMA_AGENT_HOST") ??
+      await question("Ollama host:", { default: "http://localhost:11434" });
+    const apiKey = ollamaApiKey();
+    const modelId = await resolveModel("llama3.2");
 
-  return agent({
-    model: ollama({ host }),
-    modelId,
-    systemPrompt: SYSTEM_PROMPT,
-  });
+    return agent({
+      model: ollama({ host, apiKey }),
+      modelId,
+      systemPrompt: SYSTEM_PROMPT,
+    });
+  }
+
+  throw new Error(
+    `Unknown provider "${provider}". Set HUUMA_AGENT_PROVIDER to one of: ` +
+      "anthropic, openai, ollama.",
+  );
 }
 
+/** Model id from $HUUMA_AGENT_MODEL, otherwise an interactive prompt. */
+export async function resolveModel(fallback: string): Promise<string> {
+  return envValue("HUUMA_AGENT_MODEL") ??
+    await question("Model:", { default: fallback });
+}
+
+/** API key from $HUUMA_AGENT_API_KEY, then the provider's own variable
+ * (e.g. $OPENAI_API_KEY), otherwise an interactive prompt. */
+export async function resolveApiKey(
+  providerVar: string,
+  label: string,
+): Promise<string> {
+  return envValue("HUUMA_AGENT_API_KEY") ??
+    envValue(providerVar) ??
+    await question(`${label} API key:`, {
+      validate: (value) => value ? undefined : "API key is required",
+    });
+}
+
+/** Optional API key for Ollama Cloud / authenticated hosts, from
+ * $HUUMA_AGENT_API_KEY or $OLLAMA_API_KEY. Undefined for a local instance — the
+ * key is never prompted for, so unauthenticated localhost stays prompt-free. */
+export function ollamaApiKey(): string | undefined {
+  return envValue("HUUMA_AGENT_API_KEY") ?? envValue("OLLAMA_API_KEY");
+}
+
+/** Reads a trimmed, non-empty env var when env permission is already granted;
+ * returns undefined otherwise, without triggering a permission prompt. */
 function envValue(variable: string): string | undefined {
   const { state } = Deno.permissions.querySync({ name: "env", variable });
-  return state === "granted" ? Deno.env.get(variable) : undefined;
+  if (state !== "granted") return undefined;
+  const value = Deno.env.get(variable)?.trim();
+  return value ? value : undefined;
 }
 
 /** Outcome of a single turn: the conversation to carry forward — the new

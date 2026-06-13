@@ -1,6 +1,6 @@
 {
   "name": "@huuma/cli",
-  "version": "0.0.23",
+  "version": "0.0.24",
   "exports": {
     ".": "./src/mod.ts"
   },
@@ -12,6 +12,6 @@
   },
   "tasks": {
     "check": "deno check src/**/*.ts",
-    "test": "deno test --allow-run --allow-read src/"
+    "test": "deno test --allow-run --allow-read --allow-env src/"
   }
 }
