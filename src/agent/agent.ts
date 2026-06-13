@@ -14,18 +14,30 @@ const SYSTEM_PROMPT =
   "You are Huuma Agent, a helpful assistant running in a terminal. " +
   "Answer concisely in plain text without markdown formatting.";
 
-export default async (args: string[] = []) => {
-  let messages: Message[] = [];
-  const assistant = await setup();
+export default async (args: string[] = []): Promise<string> => {
+  return await chat(await setup(), args);
+};
 
+/** Drives the agent: a single answer when `args` carry a prompt (one-shot),
+ * otherwise an interactive REPL until "exit"/"quit" or stdin closes. */
+export async function chat(
+  assistant: Assistant,
+  args: string[] = [],
+): Promise<string> {
   const oneShot = args.join(" ").trim();
   if (oneShot) {
-    await respond(assistant, oneShot, messages);
+    // A single turn: respond() already printed the answer, so we keep only its
+    // ok flag for the exit code and thread no history forward. If this ever
+    // grows into chained prompts, carry the returned messages between turns
+    // like the REPL below does.
+    const { ok } = await respond(assistant, oneShot, []);
+    if (!ok) Deno.exitCode = 1;
     return "";
   }
 
   console.log(dim('\nType "exit" to quit.\n'));
 
+  let messages: Message[] = [];
   while (true) {
     let prompt: string;
     try {
@@ -39,11 +51,11 @@ export default async (args: string[] = []) => {
     }
 
     if (prompt === "exit" || prompt === "quit") break;
-    messages = await respond(assistant, prompt, messages);
+    messages = (await respond(assistant, prompt, messages)).messages;
   }
 
   return "Bye!";
-};
+}
 
 async function setup(): Promise<Assistant> {
   const provider = await choose(
@@ -100,23 +112,30 @@ function envValue(variable: string): string | undefined {
   return state === "granted" ? Deno.env.get(variable) : undefined;
 }
 
+/** Outcome of a single turn: the conversation to carry forward — the new
+ * messages when the model answered, the unchanged `history` when it failed so
+ * a transient error doesn't wipe the chat — plus whether it answered. */
+interface Turn {
+  messages: Message[];
+  ok: boolean;
+}
+
 export async function respond(
   assistant: Assistant,
   prompt: string,
   history: Message[],
-): Promise<Message[]> {
+): Promise<Turn> {
   write(dim("Thinking..."));
   try {
     const messages = await assistant.run(prompt, history);
     write(CLEAR_LINE);
     console.log(`${green("Agent:")} ${modelText(messages)}\n`);
-    return messages;
+    return { messages, ok: true };
   } catch (error) {
     write(CLEAR_LINE);
     const message = error instanceof Error ? error.message : String(error);
     console.error(`${red("✖")} ${red(message)}\n`);
-    // Keep the prior history so a transient failure doesn't wipe the chat.
-    return history;
+    return { messages: history, ok: false };
   }
 }
 

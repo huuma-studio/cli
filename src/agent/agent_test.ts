@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
 import type { Message } from "@huuma/ai/agent";
-import { type Assistant, modelText, respond } from "./agent.ts";
+import { type Assistant, chat, modelText, respond } from "./agent.ts";
 
 /** Runs `fn` with terminal output suppressed so the REPL chrome
  * ("Thinking...", colors, error lines) stays out of the test report. */
@@ -75,7 +75,7 @@ Deno.test("respond returns the conversation from a successful run", async () => 
 
   const result = await quiet(() => respond(assistant, "Hi", []));
 
-  assertEquals(result, conversation);
+  assertEquals(result, { messages: conversation, ok: true });
 });
 
 Deno.test("respond threads the prompt and prior history into run", async () => {
@@ -107,5 +107,40 @@ Deno.test("respond keeps the prior history when run fails", async () => {
 
   const result = await quiet(() => respond(assistant, "next", history));
 
-  assertEquals(result, history);
+  assertEquals(result, { messages: history, ok: false });
+});
+
+Deno.test("chat answers a one-shot prompt, runs once, and returns ''", async () => {
+  const calls: { prompt: string; history?: Message[] }[] = [];
+  const assistant: Assistant = {
+    run: (prompt, history) => {
+      calls.push({ prompt, history });
+      return Promise.resolve([
+        { role: "user", contents: prompt },
+        modelReply("hi"),
+      ]);
+    },
+  };
+
+  const result = await quiet(() => chat(assistant, ["hello", "there"]));
+
+  // one-shot returns "" (not the REPL's "Bye!") and never enters the loop
+  assertEquals(result, "");
+  assertEquals(calls, [{ prompt: "hello there", history: [] }]);
+});
+
+Deno.test("chat flags a failed one-shot with a non-zero exit code", async () => {
+  const priorExitCode = Deno.exitCode;
+  try {
+    const assistant: Assistant = {
+      run: () => Promise.reject(new Error("boom")),
+    };
+
+    const result = await quiet(() => chat(assistant, ["hi"]));
+
+    assertEquals(result, ""); // still returns the one-shot sentinel
+    assertEquals(Deno.exitCode, 1); // failure surfaces via the exit code
+  } finally {
+    Deno.exitCode = priorExitCode;
+  }
 });
