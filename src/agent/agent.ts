@@ -79,7 +79,7 @@ export async function setup(): Promise<Assistant> {
     );
 
   if (provider === "anthropic") {
-    const apiKey = await resolveApiKey("ANTHROPIC_API_KEY", "Anthropic");
+    const apiKey = await resolveApiKey("Anthropic");
     const modelId = await resolveModel("claude-haiku-4-5");
 
     return agent({
@@ -90,7 +90,7 @@ export async function setup(): Promise<Assistant> {
   }
 
   if (provider === "openai") {
-    const apiKey = await resolveApiKey("OPENAI_API_KEY", "OpenAI");
+    const apiKey = await resolveApiKey("OpenAI");
     const modelId = await resolveModel("gpt-4o-mini");
 
     return agent({
@@ -125,24 +125,20 @@ export async function resolveModel(fallback: string): Promise<string> {
     await question("Model:", { default: fallback });
 }
 
-/** API key from $HUUMA_AGENT_API_KEY, then the provider's own variable
- * (e.g. $OPENAI_API_KEY), otherwise an interactive prompt. */
-export async function resolveApiKey(
-  providerVar: string,
-  label: string,
-): Promise<string> {
+/** Required API key from $HUUMA_AGENT_API_KEY, otherwise an interactive prompt.
+ * Provider-specific vars like $OPENAI_API_KEY are intentionally not read, so a
+ * key already in the environment for another tool can't silently be used. */
+export async function resolveApiKey(label: string): Promise<string> {
   return envValue("HUUMA_AGENT_API_KEY") ??
-    envValue(providerVar) ??
     await question(`${label} API key:`, {
       validate: (value) => value ? undefined : "API key is required",
     });
 }
 
 /** Optional API key for Ollama Cloud / authenticated hosts, from
- * $HUUMA_AGENT_API_KEY or $OLLAMA_API_KEY. Undefined for a local instance — the
- * key is never prompted for, so unauthenticated localhost stays prompt-free. */
+ * $HUUMA_AGENT_API_KEY. Undefined (and never prompted) for a local instance. */
 export function ollamaApiKey(): string | undefined {
-  return envValue("HUUMA_AGENT_API_KEY") ?? envValue("OLLAMA_API_KEY");
+  return envValue("HUUMA_AGENT_API_KEY");
 }
 
 /** Reads a trimmed, non-empty env var when env permission is already granted;

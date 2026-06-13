@@ -183,23 +183,17 @@ Deno.test("resolveModel returns HUUMA_AGENT_MODEL without prompting", async () =
   });
 });
 
-Deno.test("resolveApiKey prefers HUUMA_AGENT_API_KEY over the provider var", async () => {
+Deno.test("resolveApiKey uses HUUMA_AGENT_API_KEY even when provider keys are set", async () => {
   await withEnv(
-    { HUUMA_AGENT_API_KEY: "generic", OPENAI_API_KEY: "provider" },
-    async () => {
-      assertEquals(await resolveApiKey("OPENAI_API_KEY", "OpenAI"), "generic");
+    {
+      HUUMA_AGENT_API_KEY: "the-key",
+      OPENAI_API_KEY: "ambient",
+      ANTHROPIC_API_KEY: "ambient",
     },
-  );
-});
-
-Deno.test("resolveApiKey falls back to the provider's own variable", async () => {
-  await withEnv(
-    { HUUMA_AGENT_API_KEY: null, ANTHROPIC_API_KEY: "provider" },
     async () => {
-      assertEquals(
-        await resolveApiKey("ANTHROPIC_API_KEY", "Anthropic"),
-        "provider",
-      );
+      // Ambient provider keys must not override the explicit HUUMA_AGENT_API_KEY.
+      assertEquals(await resolveApiKey("OpenAI"), "the-key");
+      assertEquals(await resolveApiKey("Anthropic"), "the-key");
     },
   );
 });
@@ -223,17 +217,13 @@ Deno.test("the agent command renders a setup failure instead of crashing", async
   }
 });
 
-Deno.test("ollamaApiKey prefers HUUMA_AGENT_API_KEY, then OLLAMA_API_KEY", async () => {
+Deno.test("ollamaApiKey returns HUUMA_AGENT_API_KEY, else undefined", async () => {
   await withEnv(
-    { HUUMA_AGENT_API_KEY: "generic", OLLAMA_API_KEY: "ollama" },
-    () => assertEquals(ollamaApiKey(), "generic"),
+    { HUUMA_AGENT_API_KEY: "key", OLLAMA_API_KEY: "ambient" },
+    () => assertEquals(ollamaApiKey(), "key"),
   );
   await withEnv(
-    { HUUMA_AGENT_API_KEY: null, OLLAMA_API_KEY: "ollama" },
-    () => assertEquals(ollamaApiKey(), "ollama"),
-  );
-  await withEnv(
-    { HUUMA_AGENT_API_KEY: null, OLLAMA_API_KEY: null },
+    { HUUMA_AGENT_API_KEY: null },
     () => assertEquals(ollamaApiKey(), undefined),
   );
 });
