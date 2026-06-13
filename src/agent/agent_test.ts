@@ -1,6 +1,15 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import type { Message } from "@huuma/ai/agent";
-import { type Assistant, chat, modelText, respond } from "./agent.ts";
+import agentCommand, {
+  type Assistant,
+  chat,
+  modelText,
+  ollamaApiKey,
+  resolveApiKey,
+  resolveModel,
+  respond,
+  setup,
+} from "./agent.ts";
 
 /** Runs `fn` with terminal output suppressed so the REPL chrome
  * ("Thinking...", colors, error lines) stays out of the test report. */
@@ -21,6 +30,29 @@ async function quiet<T>(fn: () => Promise<T>): Promise<T> {
 
 function modelReply(text: string): Message {
   return { role: "model", contents: [{ text }], toolCalls: [] };
+}
+
+/** Sets env vars (a `null` value clears one) for the duration of `fn`, then
+ * restores the prior environment. Requires `--allow-env`. */
+async function withEnv(
+  vars: Record<string, string | null>,
+  fn: () => void | Promise<void>,
+): Promise<void> {
+  const prior = new Map(
+    Object.keys(vars).map((key) => [key, Deno.env.get(key)]),
+  );
+  for (const [key, value] of Object.entries(vars)) {
+    if (value === null) Deno.env.delete(key);
+    else Deno.env.set(key, value);
+  }
+  try {
+    await fn();
+  } finally {
+    for (const [key, value] of prior) {
+      if (value === undefined) Deno.env.delete(key);
+      else Deno.env.set(key, value);
+    }
+  }
 }
 
 Deno.test("modelText returns the text of the last model message", () => {
@@ -143,4 +175,55 @@ Deno.test("chat flags a failed one-shot with a non-zero exit code", async () => 
   } finally {
     Deno.exitCode = priorExitCode;
   }
+});
+
+Deno.test("resolveModel returns HUUMA_AGENT_MODEL without prompting", async () => {
+  await withEnv({ HUUMA_AGENT_MODEL: "claude-opus-4-8" }, async () => {
+    assertEquals(await resolveModel("fallback-model"), "claude-opus-4-8");
+  });
+});
+
+Deno.test("resolveApiKey uses HUUMA_AGENT_API_KEY even when provider keys are set", async () => {
+  await withEnv(
+    {
+      HUUMA_AGENT_API_KEY: "the-key",
+      OPENAI_API_KEY: "ambient",
+      ANTHROPIC_API_KEY: "ambient",
+    },
+    async () => {
+      // Ambient provider keys must not override the explicit HUUMA_AGENT_API_KEY.
+      assertEquals(await resolveApiKey("OpenAI"), "the-key");
+      assertEquals(await resolveApiKey("Anthropic"), "the-key");
+    },
+  );
+});
+
+Deno.test("setup rejects an unknown HUUMA_AGENT_PROVIDER", async () => {
+  await withEnv({ HUUMA_AGENT_PROVIDER: "gemini" }, async () => {
+    await assertRejects(() => setup(), Error, 'Unknown provider "gemini"');
+  });
+});
+
+Deno.test("the agent command renders a setup failure instead of crashing", async () => {
+  const priorExitCode = Deno.exitCode;
+  try {
+    await withEnv({ HUUMA_AGENT_PROVIDER: "gemini" }, async () => {
+      const result = await quiet(() => agentCommand(["hi"]));
+      assertEquals(result, ""); // handled cleanly, not thrown
+      assertEquals(Deno.exitCode, 1);
+    });
+  } finally {
+    Deno.exitCode = priorExitCode;
+  }
+});
+
+Deno.test("ollamaApiKey returns HUUMA_AGENT_API_KEY, else undefined", async () => {
+  await withEnv(
+    { HUUMA_AGENT_API_KEY: "key", OLLAMA_API_KEY: "ambient" },
+    () => assertEquals(ollamaApiKey(), "key"),
+  );
+  await withEnv(
+    { HUUMA_AGENT_API_KEY: null },
+    () => assertEquals(ollamaApiKey(), undefined),
+  );
 });
