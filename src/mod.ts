@@ -1,6 +1,7 @@
 import { type Command, Registry } from "./command.ts";
 import config from "../deno.json" with { type: "json" };
 
+import agent from "./agent/agent.ts";
 import project from "./project/project.ts";
 import upgrade from "./upgrade/upgrade.ts";
 
@@ -28,6 +29,10 @@ const defaultCommands: Command[] = [{
   names: ["p", "project"],
   description: "Create a new project structure",
   command: project,
+}, {
+  names: ["a", "agent"],
+  description: "Chat with an AI agent in your terminal",
+  command: agent,
 }];
 
 loadCommands();
