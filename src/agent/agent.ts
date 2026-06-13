@@ -1,23 +1,26 @@
 import { agent, type Message, type TextContent } from "@huuma/ai/agent";
 import { openai } from "@huuma/ai/models/openai";
 import { ollama } from "@huuma/ai/models/ollama";
+import { anthropic } from "@huuma/ai/models/anthropic";
 import { choose, question } from "../input.ts";
 import { CLEAR_LINE, dim, green, red, write } from "../terminal.ts";
+
+/** The slice of the @huuma/ai agent the REPL drives. Derived from `agent`
+ * with `Pick` so the `run` signature tracks @huuma/ai automatically, while
+ * staying a plain object type that is trivial to fake in tests. */
+export type Assistant = Pick<ReturnType<typeof agent>, "run">;
 
 const SYSTEM_PROMPT =
   "You are Huuma Agent, a helpful assistant running in a terminal. " +
   "Answer concisely in plain text without markdown formatting.";
 
-interface RunnableAgent {
-  run(prompt: string): Promise<Message[]>;
-}
-
 export default async (args: string[] = []) => {
+  let messages: Message[] = [];
   const assistant = await setup();
 
   const oneShot = args.join(" ").trim();
   if (oneShot) {
-    await respond(assistant, oneShot);
+    await respond(assistant, oneShot, messages);
     return "";
   }
 
@@ -36,20 +39,35 @@ export default async (args: string[] = []) => {
     }
 
     if (prompt === "exit" || prompt === "quit") break;
-    await respond(assistant, prompt);
+    messages = await respond(assistant, prompt, messages);
   }
 
   return "Bye!";
 };
 
-async function setup(): Promise<RunnableAgent> {
+async function setup(): Promise<Assistant> {
   const provider = await choose(
     [
+      { label: "anthropic", description: "Anthropic API" },
       { label: "openai", description: "OpenAI or any OpenAI-compatible API" },
       { label: "ollama", description: "Local models running via Ollama" },
     ],
     "Select a model provider:",
   );
+
+  if (provider === "anthropic") {
+    const apiKey = envValue("ANTHROPIC_API_KEY") ??
+      await question("Anthropic API key:", {
+        validate: (value) => value ? undefined : "API key is required",
+      });
+    const modelId = await question("Model:", { default: "claude-haiku-4-5" });
+
+    return agent({
+      model: anthropic({ apiKey }),
+      modelId,
+      systemPrompt: SYSTEM_PROMPT,
+    });
+  }
 
   if (provider === "openai") {
     const apiKey = envValue("OPENAI_API_KEY") ??
@@ -82,19 +100,23 @@ function envValue(variable: string): string | undefined {
   return state === "granted" ? Deno.env.get(variable) : undefined;
 }
 
-async function respond(
-  assistant: RunnableAgent,
+export async function respond(
+  assistant: Assistant,
   prompt: string,
-): Promise<void> {
+  history: Message[],
+): Promise<Message[]> {
   write(dim("Thinking..."));
   try {
-    const messages = await assistant.run(prompt);
+    const messages = await assistant.run(prompt, history);
     write(CLEAR_LINE);
     console.log(`${green("Agent:")} ${modelText(messages)}\n`);
+    return messages;
   } catch (error) {
     write(CLEAR_LINE);
     const message = error instanceof Error ? error.message : String(error);
     console.error(`${red("✖")} ${red(message)}\n`);
+    // Keep the prior history so a transient failure doesn't wipe the chat.
+    return history;
   }
 }
 
