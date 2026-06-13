@@ -1,5 +1,5 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import { choose, confirm, LineReader, question } from "./input.ts";
+import { choose, confirm, LineReader, multiline, question } from "./input.ts";
 import type { ByteReader } from "./terminal.ts";
 
 function readerFrom(chunks: (string | Uint8Array)[]): ByteReader {
@@ -285,4 +285,141 @@ Deno.test("non-tty prompts fail fast when stdin closes early", async () => {
   const { code, stderr } = await child.output();
   assertEquals(code, 1);
   assertStringIncludes(new TextDecoder().decode(stderr), "stdin closed");
+});
+
+Deno.test("multiline submits on enter", async () => {
+  const { result } = await runPrompt(
+    ["hello\r"],
+    () => multiline("Notes:"),
+  );
+  assertEquals(result, "hello");
+});
+
+Deno.test("multiline inserts a new line on shift+enter", async () => {
+  // \x1b[13;2u is Shift+Enter as reported by the kitty keyboard protocol;
+  // the trailing \r (Enter) submits.
+  const { result } = await runPrompt(
+    ["first\x1b[13;2usecond\r"],
+    () => multiline("Notes:"),
+  );
+  assertEquals(result, "first\nsecond");
+});
+
+Deno.test("multiline treats a line feed as a new line (Zed shift+enter)", async () => {
+  // Zed sends LF (\n) for Shift+Enter and CR (\r) for Enter; Ctrl+J also sends
+  // LF. The trailing CR submits.
+  const { result } = await runPrompt(
+    ["first\nsecond\r"],
+    () => multiline("Notes:"),
+  );
+  assertEquals(result, "first\nsecond");
+});
+
+Deno.test("multiline also submits on ctrl+d", async () => {
+  const { result } = await runPrompt(
+    ["bye\x04"],
+    () => multiline("Notes:"),
+  );
+  assertEquals(result, "bye");
+});
+
+Deno.test("multiline keeps tabs and newlines from a pasted block", async () => {
+  const block = [
+    "Architecture\tMixture-of-Experts (MoE)",
+    "Total Parameters\t1T",
+    "Activated Parameters\t32B",
+    "Number of Layers (Dense layer included)\t61",
+    "Number of Dense Layers\t1",
+    "Attention Hidden Dimension\t7168",
+    "MoE Hidden Dimension (per Expert)\t2048",
+    "Number of Attention Heads\t64",
+    "Number of Experts\t384",
+    "Selected Experts per Token\t8",
+    "Number of Shared Experts\t1",
+    "Vocabulary Size\t160K",
+    "Context Length\t256K",
+    "Attention Mechanism\tMLA",
+    "Activation Function\tSwiGLU",
+    "Vision Encoder\tMoonViT",
+    "Parameters of Vision Encoder\t400M",
+  ].join("\n");
+
+  // Bracketed paste delivers the block verbatim — its newlines do not submit —
+  // and the trailing Enter sends it.
+  const { result, output } = await runPrompt(
+    ["\x1b[200~" + block + "\x1b[201~\r"],
+    () => multiline("Paste the spec:"),
+  );
+  assertEquals(result, block);
+  assertStringIncludes(output, "shift+enter");
+});
+
+Deno.test("multiline merges lines when backspacing at column zero", async () => {
+  // Shift+Enter splits "ab"/"cd"; home (\x01) then backspace (\x7f) rejoins them.
+  const { result } = await runPrompt(
+    ["ab\x1b[13;2ucd\x01\x7f\r"],
+    () => multiline("Notes:"),
+  );
+  assertEquals(result, "abcd");
+});
+
+Deno.test("multiline edits a previous line after moving up", async () => {
+  // up (\x1b[A) returns to "foo", clamping the column to its end before inserting.
+  const { result } = await runPrompt(
+    ["foo\x1b[13;2ubar\x1b[A!\r"],
+    () => multiline("Notes:"),
+  );
+  assertEquals(result, "foo!\nbar");
+});
+
+Deno.test("multiline re-prompts on validation error", async () => {
+  const { result, output } = await runPrompt(
+    ["\r", "hi\r"],
+    () =>
+      multiline("Notes:", {
+        validate: (value) => value ? undefined : "Notes are required",
+      }),
+  );
+  assertEquals(result, "hi");
+  assertStringIncludes(output, "Notes are required");
+});
+
+Deno.test("multiline exits with code 130 on ctrl+c", async () => {
+  const originalExit = Deno.exit;
+  let code: number | undefined;
+  Deno.exit = ((exitCode?: number) => {
+    code = exitCode;
+    throw new ExitSentinel();
+  }) as typeof Deno.exit;
+
+  try {
+    await assertRejects(
+      () => runPrompt(["ab\x03"], () => multiline("Notes:")),
+      ExitSentinel,
+    );
+    assertEquals(code, 130);
+  } finally {
+    Deno.exit = originalExit;
+  }
+});
+
+Deno.test("multiline reads piped input until stdin closes", async () => {
+  const fixture = new URL("./testdata/multiline_fixture.ts", import.meta.url);
+  const command = new Deno.Command(Deno.execPath(), {
+    args: ["run", "--quiet", fixture.pathname],
+    stdin: "piped",
+    stdout: "piped",
+    stderr: "piped",
+  });
+  const child = command.spawn();
+
+  const writer = child.stdin.getWriter();
+  await writer.write(new TextEncoder().encode("line1\nline2\n"));
+  await writer.close();
+
+  const { code, stdout } = await child.output();
+  assertEquals(code, 0);
+
+  const lines = new TextDecoder().decode(stdout).trim().split("\n");
+  assertEquals(JSON.parse(lines.at(-1)!), { text: "line1\nline2" });
 });

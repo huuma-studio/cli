@@ -9,6 +9,10 @@ import {
   cursorUp,
   cyan,
   dim,
+  DISABLE_BRACKETED_PASTE,
+  DISABLE_RICH_KEYS,
+  ENABLE_BRACKETED_PASTE,
+  ENABLE_RICH_KEYS,
   green,
   HIDE_CURSOR,
   keypresses,
@@ -76,6 +80,10 @@ export interface QuestionOptions {
   default?: string;
   validate?: (value: string) => string | undefined;
 }
+
+/** Multi-line input shares `question`'s validation, but a default block makes
+ * little sense for a paste target, so only `validate` is carried over. */
+export type MultilineOptions = Pick<QuestionOptions, "validate">;
 
 export async function question(
   q: string,
@@ -362,6 +370,208 @@ export async function choose(
     }
 
     return items[index].label;
+  });
+}
+
+const SUBMIT_HINT = "enter to submit, shift+enter for a new line";
+
+/**
+ * Reads free-form, multi-line text. `Enter` submits; a line break comes from
+ * `Shift+Enter` (terminals send it as a line feed — e.g. Zed — or via the kitty
+ * keyboard protocol) or from `Ctrl+J`; `ctrl+d` also submits. Pasted blocks
+ * arrive through bracketed paste, so their tabs and newlines are kept verbatim
+ * instead of submitting. Off a terminal it reads stdin until it closes,
+ * mirroring the submit marker.
+ */
+export async function multiline(
+  q: string,
+  options: MultilineOptions = {},
+): Promise<string> {
+  if (!Deno.stdin.isTerminal()) {
+    console.log(q);
+    const collected: string[] = [];
+    while (true) {
+      const line = await readLine();
+      if (line === null) break;
+      collected.push(line);
+    }
+    const value = collected.join("\n").trim();
+    const error = options.validate?.(value);
+    if (error) throw new Error(`${error} (stdin closed)`);
+    return value;
+  }
+
+  return await rawSession(async () => {
+    // Each line is an array of code points, matching `question`'s buffer model.
+    const lines: string[][] = [[]];
+    let row = 0;
+    let col = 0;
+    let error = "";
+
+    const prefix = `${QUESTION_MARK} ${bold(q)} ${dim(`(${SUBMIT_HINT})`)}`;
+    // Terminal rows the cursor sat below the header after the last render, so
+    // the next render can climb back to the header before clearing downward.
+    let lastCursorRow = 0;
+
+    const render = () => {
+      const rows = [prefix, ...lines.map((line) => line.join(""))];
+      if (error) rows.push(`${CROSS_MARK} ${red(error)}`);
+
+      const targetRow = row + 1; // the header occupies row 0
+      write("\r" + cursorUp(lastCursorRow) + CLEAR_DOWN);
+      write(rows.join("\n"));
+      // Climb from the last written row up to the cursor's line and column.
+      write(cursorUp(rows.length - 1 - targetRow) + cursorTo(col + 1));
+      lastCursorRow = targetRow;
+    };
+
+    const value = () => lines.map((line) => line.join("")).join("\n").trim();
+
+    const submit = (): string | undefined => {
+      const text = value();
+      const message = options.validate?.(text);
+      if (message) {
+        error = message;
+        render();
+        return undefined;
+      }
+      write("\r" + cursorUp(lastCursorRow) + CLEAR_DOWN);
+      write(`${CHECK_MARK} ${bold(q)}\n`);
+      if (text) write(`${cyan(text)}\n`);
+      return text;
+    };
+
+    // Inserts a line break: the current line splits at the cursor.
+    const lineBreak = () => {
+      const tail = lines[row].splice(col);
+      lines.splice(row + 1, 0, tail);
+      row++;
+      col = 0;
+    };
+
+    // Inserts text (possibly multi-line) at the cursor, splitting on newlines.
+    const insert = (text: string) => {
+      const segments = text.split("\n").map((segment) => [...segment]);
+      const tail = lines[row].splice(col);
+      lines[row].push(...segments[0]);
+      if (segments.length === 1) {
+        col = lines[row].length;
+        lines[row].push(...tail);
+        return;
+      }
+      const rest = segments.slice(1);
+      const last = rest[rest.length - 1];
+      col = last.length;
+      last.push(...tail);
+      lines.splice(row + 1, 0, ...rest);
+      row += rest.length;
+    };
+
+    write(ENABLE_BRACKETED_PASTE + ENABLE_RICH_KEYS);
+    const restore = () => write(DISABLE_RICH_KEYS + DISABLE_BRACKETED_PASTE);
+
+    try {
+      render();
+
+      for await (const key of keypresses()) {
+        if (key.name === "abort") {
+          restore();
+          abortExit();
+        }
+        if (key.name === "enter" || key.name === "eof") {
+          const submitted = submit();
+          if (submitted !== undefined) return submitted;
+          continue;
+        }
+
+        error = "";
+        const line = lines[row];
+        switch (key.name) {
+          case "char":
+            line.splice(col, 0, key.char ?? "");
+            col++;
+            break;
+          case "tab":
+            line.splice(col, 0, "\t");
+            col++;
+            break;
+          case "newline":
+            lineBreak();
+            break;
+          case "paste":
+            insert(key.text ?? "");
+            break;
+          case "backspace":
+            if (col > 0) {
+              line.splice(col - 1, 1);
+              col--;
+            } else if (row > 0) {
+              const removed = lines.splice(row, 1)[0];
+              row--;
+              col = lines[row].length;
+              lines[row].push(...removed);
+            }
+            break;
+          case "delete":
+            if (col < line.length) {
+              line.splice(col, 1);
+            } else if (row < lines.length - 1) {
+              line.push(...lines.splice(row + 1, 1)[0]);
+            }
+            break;
+          case "left":
+            if (col > 0) col--;
+            else if (row > 0) col = lines[--row].length;
+            break;
+          case "right":
+            if (col < line.length) col++;
+            else if (row < lines.length - 1) {
+              row++;
+              col = 0;
+            }
+            break;
+          case "up":
+            if (row > 0) col = Math.min(col, lines[--row].length);
+            break;
+          case "down":
+            if (row < lines.length - 1) {
+              col = Math.min(col, lines[++row].length);
+            }
+            break;
+          case "home":
+            col = 0;
+            break;
+          case "end":
+            col = line.length;
+            break;
+          case "wordLeft":
+            col = wordLeft(line, col);
+            break;
+          case "wordRight":
+            col = wordRight(line, col);
+            break;
+          case "deleteWordLeft": {
+            const to = wordLeft(line, col);
+            line.splice(to, col - to);
+            col = to;
+            break;
+          }
+          case "deleteToStart":
+            line.splice(0, col);
+            col = 0;
+            break;
+          case "deleteToEnd":
+            line.splice(col);
+            break;
+        }
+        render();
+      }
+
+      // stdin closed without an explicit submit — return what we have.
+      return value();
+    } finally {
+      restore();
+    }
   });
 }
 

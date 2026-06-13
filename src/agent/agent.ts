@@ -2,7 +2,7 @@ import { agent, type Message, type TextContent } from "@huuma/ai/agent";
 import { openai } from "@huuma/ai/models/openai";
 import { ollama } from "@huuma/ai/models/ollama";
 import { anthropic } from "@huuma/ai/models/anthropic";
-import { choose, question } from "../input.ts";
+import { choose, multiline, question } from "../input.ts";
 import { CLEAR_LINE, dim, green, red, write } from "../terminal.ts";
 
 /** The slice of the @huuma/ai agent the REPL drives. Derived from `agent`
@@ -51,7 +51,8 @@ export async function chat(
   while (true) {
     let prompt: string;
     try {
-      prompt = await question("You:", {
+      // Multi-line composer: Enter sends, Shift+Enter / Ctrl+J add a new line.
+      prompt = await multiline("You:", {
         validate: (value) =>
           value ? undefined : 'Type a message or "exit" to quit',
       });
