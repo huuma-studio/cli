@@ -158,6 +158,12 @@ Deno.test("question accepts the default value with enter", async () => {
   assertStringIncludes(output, "(ts)");
 });
 
+Deno.test("question submits on a line feed", async () => {
+  // A bare LF (ctrl+j, or Shift+Enter on terminals like Zed) submits, like Enter.
+  const { result } = await runPrompt(["hi\n"], () => question("Name:"));
+  assertEquals(result, "hi");
+});
+
 Deno.test("confirm answers on a single keypress", async () => {
   assertEquals((await runPrompt(["y"], () => confirm("Ok?"))).result, true);
   assertEquals(
@@ -176,6 +182,12 @@ Deno.test("confirm takes the default on enter", async () => {
 
 Deno.test("confirm ignores invalid keys", async () => {
   const { result } = await runPrompt(["x7\x1b[Ay"], () => confirm("Ok?"));
+  assertEquals(result, true);
+});
+
+Deno.test("confirm answers on a line feed", async () => {
+  // LF (ctrl+j / Shift+Enter) takes the default, like Enter.
+  const { result } = await runPrompt(["\n"], () => confirm("Ok?", true));
   assertEquals(result, true);
 });
 
@@ -220,6 +232,12 @@ Deno.test("choose renders option descriptions", async () => {
 
 Deno.test("choose rejects an empty option list", async () => {
   await assertRejects(() => choose([]), Error, "No options");
+});
+
+Deno.test("choose selects on a line feed", async () => {
+  // LF (ctrl+j / Shift+Enter) selects the active item, like Enter.
+  const { result } = await runPrompt(["\n"], () => choose(["a", "b"]));
+  assertEquals(result, "a");
 });
 
 class ExitSentinel extends Error {}

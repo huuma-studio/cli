@@ -155,7 +155,8 @@ export async function question(
       if (key.name === "abort" || key.name === "eof") {
         abortExit();
       }
-      if (key.name === "enter") {
+      // LF (ctrl+j, or Shift+Enter where the terminal sends it) submits too.
+      if (key.name === "enter" || key.name === "newline") {
         const value = submit();
         if (value !== undefined) return value;
         continue;
@@ -246,7 +247,8 @@ export async function confirm(
       }
 
       let result: boolean | undefined;
-      if (key.name === "enter") {
+      // LF (ctrl+j / Shift+Enter) answers with the default, like Enter.
+      if (key.name === "enter" || key.name === "newline") {
         result = defaultValue;
       } else if (key.name === "char") {
         const char = key.char?.toLowerCase();
@@ -334,7 +336,8 @@ export async function choose(
       if (key.name === "abort" || key.name === "eof") {
         abortExit();
       }
-      if (key.name === "enter") {
+      // LF (ctrl+j / Shift+Enter) selects too, like Enter.
+      if (key.name === "enter" || key.name === "newline") {
         write("\r" + cursorUp(items.length) + CLEAR_DOWN);
         write(
           `${CHECK_MARK} ${bold(message)} ${cyan(items[index].label)}\n`,
