@@ -390,6 +390,14 @@ Deno.test("multiline edits a previous line after moving up", async () => {
   assertEquals(result, "foo!\nbar");
 });
 
+Deno.test("multiline keeps a line longer than the terminal width", async () => {
+  // Exercises the soft-wrap render path (test width is 80) and confirms the
+  // buffer captures the whole line.
+  const long = "x".repeat(200);
+  const { result } = await runPrompt([`${long}\r`], () => multiline("Notes:"));
+  assertEquals(result, long);
+});
+
 Deno.test("multiline re-prompts on validation error", async () => {
   const { result, output } = await runPrompt(
     ["\r", "hi\r"],

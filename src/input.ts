@@ -417,15 +417,45 @@ export async function multiline(
     let lastCursorRow = 0;
 
     const render = () => {
+      const cols = Math.max(columns(), 1);
       const rows = [prefix, ...lines.map((line) => line.join(""))];
       if (error) rows.push(`${CROSS_MARK} ${red(error)}`);
 
-      const targetRow = row + 1; // the header occupies row 0
+      // Physical rows a string occupies once the terminal soft-wraps it. Code
+      // points count as one column wide.
+      const height = (s: string) =>
+        Math.max(1, Math.ceil(visibleWidth(s) / cols));
+
+      // Return to the top of the previous block, clear it, and redraw; the
+      // terminal wraps long rows on its own.
       write("\r" + cursorUp(lastCursorRow) + CLEAR_DOWN);
       write(rows.join("\n"));
-      // Climb from the last written row up to the cursor's line and column.
-      write(cursorUp(rows.length - 1 - targetRow) + cursorTo(col + 1));
-      lastCursorRow = targetRow;
+
+      // Locate the cursor in physical rows/columns. The header is row 0; the
+      // cursor sits in line `row` (rows index `row + 1`) at column `col`.
+      let above = 0;
+      for (let i = 0; i <= row; i++) above += height(rows[i]);
+
+      const lineLen = lines[row].length;
+      let wrapRow: number;
+      let column: number; // 1-based
+      if (col === 0) {
+        wrapRow = 0;
+        column = 1;
+      } else if (col % cols === 0) {
+        // On a wrap boundary the cursor stays at the end of the filled row when
+        // it is the line's end, otherwise it starts the next wrapped row.
+        wrapRow = col === lineLen ? col / cols - 1 : col / cols;
+        column = col === lineLen ? cols : 1;
+      } else {
+        wrapRow = Math.floor(col / cols);
+        column = (col % cols) + 1;
+      }
+
+      const cursorRow = above + wrapRow;
+      const total = rows.reduce((sum, s) => sum + height(s), 0);
+      write("\r" + cursorUp(total - 1 - cursorRow) + cursorTo(column));
+      lastCursorRow = cursorRow;
     };
 
     const value = () => lines.map((line) => line.join("")).join("\n").trim();
@@ -597,4 +627,11 @@ function wordRight(chars: string[], cursor: number): number {
   while (i < chars.length && !isWordChar(chars[i])) i++;
   while (i < chars.length && isWordChar(chars[i])) i++;
   return i;
+}
+
+// Visible column count of a rendered string: SGR color codes occupy no space,
+// so they are stripped first; the remaining code points each count as one.
+function visibleWidth(text: string): number {
+  // deno-lint-ignore no-control-regex
+  return [...text.replace(/\x1b\[[0-9;]*m/g, "")].length;
 }
