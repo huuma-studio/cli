@@ -1,7 +1,25 @@
-import { agent, type Message, type TextContent } from "@huuma/ai/agent";
+import {
+  agent,
+  type AgentOptions,
+  type Message,
+  type TextContent,
+} from "@huuma/ai/agent";
 import { openai } from "@huuma/ai/models/openai";
 import { ollama } from "@huuma/ai/models/ollama";
 import { anthropic } from "@huuma/ai/models/anthropic";
+import {
+  cli,
+  createDirectory,
+  deleteFile,
+  editFile,
+  fetchWebsite,
+  files,
+  grep,
+  readFile,
+  search,
+  writeFile,
+} from "@huuma/ai/tools";
+import { isHelpFlag } from "../command.ts";
 import { choose, multiline, question } from "../input.ts";
 import { CLEAR_LINE, dim, green, red, write } from "../terminal.ts";
 
@@ -10,31 +28,40 @@ import { CLEAR_LINE, dim, green, red, write } from "../terminal.ts";
  * staying a plain object type that is trivial to fake in tests. */
 export type Assistant = Pick<ReturnType<typeof agent>, "run">;
 
+/** The agent's tool list, derived from @huuma/ai so it tracks the library
+ * rather than re-declaring the element type by hand. */
+type AgentTools = NonNullable<AgentOptions<string>["tools"]>;
+
 const SYSTEM_PROMPT =
   "You are Huuma Agent, a helpful assistant running in a terminal. " +
   "Answer concisely in plain text without markdown formatting.";
 
 export default async (args: string[] = []): Promise<string> => {
   let assistant: Assistant;
+  let prompt: string;
   try {
-    assistant = await setup();
+    // A bad --tools flag or HUUMA_AGENT_PROVIDER is rendered like a turn error,
+    // not a crash.
+    const parsed = parseAgentArgs(args);
+    if (parsed.help) return agentHelp();
+    prompt = parsed.prompt;
+    assistant = await setup(parsed.tools);
   } catch (error) {
-    // e.g. a bad HUUMA_AGENT_PROVIDER — render it like a turn error, not a crash.
     const message = error instanceof Error ? error.message : String(error);
     console.error(`${red("✖")} ${red(message)}\n`);
     Deno.exitCode = 1;
     return "";
   }
-  return await chat(assistant, args);
+  return await chat(assistant, prompt);
 };
 
-/** Drives the agent: a single answer when `args` carry a prompt (one-shot),
+/** Drives the agent: a single answer when `prompt` is non-empty (one-shot),
  * otherwise an interactive REPL until "exit"/"quit" or stdin closes. */
 export async function chat(
   assistant: Assistant,
-  args: string[] = [],
+  prompt = "",
 ): Promise<string> {
-  const oneShot = args.join(" ").trim();
+  const oneShot = prompt.trim();
   if (oneShot) {
     // A single turn: respond() already printed the answer, so we keep only its
     // ok flag for the exit code and thread no history forward. If this ever
@@ -68,7 +95,93 @@ export async function chat(
   return "Bye!";
 }
 
-export async function setup(): Promise<Assistant> {
+/** Splits the agent's argv into the `--tools`/`--tool` selection and the
+ * remaining prompt, or signals `--help`/`-h`. Flags must come before the
+ * prompt; the first non-flag token (or a `--` terminator) begins the prompt, so
+ * a one-shot prompt can contain dashes once it has started. */
+export function parseAgentArgs(
+  args: string[],
+): { tools: string[]; prompt: string; help: boolean } {
+  const tools: string[] = [];
+  let i = 0;
+  for (; i < args.length; i++) {
+    const arg = args[i];
+    if (isHelpFlag(arg)) {
+      return { tools: [], prompt: "", help: true };
+    }
+    if (arg === "--") {
+      i++;
+      break;
+    }
+    if (arg === "--tools" || arg === "--tool") {
+      const value = args[++i];
+      if (value === undefined) {
+        throw new Error(
+          `Missing value for ${arg}. Example: ${arg} read_file,grep`,
+        );
+      }
+      tools.push(...parseList(value));
+      continue;
+    }
+    const inline = inlineValue(arg);
+    if (inline !== undefined) {
+      tools.push(...parseList(inline));
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw new Error(
+        `Unknown flag "${arg}". The agent accepts --tools <list>.`,
+      );
+    }
+    break;
+  }
+  return { tools, prompt: args.slice(i).join(" ").trim(), help: false };
+}
+
+/** Returns the value of a `--tools=`/`--tool=` token, or undefined otherwise. */
+function inlineValue(arg: string): string | undefined {
+  for (const prefix of ["--tools=", "--tool="]) {
+    if (arg.startsWith(prefix)) return arg.slice(prefix.length);
+  }
+  return undefined;
+}
+
+/** Usage text shown for `huuma agent --help`. The tool list is derived from
+ * {@link TOOL_FACTORIES} so it can't drift from what `--tools` accepts. */
+function agentHelp(): string {
+  return `Chat with an AI agent in your terminal.
+
+USAGE
+  huuma agent [OPTIONS] [PROMPT]
+
+  With a PROMPT the agent answers once and exits. Without one it starts an
+  interactive session — type "exit" or "quit" to leave.
+
+OPTIONS
+  --tools <list>   Comma-separated tools to enable (default: none)
+  -h, --help       Show this help
+
+TOOLS
+  ${Object.keys(TOOL_FACTORIES).join(", ")}
+  ("files" is shorthand for every file tool)
+
+ENVIRONMENT
+  HUUMA_AGENT_PROVIDER       anthropic | openai | ollama
+  HUUMA_AGENT_MODEL          model id (e.g. claude-haiku-4-5, gpt-4o-mini)
+  HUUMA_AGENT_API_KEY        provider API key (omit for a local Ollama)
+  HUUMA_AGENT_HOST           Ollama host (default http://localhost:11434)
+  HUUMA_AGENT_CLI_COMMANDS   allow-list for the cli tool, e.g. "deno,git"
+  HUUMA_AGENT_SEARCH_ENGINE  brave | perplexity
+
+EXAMPLES
+  huuma agent "What is the capital of France?"
+  huuma agent --tools read_file,grep "What does src/mod.ts export?"`;
+}
+
+export async function setup(toolNames: string[] = []): Promise<Assistant> {
+  // Built first so a bad tool name or config fails before any provider prompt.
+  const tools = resolveTools(toolNames);
+
   const provider = envValue("HUUMA_AGENT_PROVIDER")?.toLowerCase() ??
     await choose(
       [
@@ -87,6 +200,7 @@ export async function setup(): Promise<Assistant> {
       model: anthropic({ apiKey }),
       modelId,
       systemPrompt: SYSTEM_PROMPT,
+      tools,
     });
   }
 
@@ -98,6 +212,7 @@ export async function setup(): Promise<Assistant> {
       model: openai({ apiKey }),
       modelId,
       systemPrompt: SYSTEM_PROMPT,
+      tools,
     });
   }
 
@@ -111,6 +226,7 @@ export async function setup(): Promise<Assistant> {
       model: ollama({ host, apiKey }),
       modelId,
       systemPrompt: SYSTEM_PROMPT,
+      tools,
     });
   }
 
@@ -140,6 +256,79 @@ export async function resolveApiKey(label: string): Promise<string> {
  * $HUUMA_AGENT_API_KEY. Undefined (and never prompted) for a local instance. */
 export function ollamaApiKey(): string | undefined {
   return envValue("HUUMA_AGENT_API_KEY");
+}
+
+/** Tool factories keyed by the name used on the `--tools` flag. Each one builds
+ * its tools lazily so nothing is constructed unless requested — `cli` and
+ * `search` validate their own config and would otherwise throw. `files` is
+ * shorthand for the whole file-system set; every other key is the tool name
+ * the model sees. */
+const TOOL_FACTORIES: Record<string, () => AgentTools> = {
+  cli: () => [cliTool()],
+  grep: () => [grep()],
+  read_file: () => [readFile()],
+  write_file: () => [writeFile()],
+  create_directory: () => [createDirectory()],
+  delete_file: () => [deleteFile()],
+  edit_file: () => [editFile()],
+  files: () => files(),
+  fetch_website: () => [fetchWebsite()],
+  search: () => [searchTool()],
+};
+
+/** Builds the tools named on the `--tools` flag (see {@link TOOL_FACTORIES}).
+ * An empty list means no tools, keeping the plain chat behavior. Tool-specific
+ * configuration still comes from env vars (e.g. $HUUMA_AGENT_CLI_COMMANDS). An
+ * unknown name throws, mirroring setup()'s strict handling of an unknown
+ * provider. */
+export function resolveTools(names: string[]): AgentTools {
+  const tools: AgentTools = [];
+  for (const name of names) {
+    const build = TOOL_FACTORIES[name.toLowerCase()];
+    if (!build) {
+      throw new Error(
+        `Unknown tool "${name}". Use --tools with a comma-separated list of: ` +
+          `${Object.keys(TOOL_FACTORIES).join(", ")}.`,
+      );
+    }
+    tools.push(...build());
+  }
+  return tools;
+}
+
+/** The `cli` tool, limited to the allow-list in $HUUMA_AGENT_CLI_COMMANDS.
+ * Without it the tool would expose no runnable commands, so we fail with a
+ * hint instead of registering a dead tool. */
+function cliTool(): AgentTools[number] {
+  const allowedCommands = parseList(envValue("HUUMA_AGENT_CLI_COMMANDS"));
+  if (allowedCommands.length === 0) {
+    throw new Error(
+      "The cli tool needs an allow-list. Set HUUMA_AGENT_CLI_COMMANDS to a " +
+        'comma-separated list of commands (e.g. "deno,git").',
+    );
+  }
+  return cli({ allowedCommands });
+}
+
+/** The `search` tool. The engine is required via $HUUMA_AGENT_SEARCH_ENGINE so
+ * the choice is explicit; the provider reads its key from $BRAVE_API_KEY or
+ * $PERPLEXITY_API_KEY when the tool runs. */
+function searchTool(): AgentTools[number] {
+  const engine = envValue("HUUMA_AGENT_SEARCH_ENGINE")?.toLowerCase();
+  if (engine !== "brave" && engine !== "perplexity") {
+    throw new Error(
+      "The search tool needs an engine. Set HUUMA_AGENT_SEARCH_ENGINE to " +
+        '"brave" or "perplexity".',
+    );
+  }
+  return search({ engine });
+}
+
+/** Splits a comma- or whitespace-separated env value into non-empty entries,
+ * preserving case so command names stay exact. */
+function parseList(value: string | undefined): string[] {
+  if (!value) return [];
+  return value.split(/[\s,]+/).filter(Boolean);
 }
 
 /** Reads a trimmed, non-empty env var when env permission is already granted;

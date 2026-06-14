@@ -5,6 +5,12 @@ export interface Command {
   command: (...args: any[]) => string | Promise<string>;
 }
 
+/** True when `arg` is a help flag (`--help` or `-h`) — the shared request to
+ * print a command's usage instead of running it. */
+export function isHelpFlag(arg: string): boolean {
+  return arg === "--help" || arg === "-h";
+}
+
 export class Registry {
   private commands: Command[] = [];
 
