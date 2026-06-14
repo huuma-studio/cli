@@ -570,8 +570,13 @@ export async function multiline(
         render();
       }
 
-      // stdin closed without an explicit submit — return what we have.
-      return value();
+      // The stream ended without a valid submit (stdin closed). Mirror the
+      // non-terminal path: surface the validator's message rather than
+      // returning an unvalidated value.
+      const text = value();
+      const message = options.validate?.(text);
+      if (message) throw new Error(`${message} (stdin closed)`);
+      return text;
     } finally {
       restore();
     }

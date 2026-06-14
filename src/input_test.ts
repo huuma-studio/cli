@@ -402,6 +402,24 @@ Deno.test("multiline re-prompts on validation error", async () => {
   assertStringIncludes(output, "Notes are required");
 });
 
+Deno.test("multiline rejects an unsatisfied validator when stdin closes", async () => {
+  // Ctrl+D (\x04) on an empty buffer, then the stream ends: the validator's
+  // message surfaces instead of submitting the empty value, matching the
+  // non-terminal path.
+  await assertRejects(
+    () =>
+      runPrompt(
+        ["\x04"],
+        () =>
+          multiline("Notes:", {
+            validate: (value) => value ? undefined : "Notes are required",
+          }),
+      ),
+    Error,
+    "Notes are required (stdin closed)",
+  );
+});
+
 Deno.test("multiline exits with code 130 on ctrl+c", async () => {
   const originalExit = Deno.exit;
   let code: number | undefined;
