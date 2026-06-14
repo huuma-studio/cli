@@ -563,14 +563,6 @@ export async function multiline(
               col = 0;
             }
             break;
-          case "up":
-            if (row > 0) col = Math.min(col, lines[--row].length);
-            break;
-          case "down":
-            if (row < lines.length - 1) {
-              col = Math.min(col, lines[++row].length);
-            }
-            break;
           case "home":
             col = 0;
             break;

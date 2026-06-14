@@ -381,15 +381,6 @@ Deno.test("multiline merges lines when backspacing at column zero", async () => 
   assertEquals(result, "abcd");
 });
 
-Deno.test("multiline edits a previous line after moving up", async () => {
-  // up (\x1b[A) returns to "foo", clamping the column to its end before inserting.
-  const { result } = await runPrompt(
-    ["foo\x1b[13;2ubar\x1b[A!\r"],
-    () => multiline("Notes:"),
-  );
-  assertEquals(result, "foo!\nbar");
-});
-
 Deno.test("multiline keeps a line longer than the terminal width", async () => {
   // Exercises the soft-wrap render path (test width is 80) and confirms the
   // buffer captures the whole line.
