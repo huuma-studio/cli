@@ -30,10 +30,11 @@ Deno.test("parses printable characters including multibyte", async () => {
   assertEquals(await keysFrom(["aé🦀"]), ["char:a", "char:é", "char:🦀"]);
 });
 
-Deno.test("parses enter, tab and backspace", async () => {
+Deno.test("parses CR as enter and LF as newline", async () => {
+  // Return sends CR; Shift+Enter (e.g. Zed) and Ctrl+J send LF.
   assertEquals(await keysFrom(["\r\n\t\x7f\x08"]), [
     "enter",
-    "enter",
+    "newline",
     "tab",
     "backspace",
     "backspace",
@@ -133,4 +134,51 @@ Deno.test("yields eof when the reader closes", async () => {
     keys.push(key);
   }
   assertEquals(keys.map((key) => key.name), ["char", "eof"]);
+});
+
+Deno.test("parses shift+enter from the kitty keyboard protocol", async () => {
+  // CSI <code> ; <modifier> u — code 13 is Enter, modifier 2 is Shift.
+  assertEquals(await keysFrom(["\x1b[13;2u"]), ["newline"]);
+  // Unmodified Enter reported through the protocol still submits.
+  assertEquals(await keysFrom(["\x1b[13u"]), ["enter"]);
+});
+
+Deno.test("parses shift+enter from xterm modifyOtherKeys", async () => {
+  // CSI 27 ; <modifier> ; <code> ~
+  assertEquals(await keysFrom(["\x1b[27;2;13~"]), ["newline"]);
+});
+
+async function firstKey(chunks: (string | Uint8Array)[]): Promise<Key> {
+  for await (const key of keypresses(readerFrom(chunks))) {
+    return key;
+  }
+  throw new Error("no key produced");
+}
+
+Deno.test("collects a bracketed paste into a single key", async () => {
+  const key = await firstKey(["\x1b[200~a\tb\nc\x1b[201~"]);
+  assertEquals(key.name, "paste");
+  assertEquals(key.text, "a\tb\nc");
+});
+
+Deno.test("reassembles a bracketed paste split across reads", async () => {
+  const key = await firstKey(["\x1b[200~foo\n", "bar", "\x1b[201~"]);
+  assertEquals(key.name, "paste");
+  assertEquals(key.text, "foo\nbar");
+});
+
+Deno.test("reassembles a paste when the end marker is split", async () => {
+  // The closing marker is itself torn across two reads.
+  const key = await firstKey(["\x1b[200~hi\x1b[20", "1~"]);
+  assertEquals(key.name, "paste");
+  assertEquals(key.text, "hi");
+});
+
+Deno.test("normalizes CRLF newlines inside a bracketed paste", async () => {
+  const key = await firstKey(["\x1b[200~a\r\nb\rc\x1b[201~"]);
+  assertEquals(key.text, "a\nb\nc");
+});
+
+Deno.test("reassembles an escape sequence split across reads", async () => {
+  assertEquals(await keysFrom(["\x1b", "[", "D"]), ["left"]);
 });

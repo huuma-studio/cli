@@ -1,12 +1,19 @@
-import { assertEquals, assertRejects } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import type { Message } from "@huuma/ai/agent";
 import agentCommand, {
   type Assistant,
   chat,
   modelText,
   ollamaApiKey,
+  parseAgentArgs,
   resolveApiKey,
   resolveModel,
+  resolveTools,
   respond,
   setup,
 } from "./agent.ts";
@@ -154,7 +161,7 @@ Deno.test("chat answers a one-shot prompt, runs once, and returns ''", async () 
     },
   };
 
-  const result = await quiet(() => chat(assistant, ["hello", "there"]));
+  const result = await quiet(() => chat(assistant, "hello there"));
 
   // one-shot returns "" (not the REPL's "Bye!") and never enters the loop
   assertEquals(result, "");
@@ -168,7 +175,7 @@ Deno.test("chat flags a failed one-shot with a non-zero exit code", async () => 
       run: () => Promise.reject(new Error("boom")),
     };
 
-    const result = await quiet(() => chat(assistant, ["hi"]));
+    const result = await quiet(() => chat(assistant, "hi"));
 
     assertEquals(result, ""); // still returns the one-shot sentinel
     assertEquals(Deno.exitCode, 1); // failure surfaces via the exit code
@@ -226,4 +233,167 @@ Deno.test("ollamaApiKey returns HUUMA_AGENT_API_KEY, else undefined", async () =
     { HUUMA_AGENT_API_KEY: null },
     () => assertEquals(ollamaApiKey(), undefined),
   );
+});
+
+/** The names of the tools {@link resolveTools} builds for `names`, in order. */
+function toolNames(names: string[]): string[] {
+  return resolveTools(names).map((tool) => tool.name);
+}
+
+Deno.test("resolveTools returns no tools for an empty selection", () => {
+  assertEquals(resolveTools([]), []);
+});
+
+Deno.test("resolveTools builds the named tools, case-insensitively", () => {
+  assertEquals(toolNames(["GREP", "fetch_website"]), ["grep", "fetch_website"]);
+});
+
+Deno.test("resolveTools expands the files group", () => {
+  assertEquals(toolNames(["files"]), [
+    "read_file",
+    "write_file",
+    "create_directory",
+    "delete_file",
+    "edit_file",
+  ]);
+});
+
+Deno.test("resolveTools rejects an unknown tool", () => {
+  assertThrows(
+    () => resolveTools(["browser"]),
+    Error,
+    'Unknown tool "browser"',
+  );
+});
+
+Deno.test("resolveTools wires the cli allow-list from the environment", async () => {
+  await withEnv({ HUUMA_AGENT_CLI_COMMANDS: "deno, git" }, () => {
+    const [tool, ...rest] = resolveTools(["cli"]);
+    assertEquals(rest, []);
+    assertEquals(tool.name, "cli");
+    // The allow-list surfaces in the description the model sees.
+    assertEquals(tool.description.includes("deno, git"), true);
+  });
+});
+
+Deno.test("resolveTools requires an allow-list for the cli tool", async () => {
+  await withEnv({ HUUMA_AGENT_CLI_COMMANDS: null }, () => {
+    assertThrows(
+      () => resolveTools(["cli"]),
+      Error,
+      "HUUMA_AGENT_CLI_COMMANDS",
+    );
+  });
+});
+
+Deno.test("resolveTools builds search once an engine is set", async () => {
+  await withEnv(
+    { HUUMA_AGENT_SEARCH_ENGINE: "brave" },
+    () => assertEquals(toolNames(["search"]), ["search"]),
+  );
+});
+
+Deno.test("resolveTools requires an engine for the search tool", async () => {
+  await withEnv({ HUUMA_AGENT_SEARCH_ENGINE: null }, () => {
+    assertThrows(
+      () => resolveTools(["search"]),
+      Error,
+      "HUUMA_AGENT_SEARCH_ENGINE",
+    );
+  });
+});
+
+Deno.test("parseAgentArgs splits --tools from the prompt", () => {
+  assertEquals(
+    parseAgentArgs(["--tools", "grep,read_file", "hello", "world"]),
+    {
+      tools: ["grep", "read_file"],
+      prompt: "hello world",
+      help: false,
+    },
+  );
+});
+
+Deno.test("parseAgentArgs accepts --tool, --tools=, and repetition", () => {
+  assertEquals(
+    parseAgentArgs(["--tool", "grep", "--tools=read_file,write_file", "go"]),
+    { tools: ["grep", "read_file", "write_file"], prompt: "go", help: false },
+  );
+});
+
+Deno.test("parseAgentArgs leaves an empty prompt for the REPL", () => {
+  assertEquals(parseAgentArgs(["--tools", "grep"]), {
+    tools: ["grep"],
+    prompt: "",
+    help: false,
+  });
+});
+
+Deno.test("parseAgentArgs treats leading non-flags as the prompt", () => {
+  assertEquals(parseAgentArgs(["hello", "there"]), {
+    tools: [],
+    prompt: "hello there",
+    help: false,
+  });
+});
+
+Deno.test("parseAgentArgs stops flag parsing at --", () => {
+  assertEquals(parseAgentArgs(["--tools", "grep", "--", "--verbatim"]), {
+    tools: ["grep"],
+    prompt: "--verbatim",
+    help: false,
+  });
+});
+
+Deno.test("parseAgentArgs signals --help and -h", () => {
+  const help = { tools: [], prompt: "", help: true };
+  assertEquals(parseAgentArgs(["--help"]), help);
+  assertEquals(parseAgentArgs(["-h"]), help);
+  // --help wins even after otherwise-valid flags.
+  assertEquals(parseAgentArgs(["--tools", "grep", "--help"]), help);
+});
+
+Deno.test("parseAgentArgs keeps --help in the prompt position as text", () => {
+  assertEquals(parseAgentArgs(["explain", "--help"]), {
+    tools: [],
+    prompt: "explain --help",
+    help: false,
+  });
+});
+
+Deno.test("parseAgentArgs rejects an unknown flag", () => {
+  assertThrows(
+    () => parseAgentArgs(["--toolz", "grep"]),
+    Error,
+    'Unknown flag "--toolz"',
+  );
+});
+
+Deno.test("parseAgentArgs rejects --tools without a value", () => {
+  assertThrows(
+    () => parseAgentArgs(["--tools"]),
+    Error,
+    "Missing value for --tools",
+  );
+});
+
+Deno.test("the agent command renders an unknown --tools value as an error", async () => {
+  const priorExitCode = Deno.exitCode;
+  try {
+    const result = await quiet(() =>
+      agentCommand(["--tools", "browser", "hi"])
+    );
+    assertEquals(result, ""); // handled cleanly, not thrown
+    assertEquals(Deno.exitCode, 1);
+  } finally {
+    Deno.exitCode = priorExitCode;
+  }
+});
+
+Deno.test("the agent command returns help for --help without starting a chat", async () => {
+  // No HUUMA_AGENT_PROVIDER set: reaching setup() would block on the provider
+  // prompt, so returning the usage text proves --help short-circuits first.
+  const result = await quiet(() => agentCommand(["--help"]));
+  assertStringIncludes(result, "huuma agent [OPTIONS] [PROMPT]");
+  assertStringIncludes(result, "--tools");
 });
