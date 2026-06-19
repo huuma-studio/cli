@@ -25,26 +25,6 @@ interface DownloadOptions {
   timeoutMs?: number;
 }
 
-/** Wraps a promise so it rejects with `FetchError` after `ms` milliseconds. */
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new FetchError(`Request timed out after ${ms} ms`)),
-      ms,
-    );
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      },
-    );
-  });
-}
-
 /** Parses the `<owner>/<repo>/<ref>` segments out of a codeload tarball URL
  * for use in error messages like `"Ref '<ref>' not found in '<owner>/<repo>'"`. */
 function describeCodeloadUrl(
@@ -73,20 +53,30 @@ export async function downloadTarball(
   const timeoutMs = opts.timeoutMs ?? FETCH_TIMEOUT_MS;
   const { owner, repo, ref } = describeCodeloadUrl(url);
 
+  // Abort the request if the response headers don't arrive within timeoutMs.
+  // The timer is cleared once headers are in, so it never aborts the body
+  // stream mid-download (the size caps in extract.ts guard the body).
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
   let response: Response;
   try {
-    response = await withTimeout(
-      fetchImpl(url, { redirect: "follow" }),
-      timeoutMs,
-    );
+    response = await fetchImpl(url, {
+      redirect: "follow",
+      signal: controller.signal,
+    });
   } catch (cause) {
-    if (cause instanceof FetchError) throw cause;
+    if (controller.signal.aborted) {
+      throw new FetchError(`Request timed out after ${timeoutMs} ms`);
+    }
     throw new FetchError(
       `Network error downloading '${url}': ${
         (cause as Error)?.message ?? cause
       }`,
       { cause },
     );
+  } finally {
+    clearTimeout(timer);
   }
 
   if (!response.ok) {

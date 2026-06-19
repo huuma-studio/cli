@@ -118,6 +118,26 @@ Deno.test("network error is wrapped as FetchError", async () => {
   assertStringIncludes(err.message, "Network error");
 });
 
+Deno.test("times out and aborts when the response never arrives", async () => {
+  // A fetch that hangs until its signal aborts — mimics a stalled connection.
+  const fetchImpl = ((_url: string, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        reject(new DOMException("The signal has been aborted", "AbortError"));
+      });
+    })) as unknown as typeof fetch;
+
+  const err = await assertRejects(
+    () =>
+      downloadTarball("https://codeload.github.com/owner/repo/tar.gz/main", {
+        fetchImpl,
+        timeoutMs: 10,
+      }),
+    FetchError,
+  );
+  assertStringIncludes(err.message, "timed out");
+});
+
 Deno.test("live network test self-skips when offline", {
   permissions: { net: true },
 }, async () => {
