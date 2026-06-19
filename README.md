@@ -34,6 +34,7 @@ huuma [OPTIONS] [COMMAND]
 | ------------ | --------------------------------------- |
 | `p, project` | Create a new project structure          |
 | `a, agent`   | Chat with an AI agent in your terminal  |
+| `s, skills`  | Manage skills for your project          |
 | `u, upgrade` | Upgrade Huuma CLI to the latest version |
 
 ## Creating a New Project
@@ -173,6 +174,54 @@ HUUMA_AGENT_CLI_COMMANDS=deno,git \
 > `HUUMA_AGENT_CLI_COMMANDS` as narrow as possible — anything that can spawn
 > other programs (a shell, `env`, or an interpreter such as `deno`/`node`/
 > `python`) effectively grants arbitrary command execution.
+
+## Skills
+
+Skills are directories conforming to the
+[Agent Skills specification](https://agentskills.io/specification): a `SKILL.md`
+file with required `name` and `description` YAML frontmatter, plus optional
+`scripts/`, `references/`, and `assets/` directories. A skill extends an AI
+agent's behavior. Within a Huuma project, a skill lives under
+`.agents/skills/<name>/`.
+
+Install a skill from a public GitHub repository with `huuma skills add`:
+
+```bash
+huuma skills add --path=https://github.com/anthropics/skills/tree/main/skills/mcp-builder
+```
+
+The `--path` URL must follow this grammar:
+
+```
+https://github.com/<owner>/<repo>/tree/<ref>[/<subpath>]
+```
+
+- `<owner>`, `<repo>`: non-empty, no `/`.
+- `<ref>`: a single path segment (no `/`). Branch names containing slashes
+  (e.g. `feature/foo`) cannot be represented — pin a tag or a top-level branch
+  instead.
+- `<subpath>`: zero or more segments; the skill directory is `<subpath>`
+  resolved against the repo root, or the repo root when absent.
+
+Examples:
+
+```
+https://github.com/anthropics/skills/tree/main/skills/mcp-builder
+https://github.com/mattpocock/skills/tree/main/skills/engineering/codebase-design
+```
+
+Notes:
+
+- Public repositories only in v1; private-repo auth is not supported.
+- Skills install into `<cwd>/.agents/skills/`, with a content-hash manifest at
+  `.agents/skills/.manifest.json` recording each install's source and hash.
+- Re-adding a skill from the same `owner/repo` overwrites (the ref may differ).
+  Re-adding a same-named skill from a _different_ `owner/repo` is refused unless
+  you pass `--force`, which also discards any local edits you've made to an
+  installed skill.
+
+Run `huuma skills --help` and `huuma skills add --help` for the quick
+reference.
 
 ## Requirements
 

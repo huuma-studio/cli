@@ -1,5 +1,5 @@
-import { assertEquals } from "@std/assert";
-import { type ByteReader, type Key, keypresses } from "./terminal.ts";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { type ByteReader, type Key, keypresses, yellow } from "./terminal.ts";
 
 function readerFrom(chunks: (string | Uint8Array)[]): ByteReader {
   const encoder = new TextEncoder();
@@ -146,6 +146,16 @@ Deno.test("parses shift+enter from the kitty keyboard protocol", async () => {
 Deno.test("parses shift+enter from xterm modifyOtherKeys", async () => {
   // CSI 27 ; <modifier> ; <code> ~
   assertEquals(await keysFrom(["\x1b[27;2;13~"]), ["newline"]);
+});
+
+Deno.test("yellow wraps text with the ANSI yellow code", () => {
+  const out = yellow("warn");
+  assertStringIncludes(out, "warn");
+  // When colors are enabled the string contains the SGR open code for yellow.
+  if (!Deno.noColor) {
+    assertStringIncludes(out, "\x1b[33m");
+    assertStringIncludes(out, "\x1b[39m");
+  }
 });
 
 async function firstKey(chunks: (string | Uint8Array)[]): Promise<Key> {

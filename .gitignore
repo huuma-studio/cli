@@ -2,3 +2,5 @@
 .DS_Store
 deno.lock
 .zed/*
+.agents/*
+docs/
