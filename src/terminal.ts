@@ -46,6 +46,7 @@ export const bold = (text: string): string => style(text, 1, 22);
 export const dim = (text: string): string => style(text, 2, 22);
 export const red = (text: string): string => style(text, 31, 39);
 export const green = (text: string): string => style(text, 32, 39);
+export const yellow = (text: string): string => style(text, 33, 39);
 export const cyan = (text: string): string => style(text, 36, 39);
 
 export type KeyName =

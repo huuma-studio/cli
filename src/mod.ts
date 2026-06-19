@@ -3,6 +3,7 @@ import config from "../deno.json" with { type: "json" };
 
 import agent from "./agent/agent.ts";
 import project from "./project/project.ts";
+import skills from "./skills/skills.ts";
 import upgrade from "./upgrade/upgrade.ts";
 
 const [cmd, ...args] = Deno.args;
@@ -33,6 +34,10 @@ const defaultCommands: Command[] = [{
   names: ["a", "agent"],
   description: "Chat with an AI agent in your terminal",
   command: agent,
+}, {
+  names: ["s", "skills"],
+  description: "Manage skills for your project",
+  command: skills,
 }];
 
 loadCommands();

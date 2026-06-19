@@ -1,0 +1,14 @@
+{
+  "skills": {
+    "mcp-builder": {
+      "source": {
+        "owner": "anthropics",
+        "repo": "skills",
+        "ref": "main",
+        "subpath": ["skills", "mcp-builder"]
+      },
+      "contentHash": "sha256-abcdef0123456789",
+      "installedAt": "2026-06-18T12:00:00Z"
+    }
+  }
+}

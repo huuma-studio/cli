@@ -1,0 +1,3 @@
+# Valid Skill asset
+
+A non-frontmatter asset file included to exercise the tree walk.
