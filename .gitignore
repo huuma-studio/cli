@@ -3,4 +3,3 @@
 deno.lock
 .zed/*
 .agents/*
-docs/
