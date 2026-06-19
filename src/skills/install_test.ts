@@ -1,4 +1,9 @@
-import { assert, assertRejects, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import { TarStream } from "@std/tar/tar-stream";
 import { CollisionError, installSkill, LocalEditsError } from "./install.ts";
@@ -327,6 +332,3 @@ Deno.test("path-traversal entry aborts and writes nothing outside the target", a
     await Deno.remove(cwd, { recursive: true });
   }
 });
-
-// keep assertEquals referenced
-import { assertEquals } from "@std/assert";

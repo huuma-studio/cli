@@ -1,4 +1,4 @@
-import { assertRejects, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { validateSkill, ValidationError } from "./validate.ts";
 
@@ -85,7 +85,3 @@ Deno.test("optional-field warnings are collected but do not reject", async () =>
   // allowed-tools not an array
   assertStringIncludes(result.warnings.join("\n"), "allowed-tools");
 });
-
-// keep assertEquals referenced
-import { assertEquals } from "@std/assert";
-
