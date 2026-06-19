@@ -110,25 +110,23 @@ export async function installSkill(
     const manifest = await readManifest(skillsDir);
     const collision = findCollision(manifest, validatedName, parsed);
 
-    if (collision !== "none") {
-      const edited = await detectLocalEdits(manifest, validatedName, skillsDir);
-      if (collision === "different-source") {
-        if (!force) {
-          const existingSource = manifest.skills[validatedName].source;
-          throw new CollisionError(
-            `Skill '${validatedName}' is already installed from ${
-              formatSource(existingSource)
-            }. Re-run with --force to overwrite it with ${
-              formatSource(parsed)
-            }.`,
-          );
-        }
-      } else { // same-source
-        if (edited && !force) {
-          throw new LocalEditsError(
-            `Skill '${validatedName}' has local edits. Re-run with --force to discard them.`,
-          );
-        }
+    if (collision === "different-source") {
+      if (!force) {
+        const existingSource = manifest.skills[validatedName].source;
+        throw new CollisionError(
+          `Skill '${validatedName}' is already installed from ${
+            formatSource(existingSource)
+          }. Re-run with --force to overwrite it with ${formatSource(parsed)}.`,
+        );
+      }
+    } else if (collision === "same-source" && !force) {
+      // Only the same-source path consults the on-disk hash, and only when not
+      // forcing — so a different-source collision (or any --force re-add) never
+      // pays for a full-tree re-hash.
+      if (await detectLocalEdits(manifest, validatedName, skillsDir)) {
+        throw new LocalEditsError(
+          `Skill '${validatedName}' has local edits. Re-run with --force to discard them.`,
+        );
       }
     }
 
