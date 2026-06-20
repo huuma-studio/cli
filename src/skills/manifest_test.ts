@@ -163,3 +163,24 @@ Deno.test("detectLocalEdits returns false when hashes match and true when they d
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+Deno.test("contentHashOf handles multibyte filenames without RangeError", async () => {
+  // Regression: the buffer used to be sized with e.path.length (UTF-16 code
+  // units) but written with encoder.encode(e.path).length (UTF-8 bytes).
+  // Multibyte paths (résumé.md, CJK) made `buf.set(p, off)` throw.
+  const dir = await Deno.makeTempDir();
+  try {
+    const skill = join(dir, "mcp-builder");
+    await Deno.mkdir(join(skill, "docs"), { recursive: true });
+    await Deno.writeTextFile(join(skill, "SKILL.md"), "name: mcp-builder");
+    await Deno.writeTextFile(join(skill, "docs/résumé.md"), "café");
+    await Deno.writeTextFile(join(skill, "docs/日本語.md"), "こんにちは");
+    // Must not throw and must be stable across reads.
+    const h1 = await contentHashOf(skill);
+    const h2 = await contentHashOf(skill);
+    assertEquals(h1, h2);
+    assertStringIncludes(h1, "sha256-");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
