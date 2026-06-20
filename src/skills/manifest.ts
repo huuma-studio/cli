@@ -76,13 +76,20 @@ export async function contentHashOf(skillDir: string): Promise<string> {
   entries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 
   const encoder = new TextEncoder();
-  // Use the global crypto.subtle for hashing.
+  // Use the global crypto.subtle for hashing. Size the buffer in UTF-8 bytes:
+  // e.path.length is the UTF-16 code-unit count, which underestimates paths
+  // containing multibyte chars (e.g. `résumé.md`, CJK filenames) and would
+  // cause `buf.set(p, off)` to throw RangeError on write.
+  const encodedPaths = entries.map((e) => encoder.encode(e.path));
   let total = 0;
-  for (const e of entries) total += e.path.length + 1 + e.bytes.byteLength;
+  for (let i = 0; i < entries.length; i++) {
+    total += encodedPaths[i].length + 1 + entries[i].bytes.byteLength;
+  }
   const buf = new Uint8Array(total);
   let off = 0;
-  for (const e of entries) {
-    const p = encoder.encode(e.path);
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    const p = encodedPaths[i];
     buf.set(p, off);
     off += p.length;
     buf[off] = 0; // NUL separator
