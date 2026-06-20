@@ -1,5 +1,4 @@
 import { object, string } from "@huuma/validate";
-import type { Command } from "../command.ts";
 
 const _latest = new Map<string, string>();
 
@@ -7,7 +6,7 @@ const jsrMetaSchema = object({
   latest: string(),
 });
 
-export const latest: Command["command"] = async function (
+export async function latest(
   module: string,
   fallback: string,
 ): Promise<string> {
@@ -29,4 +28,4 @@ export const latest: Command["command"] = async function (
   }
 
   return <string> _latest.get(module);
-};
+}

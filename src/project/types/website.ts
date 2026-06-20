@@ -6,14 +6,32 @@ import { confirm } from "../../input.ts";
 
 const modules = ["@huuma/route", "@huuma/ui"] as const;
 
-const denoConfigContent = `{
+export async function denoConfigContent(tailwind: boolean): Promise<string> {
+  const routeVersion = await latest(modules[0], "^0.2");
+  const uiVersion = await latest(modules[1], "^0.2");
+
+  // Tailwind needs its own deps (the `tailwindcss()` helper lives in
+  // `@huuma/theme`) and `nodeModulesDir: "auto"` so `@tailwindcss/cli` can
+  // resolve `@import "tailwindcss"` from a materialized `node_modules`.
+  const tailwindImports = tailwind
+    ? `
+    "@huuma/theme": "jsr:@huuma/theme@^${await latest("@huuma/theme", "^0.2")}",
+    "tailwindcss": "npm:tailwindcss@^4",
+    "@tailwindcss/cli": "npm:@tailwindcss/cli@^4",`
+    : "";
+  const nodeModulesDir = tailwind
+    ? `
+  "nodeModulesDir": "auto",`
+    : "";
+
+  return `{
   "imports": {
-    "${modules[0]}": "jsr:${modules[0]}@^${await latest(modules[0])}",
-    "${modules[1]}": "jsr:${modules[1]}@^${await latest(modules[1])}",
+    "${modules[0]}": "jsr:${modules[0]}@^${routeVersion}",
+    "${modules[1]}": "jsr:${modules[1]}@^${uiVersion}",${tailwindImports}
     "@/": "./src/",
     "@app/": "./app/",
     "@manifest/": "./.huuma/"
-  },
+  },${nodeModulesDir}
   "lint": {
     "plugins": ["jsr:@huuma/ui/lint"]
   },
@@ -28,20 +46,26 @@ const denoConfigContent = `{
     "start": "deno -ERN app.ts"
   }
 }`;
+}
 
 export default async (projectName: string) => {
   const addZedSettings = await confirm("Add .zed/settings.json for Deno?");
   const addVscodeSettings = await confirm(
     "Add .vscode/settings.json for Deno?",
   );
+  const addTailwind = await confirm("Add Tailwind CSS?");
 
   await createDir(join(projectName, "src"));
   await createDir(join(projectName, "static"));
   await createDir(join(projectName, "app"));
-  await denoConfig(projectName);
-  await rootTs(projectName);
-  await appTs(projectName);
+  await denoConfig(projectName, addTailwind);
+  await rootTs(projectName, addTailwind);
+  await appTs(projectName, addTailwind);
   await indexPage(projectName);
+
+  if (addTailwind) {
+    await tailwindStyles(projectName);
+  }
 
   if (addZedSettings) {
     await zedSettings(projectName);
@@ -54,7 +78,14 @@ export default async (projectName: string) => {
   return "Website application created!";
 };
 
-const rootTsContent = `import { createUIApp, Launch, Scripts, Meta } from "@huuma/ui/server";
+export function rootTsContent(tailwind: boolean): string {
+  // `loadStaticFiles` serves `static/styles.css` at `/styles.css`, where the
+  // `tailwindcss()` helper writes its compiled output.
+  const stylesheet = tailwind
+    ? `\n          <link rel="stylesheet" href="/styles.css" />`
+    : "";
+
+  return `import { createUIApp, Launch, Scripts, Meta } from "@huuma/ui/server";
 import { AppContext } from "@huuma/route";
 import { loadStaticFiles } from "@huuma/route/http/tasks/static-files";
 
@@ -65,7 +96,7 @@ const app = createUIApp(
         <head>
           <Meta metadata={metadata} />
           <Scripts nonce={scripts?.nonce} scripts={scripts?.head} />
-          <title>Hello Huuma</title>
+          <title>Hello Huuma</title>${stylesheet}
         </head>
         <body>
           {children}
@@ -88,9 +119,13 @@ await loadStaticFiles(app);
 export default app;
 
 `;
+}
 
-async function rootTs(projectName: string) {
-  await createFile(join(projectName, "app", "root.tsx"), rootTsContent);
+async function rootTs(projectName: string, tailwind: boolean) {
+  await createFile(
+    join(projectName, "app", "root.tsx"),
+    rootTsContent(tailwind),
+  );
 }
 
 const appTsContent = `import { pack } from "@huuma/ui/server/pack";
@@ -100,15 +135,26 @@ import List from "./.huuma/list.ts";
 await pack(app, List);
 Deno.serve(app.deliver());
 `;
-const devTsContent = `import { prepare } from "@huuma/ui/server/pack/list";
+
+export function devTsContent(tailwind: boolean): string {
+  // `await tailwindcss()` compiles `src/styles.css` → `static/styles.css` on
+  // each dev/bundle run (both run `dev.ts` with `--allow-run`).
+  const tailwindImport = tailwind
+    ? `import { tailwindcss } from "@huuma/theme/tailwind";\n`
+    : "";
+  const tailwindCall = tailwind ? `await tailwindcss();\n\n` : "";
+
+  return `${tailwindImport}import { prepare } from "@huuma/ui/server/pack/list";
 import app from "@app/root.tsx";
 
-const handler = (await prepare(app))?.deliver();
+${tailwindCall}const handler = (await prepare(app))?.deliver();
 if (handler) Deno.serve(handler);
 `;
-async function appTs(projectName: string) {
+}
+
+async function appTs(projectName: string, tailwind: boolean) {
   await createFile(join(projectName, "app.ts"), appTsContent);
-  await createFile(join(projectName, "dev.ts"), devTsContent);
+  await createFile(join(projectName, "dev.ts"), devTsContent(tailwind));
 }
 
 const indexPageContent = `export default () => {
@@ -125,8 +171,27 @@ async function indexPage(projectName: string) {
   await createFile(join(projectName, "app", "page.tsx"), indexPageContent);
 }
 
-async function denoConfig(projectName: string) {
-  await createFile(join(projectName, "deno.json"), denoConfigContent);
+// Tailwind entrypoint. `@tailwindcss/cli` reads this and emits the compiled
+// stylesheet listed below.
+const stylesCssContent = `@import "tailwindcss";
+`;
+// Placeholder so `loadStaticFiles` registers the `/styles.css` route on the
+// first `deno task dev`; `tailwindcss()` overwrites it with the compiled output.
+const compiledStylesContent = `/* Generated by tailwindcss(); do not edit. */
+`;
+async function tailwindStyles(projectName: string) {
+  await createFile(join(projectName, "src", "styles.css"), stylesCssContent);
+  await createFile(
+    join(projectName, "static", "styles.css"),
+    compiledStylesContent,
+  );
+}
+
+async function denoConfig(projectName: string, tailwind: boolean) {
+  await createFile(
+    join(projectName, "deno.json"),
+    await denoConfigContent(tailwind),
+  );
 }
 
 const zedSettingsContent = `{
