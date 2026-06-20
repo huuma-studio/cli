@@ -60,7 +60,7 @@ Creates a basic Huuma website application with the following structure:
 
 ```
 your-project-name/
-├── assets/
+├── static/
 ├── app/
 │   ├── page.tsx
 │   └── root.tsx
@@ -70,12 +70,18 @@ your-project-name/
 └── deno.json
 ```
 
-- `assets/` - Directory for static assets
+- `static/` - Directory for static assets served at the URL root
 - `app/` - Directory for page components
 - `src/` - Directory for application source code
 - `app.ts` - Main application entry point
 - `dev.ts` - Development server entry point
 - `deno.json` - Deno configuration file
+
+The scaffolder also asks whether to **add Tailwind CSS**. If you opt in, it adds
+the Tailwind v4 dependencies (and `"nodeModulesDir": "auto"`) to `deno.json`,
+creates `src/styles.css` (`@import "tailwindcss";`), links it from the page head
+as `/styles.css`, and wires `await tailwindcss()` into `dev.ts` so styles
+compile to `static/styles.css` on every `deno task dev` / `deno task bundle`.
 
 ## Available Scripts
 
