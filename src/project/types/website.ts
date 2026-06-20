@@ -86,7 +86,6 @@ export function rootTsContent(tailwind: boolean): string {
     : "";
 
   return `import { createUIApp, Launch, Scripts, Meta } from "@huuma/ui/server";
-import { AppContext } from "@huuma/route";
 import { loadStaticFiles } from "@huuma/route/http/tasks/static-files";
 
 const app = createUIApp(
@@ -130,7 +129,7 @@ async function rootTs(projectName: string, tailwind: boolean) {
 
 const appTsContent = `import { pack } from "@huuma/ui/server/pack";
 import app from "@app/root.tsx";
-import List from "./.huuma/list.ts";
+import List from "@manifest/list.ts";
 
 await pack(app, List);
 Deno.serve(app.deliver());
