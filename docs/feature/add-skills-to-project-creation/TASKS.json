@@ -1,0 +1,147 @@
+{
+  "feature": "add-skills-to-project-creation",
+  "summary": "Scaffold the `website` project type with an opt-in skill bundle from `huuma-studio/ui`'s `skills/` directory, installed atomically into the new project's `.agents/skills/`.",
+  "source": [
+    "docs/feature/add-skills-to-project-creation/CONTEXT.md",
+    "docs/feature/add-skills-to-project-creation/PLAN.md",
+    "docs/adr/0002-skill-bundle-for-project-scaffolding.md"
+  ],
+  "conventions": {
+    "language": "TypeScript / Deno",
+    "tests": "In-memory tarballs via @std/tar TarStream, no live network, no binary fixtures.",
+    "deps": "No new dependencies in deno.json; reuse existing skills leaf modules (path, validate, manifest, extract, fetch, fs_utils).",
+    "output_style": "dim('… ') progress, green('✓') success, yellow('⚠ ') warnings, red('✖') + Deno.exitCode = 1 on failure."
+  },
+  "tasks": [
+    {
+      "id": "T1",
+      "title": "Implement `src/skills/bundle.ts` orchestrator",
+      "step": 1,
+      "batch": "A",
+      "status": "done",
+      "summary": "Create the all-or-nothing bundle installer that composes the existing skills leaf modules to install a set of skills from a single GitHub source in one atomic operation.",
+      "scope": [
+        "New file: src/skills/bundle.ts",
+        "Exports: installBundle, BundleOptions, BundleMember, BundleResult, BundleValidationError, and re-exports ValidationError from validate.ts",
+        "Flow: resolve → mkdir skillsDir + sweepStaleTemps → single downloadTarball → extractSkill to staging with subpath ['skills'] → discover immediate subdirs containing SKILL.md → validate all candidates (sorted) → swap all validated members → manifest write once → return { members }",
+        "All-or-nothing: validation failures abort before any swap; mid-swap failures trigger best-effort rollback of already-swapped members",
+        "Each member recorded as a standalone ManifestEntry with source.subpath = ['skills', memberName] so future huuma skills update can re-fetch per-member",
+        "Test seams: injected fetch (defaults to downloadTarball) and log (defaults to console.log)",
+        "No modifications to existing skills leaf modules"
+      ],
+      "depends_on": [],
+      "blocks": ["T2", "T3"],
+      "files": ["src/skills/bundle.ts"],
+      "verify": "deno check src/skills/bundle.ts passes; installBundle is importable. Behavioural verification is T2."
+    },
+    {
+      "id": "T2",
+      "title": "Write `src/skills/bundle_test.ts`",
+      "step": 2,
+      "batch": "B",
+      "status": "done",
+      "summary": "Mirror install_test.ts style — in-memory tarballs via TarStream, no network, temp-dir cleanup in finally. Cover fresh bundle, empty bundle, atomic abort, warnings, single manifest write, per-member subpath, and path-traversal abort.",
+      "scope": [
+        "New file: src/skills/bundle_test.ts",
+        "buildBundleTarball(members) helper emitting repo-main/skills/<name>/SKILL.md plus a not-a-skill/README.md sibling and a root README.md",
+        "Tests: (1) fresh bundle install of two valid members, (2) empty bundle with no SKILL.md anywhere, (3) atomic abort on invalid member name, (4) compatibility warnings propagate per member, (5) manifest written once with all entries, (6) per-member source.subpath = ['skills', memberName], (7) path-traversal in one member aborts the whole bundle",
+        "No stray .tmp- or .old- dirs after any test; temp cwd cleaned in finally"
+      ],
+      "depends_on": ["T1"],
+      "blocks": [],
+      "files": ["src/skills/bundle_test.ts"],
+      "verify": "deno test src/skills/bundle_test.ts passes; manual ls confirms no stray dirs in the temp cwd after each test."
+    },
+    {
+      "id": "T3",
+      "title": "Wire the bundle into `src/project/types/website.ts`",
+      "step": 3,
+      "batch": "B",
+      "status": "done",
+      "summary": "Add an opt-in `confirm` prompt after the existing tailwind block and a guarded call to installBundle. Bundle ref is hard-coded `main`; a failed bundle is non-fatal to the scaffold.",
+      "scope": [
+        "Modified file: src/project/types/website.ts",
+        "Import installBundle from ../../skills/bundle.ts and parsePath, PathParseError from ../../skills/path.ts",
+        "Add green, red, yellow to existing terminal.ts imports (currently only confirm is imported)",
+        "After the existing `if (addTailwind) { … }` block: const addSkillsBundle = await confirm('Add skills bundle from @huuma/ui?'); on yes, call installBundleForWebsite(projectName)",
+        "Print per-member summary: green('✓') + count, per-member name, yellow warnings",
+        "installBundleForWebsite(projectName, bundle?) helper: builds GitHub tree URL, calls parsePath, calls installBundle({ parsed, cwd: projectName, log: console.log }), on BundleValidationError or any thrown error logs red, sets Deno.exitCode = 1, returns { members: [] }",
+        "Bundle seam (optional bundle param) for unit-testing — documented like add.ts's AddDeps style",
+        "The existing 'Website application created!' return string stays the last line; bundle summary prints before it",
+        "No --skills-ref flag; ref is hard-coded main"
+      ],
+      "depends_on": ["T1"],
+      "blocks": ["T4"],
+      "files": ["src/project/types/website.ts"],
+      "verify": "deno check src/project/types/website.ts passes; manual scaffold (T6) prints the bundle prompt and installs."
+    },
+    {
+      "id": "T4",
+      "title": "Extend `src/project/types/website_test.ts`",
+      "step": 4,
+      "batch": "C",
+      "status": "done",
+      "summary": "Add tests for installBundleForWebsite via the bundle seam — no network, no real GitHub fetch. Cover the helper propagating installBundle results and swallowing bundle errors per the non-fatal contract.",
+      "scope": [
+        "Modified file: src/project/types/website_test.ts",
+        "Test 1: installBundleForWebsite propagates installBundle results — pass a bundle function seam returning a fixed BundleResult, assert the helper returns it unchanged",
+        "Test 2: installBundleForWebsite swallows bundle errors and returns [] — pass a bundle seam that throws BundleValidationError, assert Deno.exitCode = 1, a red line is logged, and { members: [] } is returned",
+        "Existing tests stay green",
+        "The bundle? seam is the minimal surface for unit-testability; default export still calls the helper with no seam in production"
+      ],
+      "depends_on": ["T3"],
+      "blocks": [],
+      "files": ["src/project/types/website_test.ts"],
+      "verify": "deno test src/project/types/website_test.ts passes; existing tests stay green."
+    },
+    {
+      "id": "T5",
+      "title": "Update README",
+      "step": 5,
+      "batch": "C",
+      "status": "done",
+      "summary": "Document the new skills-bundle prompt in the website project type's prompt list and cross-reference the existing Skills section.",
+      "scope": [
+        "Modified file: README.md",
+        "In the ## Project section (or wherever the website type's prompts are listed), add a one-line note: the scaffold asks `Add skills bundle from @huuma/ui?` and, on yes, installs every valid skill from huuma-studio/ui's skills/ directory into the new project's .agents/skills/",
+        "Cross-reference the existing ## Skills section (added by the skills-management PLAN) so the reader sees the bundle uses the same registry as `huuma skills add`"
+      ],
+      "depends_on": [],
+      "blocks": [],
+      "files": ["README.md"],
+      "verify": "Visual review; deno task test still green."
+    },
+    {
+      "id": "T6",
+      "title": "Final validation",
+      "step": 6,
+      "batch": "C",
+      "status": "done",
+      "summary": "Whole-tree type-check, full test suite, and manual scaffold runs covering the happy path, the negative (no) path, and the network-failure (non-fatal) path.",
+      "scope": [
+        "deno task check — type-check the whole tree including bundle.ts and modified website.ts",
+        "deno task test — full suite; bundle_test.ts runs offline; existing skills tests stay green",
+        "Manual scaffold (piped stdin): printf 'demo\\nwebsite\\nn\\nn\\nn\\ny\\n' | deno run -A src/mod.ts project; verify ls .agents/skills/ shows one dir per valid member and .manifest.json has one entry per member with source.subpath = ['skills', memberName]",
+        "Negative path: answer n to the bundle prompt — no .agents/ dir created, no manifest written, scaffold still reports 'Website application created!'",
+        "Network-failure path: run with --allow-net revoked and answer y — bundle fails, Deno.exitCode = 1 is set, but project files all present",
+        "git status from the new project: .agents/skills/ is present but untracked (the .gitignore decision is a separate feature)"
+      ],
+      "depends_on": ["T1", "T2", "T3", "T4", "T5"],
+      "blocks": [],
+      "files": [],
+      "verify": "All listed commands pass and the manual scaffold runs behave as described."
+    }
+  ],
+  "parallelisation": {
+    "batch_A": ["T1"],
+    "batch_B_after_T1": ["T2", "T3"],
+    "batch_C_after_T3": ["T4", "T5", "T6"]
+  },
+  "out_of_scope": [
+    "huuma skills add-bundle CLI subcommand",
+    "Selective bundle install (choosing a subset of members) — v1 is all-or-nothing",
+    "Bundle removal / update — once installed, each member is a normal registry entry",
+    ".gitignore for .agents/ in the scaffolded project — separate feature",
+    "Non-GitHub sources, /-containing refs, private-repo auth — inherited from skills-management ADR"
+  ]
+}

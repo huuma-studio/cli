@@ -3,6 +3,14 @@ import { create as createFile } from "../file.ts";
 import { create as createDir } from "../directory.ts";
 import { latest } from "../version.ts";
 import { confirm } from "../../input.ts";
+import { green, red, yellow } from "../../terminal.ts";
+import { parsePath } from "../../skills/path.ts";
+import {
+  type BundleOptions,
+  type BundleResult,
+  BundleValidationError,
+  installBundle,
+} from "../../skills/bundle.ts";
 
 const modules = ["@huuma/route", "@huuma/ui"] as const;
 
@@ -75,8 +83,80 @@ export default async (projectName: string) => {
     await vscodeSettings(projectName);
   }
 
+  const addSkillsBundle = await confirm("Add skills bundle from @huuma/ui?");
+  if (addSkillsBundle) {
+    const outcome = await installBundleForWebsite(projectName);
+    // Skip the empty/installed messaging when the bundle failed — the helper
+    // already printed a red `✖` for the failure. Only the success path owns
+    // the yellow "no skills found" / green "installed" messaging.
+    if (!outcome.failed) {
+      if (outcome.members.length === 0) {
+        console.log(
+          yellow("  ⚠ No skills found in @huuma/ui's skills/ directory."),
+        );
+      } else {
+        console.log(
+          green("✓") +
+            ` Installed ${outcome.members.length} skill${
+              outcome.members.length === 1 ? "" : "s"
+            } from @huuma/ui:`,
+        );
+        for (const m of outcome.members) {
+          console.log(`    ${m.name}`);
+          for (const w of m.warnings) console.log(yellow("    ⚠ " + w));
+        }
+      }
+    }
+  }
+
   return "Website application created!";
 };
+
+/** Seam type for `installBundleForWebsite`'s optional bundle injection. Mirrors
+ * `installBundle`'s signature so tests can stub the network-bound call. */
+export type BundleFn = (opts: BundleOptions) => Promise<BundleResult>;
+
+/** Outcome of a website bundle install. `failed` distinguishes a genuine empty
+ * source (`members: []`, `failed: false`) from an install failure
+ * (`members: []`, `failed: true`) so the caller doesn't print a misleading
+ * "No skills found" message after a network error. */
+export interface WebsiteBundleOutcome {
+  members: BundleResult["members"];
+  failed: boolean;
+}
+
+/** Installs the @huuma/ui skill bundle into the scaffolded project. The bundle
+ * is non-fatal: on any failure (network, validation, atomicity abort) the
+ * helper logs a red error, sets `Deno.exitCode = 1`, and returns
+ * `{ members: [], failed: true }` — the scaffold itself still succeeds. Skills
+ * are an enhancement, not a project requirement (see the ADR's "Failure
+ * severity" section). On success returns `{ members, failed: false }`.
+ *
+ * The optional `bundle` seam is for unit-testing (inject a stub that returns a
+ * fixed `BundleResult` or throws). The default export calls this with no
+ * seam, using the real `installBundle`. Mirrors `add.ts`'s `AddDeps` pattern. */
+export async function installBundleForWebsite(
+  projectName: string,
+  bundle: BundleFn = installBundle,
+): Promise<WebsiteBundleOutcome> {
+  // Hard-coded ref `main` — huuma-studio/ui publishes no git tags. parsePath
+  // is inside the try/catch so the non-fatal contract holds even if the URL
+  // ever becomes dynamic (e.g. a future --skills-ref flag) and starts throwing.
+  try {
+    const parsed = parsePath(
+      "https://github.com/huuma-studio/ui/tree/main/skills",
+    );
+    const result = await bundle({ parsed, cwd: projectName, log: console.log });
+    return { members: result.members, failed: false };
+  } catch (cause) {
+    const message = cause instanceof BundleValidationError
+      ? cause.message
+      : (cause as Error)?.message ?? String(cause);
+    console.error(red(`✖ ${message}`));
+    Deno.exitCode = 1;
+    return { members: [], failed: true };
+  }
+}
 
 export function rootTsContent(tailwind: boolean): string {
   // `loadStaticFiles` serves `static/styles.css` at `/styles.css`, where the

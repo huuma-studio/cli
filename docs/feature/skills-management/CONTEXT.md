@@ -11,7 +11,7 @@ plus optional `scripts/`, `references/`, and `assets/` directories. A skill is
 intended to extend an AI agent's behavior. Within a Huuma project, a skill
 lives under `.agents/skills/<name>/`.
 
-The term **skill** is *not* used for the agent's `--tools` flags. Those are
+The term **skill** is _not_ used for the agent's `--tools` flags. Those are
 **tools**, not skills.
 
 ## Skill source
