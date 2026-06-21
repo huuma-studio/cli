@@ -83,6 +83,16 @@ creates `src/styles.css` (`@import "tailwindcss";`), links it from the page head
 as `/styles.css`, and wires `await tailwindcss()` into `dev.ts` so styles
 compile to `static/styles.css` on every `deno task dev` / `deno task bundle`.
 
+The scaffolder also asks whether to **add a skills bundle from @huuma/ui**. If
+you opt in, every valid skill from
+[`huuma-studio/ui`](https://github.com/huuma-studio/ui/tree/main/skills)'s
+`skills/` directory is installed into the new project's `.agents/skills/`,
+atomically — if any member fails validation, none are installed. Each installed
+skill becomes a normal entry in the same registry used by `huuma skills add`
+(see [Skills](#skills)), so a future `huuma skills update` can re-fetch members
+individually. A failed bundle is non-fatal: the project is still created and
+`Deno.exitCode` is set to `1` so CI can detect the partial failure.
+
 ## Available Scripts
 
 After creating a project, you can use the following commands from your project
