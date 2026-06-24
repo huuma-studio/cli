@@ -1,6 +1,6 @@
 {
   "plan": "PLAN.md",
-  "context": "CONTEXT.md",
+  "context": "docs/CONTEXT.md",
   "adr": "docs/adr/0001-huuma-skills-add.md",
   "goal": "Ship `huuma skills add --path=<github-url> [--force]` that installs a skill from a public GitHub repo into `<cwd>/.agents/skills/<name>/`, validated against the Agent Skills spec, with a content-hash manifest and stage-then-swap atomicity.",
   "status_legend": {

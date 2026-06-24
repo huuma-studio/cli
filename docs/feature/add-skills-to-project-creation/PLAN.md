@@ -1,6 +1,6 @@
 # Implementation Plan — Skill bundle for `huuma project website`
 
-> Derived from `CONTEXT.md` (glossary — `Skill bundle`) and
+> Derived from `docs/CONTEXT.md` (glossary — `Skill bundle`) and
 > `docs/adr/0002-skill-bundle-for-project-scaffolding.md` (decisions). Read
 > both first — this plan does not re-justify the install pipeline or the
 > bundle's load-bearing decisions, it sequences the _bundle_ layer on top
@@ -174,7 +174,7 @@ single GitHub source in one atomic operation.
      `ValidationError`: `log(red("✖ …"))`, `Deno.exitCode = 1`, recursively
      remove `tempRoot`, throw `BundleValidationError` (wrapping the cause).
      **No member is moved into `.agents/skills/` until every member has
-     validated** — this is the all-or-nothing guarantee from `CONTEXT.md`.
+     validated** — this is the all-or-nothing guarantee from `docs/CONTEXT.md`.
   7. **Swap phase** — for each validated member, in the same sorted order:
      `target = join(skillsDir, validatedName)`;
      `log(dim("… Installing .agents/skills/<name>/"))`;
@@ -399,14 +399,14 @@ project-scaffolding.md` captures the load-bearing decisions (atomicity
    policy, manifest-entry shape, source pinning, failure severity). This
    plan does not re-justify them — it sequences the build.
 
-## Out of scope (per `CONTEXT.md`, the ADR, and this plan)
+## Out of scope (per `docs/CONTEXT.md`, the ADR, and this plan)
 
 - A `huuma skills add-bundle` CLI subcommand. The bundle installer is
   internal for now; surfacing it as a user-facing command is a separate
   feature with its own ADR (collision policy for bundles in existing
   projects, `--force` semantics for partial-overlap bundles, etc.).
 - Selective bundle install (choosing a subset of members). v1 is
-  all-or-nothing per `CONTEXT.md`.
+  all-or-nothing per `docs/CONTEXT.md`.
 - Bundle removal / update. Once installed, each member is a normal
   registry entry; `huuma skills update` / `remove` (when built) operate
   per-member — no special "bundle" identity is preserved in the manifest.

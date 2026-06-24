@@ -2,7 +2,7 @@
   "feature": "add-skills-to-project-creation",
   "summary": "Scaffold the `website` project type with an opt-in skill bundle from `huuma-studio/ui`'s `skills/` directory, installed atomically into the new project's `.agents/skills/`.",
   "source": [
-    "docs/feature/add-skills-to-project-creation/CONTEXT.md",
+    "docs/CONTEXT.md",
     "docs/feature/add-skills-to-project-creation/PLAN.md",
     "docs/adr/0002-skill-bundle-for-project-scaffolding.md"
   ],

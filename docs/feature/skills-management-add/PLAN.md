@@ -1,6 +1,6 @@
 # Implementation Plan — `huuma skills add`
 
-> Derived from `CONTEXT.md` (glossary) and `docs/adr/0001-huuma-skills-add.md`
+> Derived from `docs/CONTEXT.md` (glossary) and `docs/adr/0001-huuma-skills-add.md`
 > (decisions). Read those first — this plan does not re-justify the choices,
 > it sequences the build.
 
@@ -602,7 +602,7 @@ logically last so the docs match what shipped).
 6. Try a bad path (`owner/repo` shorthand) → red error, exit 1, no files
    written.
 7. Try `tree/feature/foo/skills/bar` → slash-in-ref rejection message.
-8. `git status` shows the new files, `CONTEXT.md`, `docs/adr/`, `PLAN.md`,
+8. `git status` shows the new files, `docs/CONTEXT.md`, `docs/adr/`, `PLAN.md`,
    and the installed `.agents/skills/mcp-builder/` (the latter is a runtime
    artifact — do not commit it; `.gitignore` already excludes `.huuma`/
    `.huumadist` but not `.agents/`. Flag this to the user — see Open

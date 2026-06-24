@@ -239,6 +239,42 @@ Notes:
 Run `huuma skills --help` and `huuma skills add --help` for the quick
 reference.
 
+### Updating skills
+
+Re-fetch tracked skills from the GitHub ref recorded at install time and
+update the on-disk copy when upstream has moved:
+
+```bash
+huuma skills update
+huuma skills update mcp-builder --force
+```
+
+With no names, `update` re-fetches every tracked skill (those with an entry in
+`.agents/skills/.manifest.json`). Untracked skills are skipped — `update` is
+manifest-driven and never enumerates the filesystem. Skills are processed
+sequentially in sorted-by-name order, one at a time, best-effort: a failure on
+one skill prints a `✖` line and sets `Deno.exitCode = 1` but does not abort the
+others. The manifest is rewritten once at the end with the entries of every
+successfully swapped skill folded in; a run where nothing moved writes nothing.
+
+Per-skill outcomes:
+
+- `✓ <name> is up to date` — re-fetched content hash equals the recorded hash;
+  no swap, no manifest change.
+- `✓ <name> updated` — upstream moved, validation passed, swapped in.
+- `✖ <name>: skill has local edits; re-run with --force to discard them` — the
+  on-disk content differs from the manifest and upstream has moved. Refused
+  without `--force`.
+- `✖ <name>: ...` — fetch failure, upstream validation regression, upstream
+  rename, missing on disk, or an untracked name passed on the CLI.
+
+`--force` lifts the locally-edited guard for every selected skill. It also
+re-syncs an already-current-but-locally-edited skill back to the canonical
+upstream hash (since `--force` means "discard edits"). A run exits `0` iff no
+skill was refused or failed; otherwise it exits `1`.
+
+Run `huuma skills update --help` for the quick reference.
+
 ## Requirements
 
 - [Deno](https://deno.com/) runtime
