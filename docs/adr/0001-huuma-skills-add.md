@@ -7,7 +7,7 @@ repository into the current project's `.agents/skills/` directory. The command
 introduces the first sub-command structure (`skills` parent with sub-commands)
 and the first install-from-remote-source flow in the CLI. This ADR records the
 load-bearing decisions; the glossary terms (`Skill`, `Skill source`, `Skill
-registry`) live in `CONTEXT.md`.
+registry`) live in `docs/CONTEXT.md`.
 
 ## Path grammar
 

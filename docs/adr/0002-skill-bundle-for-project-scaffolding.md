@@ -11,7 +11,7 @@ contains a valid `SKILL.md` is installed into the new project's
 This ADR records the load-bearing decisions introduced by the bundle layer.
 It builds on `docs/adr/0001-huuma-skills-add.md` (single-skill install) and
 the glossary terms (`Skill`, `Skill source`, `Skill registry`, `Skill
-bundle`) live in the `CONTEXT.md` files under `docs/feature/`.
+bundle`) live in `docs/CONTEXT.md`.
 
 ## Bundle source — `huuma-studio/ui` @ `main`
 
@@ -84,8 +84,8 @@ registry a flat map keyed by skill name.
 
 ## Atomicity — all-or-nothing up to the swap phase
 
-`CONTEXT.md` mandates all-or-nothing: "if any member fails validation,
-none of the bundle is installed." This ADR fixes *where* the
+`docs/CONTEXT.md` mandates all-or-nothing: "if any member fails validation,
+none of the bundle is installed." This ADR fixes _where_ the
 all-or-nothing boundary sits.
 
 The bundle orchestrator (`src/skills/bundle.ts`) runs in two phases:
@@ -129,7 +129,7 @@ matrix would require deciding `--force` semantics for partial-overlap
 bundles in existing projects — which is the scope of a future
 `huuma skills add-bundle` CLI command (see Out of scope).
 
-If a bundle install *does* encounter an existing skill dir (e.g.
+If a bundle install _does_ encounter an existing skill dir (e.g.
 because the user re-ran the scaffold into a non-empty dir),
 `swapDirectory`'s existing-target path handles it as a same-name
 overwrite without source comparison. This is acceptable for v1 because
@@ -139,7 +139,7 @@ orchestrator small.
 
 ## Failure severity — non-fatal to the scaffold
 
-The bundle prompt runs *after* the project structure has been written
+The bundle prompt runs _after_ the project structure has been written
 (`createDir`, `denoConfig`, `rootTs`, `appTs`, optional Tailwind/Zed/VS
 Code all done). On any bundle failure (network down, `huuma-studio/ui`
 404, a member with malformed `SKILL.md`, atomicity abort), the
@@ -192,11 +192,11 @@ hard-coded `main` — there is nothing dynamic to inject.
 ## Considered but deferred
 
 - A `huuma skills add-bundle` CLI subcommand. Surfacing the bundle
-  installer as a user-facing command for *existing* projects requires
+  installer as a user-facing command for _existing_ projects requires
   collision-policy decisions (partial overlap, `--force` semantics,
   member removal on re-install) that the fresh-scaffold flow does not
   need. Separate feature, separate ADR.
-- Selective bundle install (choosing a subset of members). `CONTEXT.md`
+- Selective bundle install (choosing a subset of members). `docs/CONTEXT.md`
   fixes v1 as all-or-nothing.
 - A `bundle:` marker in the manifest. See "Manifest shape" — rejected
   for v1 and unlikely to be added later; the per-member-entry shape is

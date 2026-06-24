@@ -6,6 +6,7 @@
 import { isHelpFlag, Registry } from "../command.ts";
 import { red } from "../terminal.ts";
 import add from "./add.ts";
+import update from "./update.ts";
 
 const registry = new Registry();
 
@@ -13,6 +14,12 @@ registry.add({
   names: ["add"],
   description: "Install a skill from a public GitHub repository",
   command: add,
+});
+
+registry.add({
+  names: ["update"],
+  description: "Re-fetch tracked skills from their recorded GitHub ref",
+  command: update,
 });
 
 export default async (args: string[] = []): Promise<string> => {
