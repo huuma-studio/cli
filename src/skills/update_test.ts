@@ -151,12 +151,25 @@ function captureLog(): { log: (l: string) => void; out: () => string } {
 
 /** Builds an ordered fetch seam that hands out one tarball per call, in
  * sorted-by-name processing order. The codeload URL carries no subpath, so we
- * can't dispatch on it; sequential sorted processing makes a queue reliable. */
+ * can't dispatch on it; sequential sorted processing makes a queue reliable.
+ * Throws if called more times than there are tarballs — a `ReadableStream` is
+ * single-use, so silently re-handing out the last one would surface as a
+ * confusing empty-stream failure downstream. A loud throw makes a tarball-count
+ * mismatch in the test setup immediately obvious. */
 function orderedSeam(tarballs: ReadableStream<Uint8Array>[]): (
   url: string,
 ) => Promise<ReadableStream<Uint8Array>> {
   let i = 0;
-  return () => Promise.resolve(tarballs[i++] ?? tarballs[tarballs.length - 1]);
+  return () => {
+    if (i >= tarballs.length) {
+      throw new Error(
+        `orderedSeam exhausted: ${tarballs.length} tarball(s) prepared but fetch called a ${
+          i + 1
+        }th time`,
+      );
+    }
+    return Promise.resolve(tarballs[i++]);
+  };
 }
 
 // ---------------------------------------------------------------------------

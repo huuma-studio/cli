@@ -266,13 +266,15 @@ async function updateOneSkill(
         if (diskHash !== entry.contentHash) {
           log(yellow(`⚠ overwriting local edits in ${trackedName}`));
           await swapDirectory({ tempDir: skillStageDir, target });
+          // After swap `target` holds exactly what `skillStageDir` held, so its
+          // hash is `upstreamHash` (=== entry.contentHash here) — no recompute.
           return {
             name: trackedName,
             status: "updated",
             message: `updated (${formatSource(entry.source)})`,
             entry: {
               source: entry.source,
-              contentHash: await contentHashOf(target),
+              contentHash: upstreamHash,
               installedAt: new Date().toISOString(),
             },
             warnings,
@@ -324,13 +326,15 @@ async function updateOneSkill(
     await swapDirectory({ tempDir: skillStageDir, target });
 
     // 9. Record updated entry — same `source` (ref unchanged), new hash + time.
+    // `swapDirectory` is a rename, so `target` now holds exactly what
+    // `skillStageDir` held; reuse `upstreamHash` instead of re-walking target.
     return {
       name: trackedName,
       status: "updated",
       message: `updated (${formatSource(entry.source)})`,
       entry: {
         source: entry.source,
-        contentHash: await contentHashOf(target),
+        contentHash: upstreamHash,
         installedAt: new Date().toISOString(),
       },
       warnings,
