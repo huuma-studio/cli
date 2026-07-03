@@ -45,7 +45,7 @@ export default async (args: string[] = []): Promise<string> => {
     const parsed = parseAgentArgs(args);
     if (parsed.help) return agentHelp();
     prompt = parsed.prompt;
-    assistant = await setup(parsed.tools);
+    assistant = await setup(parsed.tools, parsed.systemPrompt);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`${red("✖")} ${red(message)}\n`);
@@ -101,13 +101,19 @@ export async function chat(
  * a one-shot prompt can contain dashes once it has started. */
 export function parseAgentArgs(
   args: string[],
-): { tools: string[]; prompt: string; help: boolean } {
+): {
+  tools: string[];
+  systemPrompt: string | undefined;
+  prompt: string;
+  help: boolean;
+} {
   const tools: string[] = [];
+  let systemPrompt: string | undefined;
   let i = 0;
   for (; i < args.length; i++) {
     const arg = args[i];
     if (isHelpFlag(arg)) {
-      return { tools: [], prompt: "", help: true };
+      return { tools: [], systemPrompt: undefined, prompt: "", help: true };
     }
     if (arg === "--") {
       i++;
@@ -123,19 +129,44 @@ export function parseAgentArgs(
       tools.push(...parseList(value));
       continue;
     }
-    const inline = inlineValue(arg);
-    if (inline !== undefined) {
-      tools.push(...parseList(inline));
+    if (arg === "--system-prompt") {
+      const value = args[++i];
+      if (!value || value.trim() === "") {
+        throw new Error(
+          'Missing value for --system-prompt. Example: --system-prompt "Be a SQL expert."',
+        );
+      }
+      systemPrompt = value;
+      continue;
+    }
+    const inlineTools = inlineValue(arg);
+    if (inlineTools !== undefined) {
+      tools.push(...parseList(inlineTools));
+      continue;
+    }
+    const inlineSystem = systemPromptInlineValue(arg);
+    if (inlineSystem !== undefined) {
+      if (inlineSystem.trim() === "") {
+        throw new Error(
+          'Missing value for --system-prompt. Example: --system-prompt "Be a SQL expert."',
+        );
+      }
+      systemPrompt = inlineSystem;
       continue;
     }
     if (arg.startsWith("--")) {
       throw new Error(
-        `Unknown flag "${arg}". The agent accepts --tools <list>.`,
+        `Unknown flag "${arg}". The agent accepts --tools <list> and --system-prompt <text>.`,
       );
     }
     break;
   }
-  return { tools, prompt: args.slice(i).join(" ").trim(), help: false };
+  return {
+    tools,
+    systemPrompt,
+    prompt: args.slice(i).join(" ").trim(),
+    help: false,
+  };
 }
 
 /** Returns the value of a `--tools=`/`--tool=` token, or undefined otherwise. */
@@ -143,6 +174,13 @@ function inlineValue(arg: string): string | undefined {
   for (const prefix of ["--tools=", "--tool="]) {
     if (arg.startsWith(prefix)) return arg.slice(prefix.length);
   }
+  return undefined;
+}
+
+/** Returns the value of a `--system-prompt=` token, or undefined otherwise. */
+function systemPromptInlineValue(arg: string): string | undefined {
+  const prefix = "--system-prompt=";
+  if (arg.startsWith(prefix)) return arg.slice(prefix.length);
   return undefined;
 }
 
@@ -158,8 +196,10 @@ USAGE
   interactive session — type "exit" or "quit" to leave.
 
 OPTIONS
-  --tools <list>   Comma-separated tools to enable (default: none)
-  -h, --help       Show this help
+  --tools <list>         Comma-separated tools to enable (default: none)
+  --system-prompt <text> Replace the built-in system prompt for this run;
+                         output style is then yours to manage
+  -h, --help             Show this help
 
 TOOLS
   ${Object.keys(TOOL_FACTORIES).join(", ")}
@@ -175,12 +215,19 @@ ENVIRONMENT
 
 EXAMPLES
   huuma agent "What is the capital of France?"
-  huuma agent --tools read_file,grep "What does src/mod.ts export?"`;
+  huuma agent --tools read_file,grep "What does src/mod.ts export?"
+  huuma agent --system-prompt "Be a SQL expert, answer only in SQL." "select all users"`;
 }
 
-export async function setup(toolNames: string[] = []): Promise<Assistant> {
+export async function setup(
+  toolNames: string[] = [],
+  systemPrompt?: string,
+): Promise<Assistant> {
   // Built first so a bad tool name or config fails before any provider prompt.
   const tools = resolveTools(toolNames);
+  // A supplied system prompt replaces the built-in for this run; absent falls
+  // back to SYSTEM_PROMPT. See ADR 0005.
+  const prompt = systemPrompt ?? SYSTEM_PROMPT;
 
   const provider = envValue("HUUMA_AGENT_PROVIDER")?.toLowerCase() ??
     await choose(
@@ -199,7 +246,7 @@ export async function setup(toolNames: string[] = []): Promise<Assistant> {
     return agent({
       model: anthropic({ apiKey }),
       modelId,
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt: prompt,
       tools,
     });
   }
@@ -211,7 +258,7 @@ export async function setup(toolNames: string[] = []): Promise<Assistant> {
     return agent({
       model: openai({ apiKey }),
       modelId,
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt: prompt,
       tools,
     });
   }
@@ -225,7 +272,7 @@ export async function setup(toolNames: string[] = []): Promise<Assistant> {
     return agent({
       model: ollama({ host, apiKey }),
       modelId,
-      systemPrompt: SYSTEM_PROMPT,
+      systemPrompt: prompt,
       tools,
     });
   }

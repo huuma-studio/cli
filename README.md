@@ -155,6 +155,27 @@ unless you ask for it on the command line.
 huuma agent --tools read_file,grep "What does src/mod.ts export?"
 ```
 
+### System prompt
+
+The agent ships a built-in system prompt (concise, plain-text,
+terminal-friendly). Override it for a single run with `--system-prompt` — the
+supplied text **replaces** the built-in entirely, so the output style is then
+yours to manage:
+
+```bash
+huuma agent --system-prompt "Be a SQL expert, answer only in SQL." "select all users"
+huuma agent --system-prompt="Be terse." "fix the tests"
+```
+
+Both the space form and the `--system-prompt=` form are accepted. A missing or
+empty value is rejected. The flag must come before the prompt, like `--tools`.
+
+> **Why a flag and not a file/env var?** With file tools enabled the agent can
+> rewrite files (and the shell rc that sets env vars), so a file- or env-backed
+> system prompt could be poisoned mid-run and persist across sessions. The
+> inline flag lives in process argv, which the agent cannot mutate. See
+> ADR 0005.
+
 | Tool               | Description                             |
 | ------------------ | --------------------------------------- |
 | `cli`              | Run allow-listed CLI commands           |

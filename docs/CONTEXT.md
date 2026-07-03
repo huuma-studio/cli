@@ -53,6 +53,22 @@ latest version of that source. Untracked skills are skipped (there is no
 source to fetch from). Locally edited skills are not overwritten without
 `--force`, mirroring `huuma skills add`'s collision policy.
 
+## System prompt
+
+The provider-level instruction that frames an agent run — persona, output
+format, constraints — passed as `systemPrompt` to `agent({...})` for every
+provider (anthropic, openai, ollama). The CLI ships a built-in `SYSTEM_PROMPT`
+used when no override is supplied.
+
+A **custom system prompt** is one supplied by the user via the `--system-prompt`
+flag. It **replaces** the built-in for that run (no merging, no append), so the
+user owns the output style. v1 accepts the inline flag only — no file flag, no
+env var — because a tooled agent (one with `write_file` / `edit_file`) could
+rewrite a file- or env-backed prompt and poison future runs; process argv is the
+one channel the agent cannot mutate mid-run. See ADR 0005.
+
+_Avoid_: system message, pre-prompt, instruction (use **system prompt**).
+
 ## Skill bundle
 
 A set of skills installed together from a single skill source in one atomic
