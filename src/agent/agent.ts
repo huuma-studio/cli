@@ -22,6 +22,11 @@ import {
 import { isHelpFlag } from "../command.ts";
 import { choose, multiline, question } from "../input.ts";
 import { CLEAR_LINE, dim, green, red, write } from "../terminal.ts";
+import {
+  SUBAGENT_FACTORIES,
+  SUBAGENT_SUMMARIES,
+  type SubagentContext,
+} from "./subagents.ts";
 
 /** The slice of the @huuma/ai agent the REPL drives. Derived from `agent`
  * with `Pick` so the `run` signature tracks @huuma/ai automatically, while
@@ -162,8 +167,17 @@ OPTIONS
   -h, --help       Show this help
 
 TOOLS
-  ${Object.keys(TOOL_FACTORIES).join(", ")}
+  ${allToolNames().join(", ")}
   ("files" is shorthand for every file tool)
+
+SUBAGENTS
+${
+    Object.entries(SUBAGENT_SUMMARIES)
+      .map(([name, summary]) => `  ${name} — ${summary}`)
+      .join("\n")
+  }
+  Enabled like any tool (--tools explorer); the model decides when to
+  delegate. Sub-agents run on the same provider and model as the agent.
 
 ENVIRONMENT
   HUUMA_AGENT_PROVIDER       anthropic | openai | ollama
@@ -179,8 +193,20 @@ EXAMPLES
 }
 
 export async function setup(toolNames: string[] = []): Promise<Assistant> {
-  // Built first so a bad tool name or config fails before any provider prompt.
-  const tools = resolveTools(toolNames);
+  // Resolved first so a bad tool name or config fails before any provider
+  // prompt. Preset sub-agents need the resolved model, so only their names
+  // are validated here and their construction waits for a provider branch.
+  const { tools, subagentNames } = resolveTools(toolNames);
+
+  // Shared tail of every provider branch: the sub-agent presets run on the
+  // same model the parent agent is built with (ADR 0005).
+  const build = <T extends string>(ctx: SubagentContext<T>): Assistant =>
+    agent({
+      model: ctx.model,
+      modelId: ctx.modelId,
+      systemPrompt: SYSTEM_PROMPT,
+      tools: [...tools, ...resolveSubagents(subagentNames, ctx)],
+    });
 
   const provider = envValue("HUUMA_AGENT_PROVIDER")?.toLowerCase() ??
     await choose(
@@ -196,24 +222,14 @@ export async function setup(toolNames: string[] = []): Promise<Assistant> {
     const apiKey = await resolveApiKey("Anthropic");
     const modelId = await resolveModel("claude-haiku-4-5");
 
-    return agent({
-      model: anthropic({ apiKey }),
-      modelId,
-      systemPrompt: SYSTEM_PROMPT,
-      tools,
-    });
+    return build({ model: anthropic({ apiKey }), modelId });
   }
 
   if (provider === "openai") {
     const apiKey = await resolveApiKey("OpenAI");
     const modelId = await resolveModel("gpt-4o-mini");
 
-    return agent({
-      model: openai({ apiKey }),
-      modelId,
-      systemPrompt: SYSTEM_PROMPT,
-      tools,
-    });
+    return build({ model: openai({ apiKey }), modelId });
   }
 
   if (provider === "ollama") {
@@ -222,12 +238,7 @@ export async function setup(toolNames: string[] = []): Promise<Assistant> {
     const apiKey = ollamaApiKey();
     const modelId = await resolveModel("llama3.2");
 
-    return agent({
-      model: ollama({ host, apiKey }),
-      modelId,
-      systemPrompt: SYSTEM_PROMPT,
-      tools,
-    });
+    return build({ model: ollama({ host, apiKey }), modelId });
   }
 
   throw new Error(
@@ -276,24 +287,56 @@ const TOOL_FACTORIES: Record<string, () => AgentTools> = {
   search: () => [searchTool()],
 };
 
+/** Outcome of resolving the `--tools` selection: the tools built eagerly,
+ * plus the preset sub-agent names whose construction is deferred until the
+ * provider/model is resolved (see {@link SUBAGENT_FACTORIES}). */
+export interface ResolvedTools {
+  tools: AgentTools;
+  subagentNames: string[];
+}
+
+/** Every name `--tools` accepts: regular tools and preset sub-agents. Both
+ * the help text and the unknown-name error derive from this so they can't
+ * drift from what {@link resolveTools} resolves. */
+function allToolNames(): string[] {
+  return [...Object.keys(TOOL_FACTORIES), ...Object.keys(SUBAGENT_FACTORIES)];
+}
+
 /** Builds the tools named on the `--tools` flag (see {@link TOOL_FACTORIES}).
  * An empty list means no tools, keeping the plain chat behavior. Tool-specific
  * configuration still comes from env vars (e.g. $HUUMA_AGENT_CLI_COMMANDS). An
  * unknown name throws, mirroring setup()'s strict handling of an unknown
- * provider. */
-export function resolveTools(names: string[]): AgentTools {
+ * provider. Preset sub-agent names are validated here but built later by
+ * {@link resolveSubagents}, once a model exists to run them on. */
+export function resolveTools(names: string[]): ResolvedTools {
   const tools: AgentTools = [];
+  const subagentNames: string[] = [];
   for (const name of names) {
-    const build = TOOL_FACTORIES[name.toLowerCase()];
-    if (!build) {
-      throw new Error(
-        `Unknown tool "${name}". Use --tools with a comma-separated list of: ` +
-          `${Object.keys(TOOL_FACTORIES).join(", ")}.`,
-      );
+    const key = name.toLowerCase();
+    const build = TOOL_FACTORIES[key];
+    if (build) {
+      tools.push(...build());
+      continue;
     }
-    tools.push(...build());
+    if (SUBAGENT_FACTORIES[key]) {
+      subagentNames.push(key);
+      continue;
+    }
+    throw new Error(
+      `Unknown tool "${name}". Use --tools with a comma-separated list of: ` +
+        `${allToolNames().join(", ")}.`,
+    );
   }
-  return tools;
+  return { tools, subagentNames };
+}
+
+/** Builds the preset sub-agent tools deferred by {@link resolveTools}. Names
+ * are already validated there, so this only constructs. */
+export function resolveSubagents<T extends string>(
+  names: string[],
+  ctx: SubagentContext<T>,
+): AgentTools {
+  return names.flatMap((name) => SUBAGENT_FACTORIES[name](ctx));
 }
 
 /** The `cli` tool, limited to the allow-list in $HUUMA_AGENT_CLI_COMMANDS.
