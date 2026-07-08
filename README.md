@@ -191,6 +191,22 @@ HUUMA_AGENT_CLI_COMMANDS=deno,git \
 > other programs (a shell, `env`, or an interpreter such as `deno`/`node`/
 > `python`) effectively grants arbitrary command execution.
 
+### Sub-agents
+
+The `--tools` list also accepts preset sub-agents — self-contained helpers
+the agent can delegate a task to. A sub-agent runs its own loop with its own
+tools on the same provider and model, and only its findings return to the
+conversation. The agent decides when to delegate; each delegation prints a
+dim status line so you can see it happening.
+
+| Sub-agent  | Description                                                    |
+| ---------- | -------------------------------------------------------------- |
+| `explorer` | Read-only investigation with `read_file` and `grep`            |
+
+```bash
+huuma agent --tools explorer "How does src/skills/update.ts handle conflicts?"
+```
+
 ## Skills
 
 Skills are directories conforming to the
