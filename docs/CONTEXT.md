@@ -65,7 +65,7 @@ flag. It **replaces** the built-in for that run (no merging, no append), so the
 user owns the output style. v1 accepts the inline flag only — no file flag, no
 env var — because a tooled agent (one with `write_file` / `edit_file`) could
 rewrite a file- or env-backed prompt and poison future runs; process argv is the
-one channel the agent cannot mutate mid-run. See ADR 0005.
+one channel the agent cannot mutate mid-run. See ADR 0006.
 
 _Avoid_: system message, pre-prompt, instruction (use **system prompt**).
 
@@ -84,3 +84,27 @@ set offered at scaffolding time; the registry is the resulting installed
 set. A bundle becomes (part of) the registry on successful install.
 
 _Avoid_: Skill pack, skill set, skill collection
+
+## Sub-agent
+
+An `@huuma/ai` `Agent` wrapped as a tool via the library's `subagent` factory
+and invoked by the `huuma agent` parent model. The sub-agent runs its own
+orchestration loop (own system prompt and toolset) and returns only its final
+text; no conversation history is shared in either direction, so every
+delegation prompt must be self-contained.
+
+## Preset sub-agent
+
+A sub-agent defined by this CLI: its tool name, description, system prompt,
+and toolset are fixed product surface maintained here. A preset sub-agent is
+a **tool** (an entry on the `--tools` flag), not a skill. The first preset is
+`explorer`. User-defined sub-agents are not supported.
+
+_Avoid_: Custom sub-agent, dynamic sub-agent
+
+## Delegation
+
+The parent agent calling a preset sub-agent's tool with a self-contained
+prompt. Delegation is model-initiated: the parent model decides when to
+delegate, guided only by the preset's tool name and description. The CLI
+adds no delegation heuristics of its own.

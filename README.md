@@ -174,7 +174,7 @@ empty value is rejected. The flag must come before the prompt, like `--tools`.
 > rewrite files (and the shell rc that sets env vars), so a file- or env-backed
 > system prompt could be poisoned mid-run and persist across sessions. The
 > inline flag lives in process argv, which the agent cannot mutate. See
-> ADR 0005.
+> ADR 0006.
 
 | Tool               | Description                             |
 | ------------------ | --------------------------------------- |
@@ -211,6 +211,22 @@ HUUMA_AGENT_CLI_COMMANDS=deno,git \
 > `HUUMA_AGENT_CLI_COMMANDS` as narrow as possible — anything that can spawn
 > other programs (a shell, `env`, or an interpreter such as `deno`/`node`/
 > `python`) effectively grants arbitrary command execution.
+
+### Sub-agents
+
+The `--tools` list also accepts preset sub-agents — self-contained helpers
+the agent can delegate a task to. A sub-agent runs its own loop with its own
+tools on the same provider and model, and only its findings return to the
+conversation. The agent decides when to delegate; each delegation prints a
+dim status line so you can see it happening.
+
+| Sub-agent  | Description                                                    |
+| ---------- | -------------------------------------------------------------- |
+| `explorer` | Read-only investigation with `read_file` and `grep`            |
+
+```bash
+huuma agent --tools explorer "How does src/skills/update.ts handle conflicts?"
+```
 
 ## Skills
 

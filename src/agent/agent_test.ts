@@ -39,6 +39,10 @@ function modelReply(text: string): Message {
   return { role: "model", contents: [{ text }], toolCalls: [] };
 }
 
+/** The prompt type `Assistant.run` accepts, derived so the fakes below track
+ * @huuma/ai (which widened it beyond `string` for media input). */
+type RunPrompt = Parameters<Assistant["run"]>[0];
+
 /** Sets env vars (a `null` value clears one) for the duration of `fn`, then
  * restores the prior environment. Requires `--allow-env`. */
 async function withEnv(
@@ -122,7 +126,7 @@ Deno.test("respond threads the prompt and prior history into run", async () => {
     { role: "user", contents: "Hi" },
     modelReply("Hello!"),
   ];
-  let seen: { prompt: string; history?: Message[] } | undefined;
+  let seen: { prompt: RunPrompt; history?: Message[] } | undefined;
   const assistant: Assistant = {
     run: (prompt, history) => {
       seen = { prompt, history };
@@ -150,7 +154,7 @@ Deno.test("respond keeps the prior history when run fails", async () => {
 });
 
 Deno.test("chat answers a one-shot prompt, runs once, and returns ''", async () => {
-  const calls: { prompt: string; history?: Message[] }[] = [];
+  const calls: { prompt: RunPrompt; history?: Message[] }[] = [];
   const assistant: Assistant = {
     run: (prompt, history) => {
       calls.push({ prompt, history });
@@ -237,11 +241,11 @@ Deno.test("ollamaApiKey returns HUUMA_AGENT_API_KEY, else undefined", async () =
 
 /** The names of the tools {@link resolveTools} builds for `names`, in order. */
 function toolNames(names: string[]): string[] {
-  return resolveTools(names).map((tool) => tool.name);
+  return resolveTools(names).tools.map((tool) => tool.name);
 }
 
 Deno.test("resolveTools returns no tools for an empty selection", () => {
-  assertEquals(resolveTools([]), []);
+  assertEquals(resolveTools([]), { tools: [], subagentNames: [] });
 });
 
 Deno.test("resolveTools builds the named tools, case-insensitively", () => {
@@ -266,9 +270,33 @@ Deno.test("resolveTools rejects an unknown tool", () => {
   );
 });
 
+Deno.test("resolveTools lists preset sub-agents among the valid names", () => {
+  const error = assertThrows(() => resolveTools(["browser"]), Error);
+  assertStringIncludes(error.message, "explorer");
+});
+
+Deno.test("resolveTools defers preset sub-agents without needing a model", () => {
+  assertEquals(resolveTools(["Explorer"]), {
+    tools: [],
+    subagentNames: ["explorer"],
+  });
+});
+
+Deno.test("resolveTools dedupes a repeated preset", () => {
+  assertEquals(resolveTools(["explorer", "Explorer"]).subagentNames, [
+    "explorer",
+  ]);
+});
+
+Deno.test("resolveTools mixes eager tools with deferred presets", () => {
+  const { tools, subagentNames } = resolveTools(["grep", "explorer"]);
+  assertEquals(tools.map((tool) => tool.name), ["grep"]);
+  assertEquals(subagentNames, ["explorer"]);
+});
+
 Deno.test("resolveTools wires the cli allow-list from the environment", async () => {
   await withEnv({ HUUMA_AGENT_CLI_COMMANDS: "deno, git" }, () => {
-    const [tool, ...rest] = resolveTools(["cli"]);
+    const [tool, ...rest] = resolveTools(["cli"]).tools;
     assertEquals(rest, []);
     assertEquals(tool.name, "cli");
     // The allow-list surfaces in the description the model sees.
@@ -474,7 +502,7 @@ Deno.test("parseAgentArgs rejects a whitespace-only --system-prompt value", () =
   );
 });
 
-// Pins the footgun documented in ADR 0005: the token after --system-prompt is
+// Pins the footgun documented in ADR 0006: the token after --system-prompt is
 // always taken as its value, even when it looks like another flag. This
 // mirrors how --tools consumes its value and must not change silently.
 Deno.test("parseAgentArgs consumes a flag-like next token as the --system-prompt value", () => {
@@ -509,4 +537,10 @@ Deno.test("the agent command returns help for --help without starting a chat", a
   assertStringIncludes(result, "huuma agent [OPTIONS] [PROMPT]");
   assertStringIncludes(result, "--tools");
   assertStringIncludes(result, "--system-prompt");
+});
+
+Deno.test("the agent help lists the explorer preset", async () => {
+  const result = await quiet(() => agentCommand(["--help"]));
+  assertStringIncludes(result, "SUBAGENTS");
+  assertStringIncludes(result, "explorer");
 });

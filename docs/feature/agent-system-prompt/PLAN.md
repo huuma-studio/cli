@@ -4,7 +4,7 @@
 
 Let a user override the agent's built-in `SYSTEM_PROMPT` for a single run via an
 inline `--system-prompt` flag. Replace semantics; inline string only (no file
-flag, no env var) — see ADR 0005 for the security rationale.
+flag, no env var) — see ADR 0006 for the security rationale.
 
 ## Conventions
 
@@ -25,7 +25,7 @@ flag, no env var) — see ADR 0005 for the security rationale.
   assertion.
 - `README.md` — `agent` section: document `--system-prompt`.
 - `docs/CONTEXT.md` — glossary entry (done).
-- `docs/adr/0005-agent-system-prompt-flag.md` — ADR (done).
+- `docs/adr/0006-agent-system-prompt-flag.md` — ADR (done).
 
 No new files in `src/`.
 
@@ -110,7 +110,7 @@ deno lint
 deno task test
 ```
 
-## Out of scope (per ADR 0005)
+## Out of scope (per ADR 0006)
 
 - `--system-prompt-file` flag.
 - `HUUMA_AGENT_SYSTEM_PROMPT` env var.
