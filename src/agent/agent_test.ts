@@ -474,6 +474,21 @@ Deno.test("parseAgentArgs rejects a whitespace-only --system-prompt value", () =
   );
 });
 
+// Pins the footgun documented in ADR 0005: the token after --system-prompt is
+// always taken as its value, even when it looks like another flag. This
+// mirrors how --tools consumes its value and must not change silently.
+Deno.test("parseAgentArgs consumes a flag-like next token as the --system-prompt value", () => {
+  assertEquals(
+    parseAgentArgs(["--system-prompt", "--tools", "grep", "the code"]),
+    {
+      tools: [],
+      systemPrompt: "--tools",
+      prompt: "grep the code",
+      help: false,
+    },
+  );
+});
+
 Deno.test("the agent command renders an unknown --tools value as an error", async () => {
   const priorExitCode = Deno.exitCode;
   try {

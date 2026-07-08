@@ -227,7 +227,7 @@ export async function setup(
   const tools = resolveTools(toolNames);
   // A supplied system prompt replaces the built-in for this run; absent falls
   // back to SYSTEM_PROMPT. See ADR 0005.
-  const prompt = systemPrompt ?? SYSTEM_PROMPT;
+  const resolvedSystemPrompt = systemPrompt ?? SYSTEM_PROMPT;
 
   const provider = envValue("HUUMA_AGENT_PROVIDER")?.toLowerCase() ??
     await choose(
@@ -246,7 +246,7 @@ export async function setup(
     return agent({
       model: anthropic({ apiKey }),
       modelId,
-      systemPrompt: prompt,
+      systemPrompt: resolvedSystemPrompt,
       tools,
     });
   }
@@ -258,7 +258,7 @@ export async function setup(
     return agent({
       model: openai({ apiKey }),
       modelId,
-      systemPrompt: prompt,
+      systemPrompt: resolvedSystemPrompt,
       tools,
     });
   }
@@ -272,7 +272,7 @@ export async function setup(
     return agent({
       model: ollama({ host, apiKey }),
       modelId,
-      systemPrompt: prompt,
+      systemPrompt: resolvedSystemPrompt,
       tools,
     });
   }
