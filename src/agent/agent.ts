@@ -319,7 +319,9 @@ export function resolveTools(names: string[]): ResolvedTools {
       continue;
     }
     if (SUBAGENT_FACTORIES[key]) {
-      subagentNames.push(key);
+      // Deduped: the agent keeps tools in a name-keyed map, so a repeated
+      // preset would only construct a sub-agent that gets replaced anyway.
+      if (!subagentNames.includes(key)) subagentNames.push(key);
       continue;
     }
     throw new Error(

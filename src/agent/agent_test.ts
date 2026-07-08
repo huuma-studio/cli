@@ -282,6 +282,12 @@ Deno.test("resolveTools defers preset sub-agents without needing a model", () =>
   });
 });
 
+Deno.test("resolveTools dedupes a repeated preset", () => {
+  assertEquals(resolveTools(["explorer", "Explorer"]).subagentNames, [
+    "explorer",
+  ]);
+});
+
 Deno.test("resolveTools mixes eager tools with deferred presets", () => {
   const { tools, subagentNames } = resolveTools(["grep", "explorer"]);
   assertEquals(tools.map((tool) => tool.name), ["grep"]);
