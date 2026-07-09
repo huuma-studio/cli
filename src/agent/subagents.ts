@@ -15,7 +15,7 @@ export interface SubagentContext<T extends string = string> {
   modelId: T;
 }
 
-/** The agent's tool list, derived like agent.ts's `AgentTools` so both
+/** The agent's tool list, derived like tools.ts's `AgentTools` so both
  * track @huuma/ai rather than re-declaring the element type. */
 type AgentTools = NonNullable<AgentOptions<string>["tools"]>;
 
@@ -24,7 +24,7 @@ type SubagentFactory = <T extends string>(
 ) => AgentTools;
 
 /** Preset sub-agent factories keyed by the name used on the `--tools` flag,
- * mirroring agent.ts's TOOL_FACTORIES. They live in their own registry
+ * mirroring tools.ts's TOOL_FACTORIES. They live in their own registry
  * because a sub-agent needs the resolved model, which only exists after the
  * provider prompts — regular tools keep failing before them (ADR 0005). */
 export const SUBAGENT_FACTORIES: Record<string, SubagentFactory> = {
