@@ -12,7 +12,7 @@ import {
   writeFile,
 } from "@huuma/ai/tools";
 import { envValue, parseList } from "./env.ts";
-import { SUBAGENT_FACTORIES, type SubagentContext } from "./subagents.ts";
+import { SUBAGENT_FACTORIES, type SubagentContext } from "./subagents/mod.ts";
 
 /** The agent's tool list, derived from @huuma/ai so it tracks the library
  * rather than re-declaring the element type by hand. */

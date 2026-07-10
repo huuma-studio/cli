@@ -5,7 +5,7 @@ import { openai } from "@huuma/ai/models/openai";
 import { choose, question } from "../input.ts";
 import type { Assistant } from "./chat.ts";
 import { envValue } from "./env.ts";
-import type { SubagentContext } from "./subagents.ts";
+import type { SubagentContext } from "./subagents/mod.ts";
 import { resolveSubagents, resolveTools } from "./tools.ts";
 
 const SYSTEM_PROMPT =

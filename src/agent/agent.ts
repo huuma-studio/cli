@@ -2,7 +2,7 @@ import { red } from "../terminal.ts";
 import { parseAgentArgs } from "./args.ts";
 import { type Assistant, chat } from "./chat.ts";
 import { setup } from "./setup.ts";
-import { SUBAGENT_SUMMARIES } from "./subagents.ts";
+import { SUBAGENT_SUMMARIES } from "./subagents/mod.ts";
 import { allToolNames } from "./tools.ts";
 
 export default async (args: string[] = []): Promise<string> => {
