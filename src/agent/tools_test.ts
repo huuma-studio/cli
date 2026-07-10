@@ -57,39 +57,53 @@ Deno.test("resolveTools mixes eager tools with deferred presets", () => {
   assertEquals(subagentNames, ["explorer"]);
 });
 
-Deno.test("resolveTools wires the cli allow-list from the environment", async () => {
-  await withEnv({ HUUMA_AGENT_CLI_COMMANDS: "deno, git" }, () => {
-    const [tool, ...rest] = resolveTools(["cli"]).tools;
-    assertEquals(rest, []);
-    assertEquals(tool.name, "cli");
-    // The allow-list surfaces in the description the model sees.
-    assertEquals(tool.description.includes("deno, git"), true);
-  });
+Deno.test("resolveTools wires the cli allow-list from --cli-commands", () => {
+  const [tool, ...rest] =
+    resolveTools(["cli"], { cliCommands: ["deno", "git"] }).tools;
+  assertEquals(rest, []);
+  assertEquals(tool.name, "cli");
+  // The allow-list surfaces in the description the model sees.
+  assertEquals(tool.description.includes("deno, git"), true);
 });
 
-Deno.test("resolveTools requires an allow-list for the cli tool", async () => {
-  await withEnv({ HUUMA_AGENT_CLI_COMMANDS: null }, () => {
-    assertThrows(
-      () => resolveTools(["cli"]),
-      Error,
-      "HUUMA_AGENT_CLI_COMMANDS",
-    );
-  });
-});
-
-Deno.test("resolveTools builds search once an engine is set", async () => {
-  await withEnv(
-    { HUUMA_AGENT_SEARCH_ENGINE: "brave" },
-    () => assertEquals(toolNames(["search"]), ["search"]),
+Deno.test("resolveTools requires an allow-list for the cli tool", () => {
+  assertThrows(() => resolveTools(["cli"]), Error, "--cli-commands");
+  assertThrows(
+    () => resolveTools(["cli"], { cliCommands: [] }),
+    Error,
+    "--cli-commands",
   );
 });
 
-Deno.test("resolveTools requires an engine for the search tool", async () => {
-  await withEnv({ HUUMA_AGENT_SEARCH_ENGINE: null }, () => {
-    assertThrows(
-      () => resolveTools(["search"]),
-      Error,
-      "HUUMA_AGENT_SEARCH_ENGINE",
-    );
-  });
+Deno.test("resolveTools builds search from --search-engine, case-insensitively", () => {
+  assertEquals(
+    resolveTools(["search"], { searchEngine: "Brave" }).tools.map((t) =>
+      t.name
+    ),
+    ["search"],
+  );
+});
+
+Deno.test("resolveTools requires an engine for the search tool", () => {
+  assertThrows(() => resolveTools(["search"]), Error, "--search-engine");
+  assertThrows(
+    () => resolveTools(["search"], { searchEngine: "bing" }),
+    Error,
+    "--search-engine",
+  );
+});
+
+// Pins ADR 0008: the env vars the flags replaced must stay dead — a value an
+// agent smuggles into the environment cannot configure a tool.
+Deno.test("resolveTools ignores the removed env vars", async () => {
+  await withEnv(
+    {
+      HUUMA_AGENT_CLI_COMMANDS: "bash",
+      HUUMA_AGENT_SEARCH_ENGINE: "brave",
+    },
+    () => {
+      assertThrows(() => resolveTools(["cli"]), Error, "--cli-commands");
+      assertThrows(() => resolveTools(["search"]), Error, "--search-engine");
+    },
+  );
 });

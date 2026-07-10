@@ -1,84 +1,72 @@
 import { assertEquals, assertThrows } from "@std/assert";
-import { parseAgentArgs } from "./args.ts";
+import { type AgentArgs, parseAgentArgs } from "./args.ts";
+
+/** The parse result for an empty argv, overridden per test so each case only
+ * states what its input changes. */
+function parsed(overrides: Partial<AgentArgs> = {}): AgentArgs {
+  return {
+    tools: [],
+    cliCommands: [],
+    systemPrompt: undefined,
+    model: undefined,
+    host: undefined,
+    searchEngine: undefined,
+    prompt: "",
+    help: false,
+    ...overrides,
+  };
+}
 
 Deno.test("parseAgentArgs splits --tools from the prompt", () => {
   assertEquals(
     parseAgentArgs(["--tools", "grep,read_file", "hello", "world"]),
-    {
-      tools: ["grep", "read_file"],
-      systemPrompt: undefined,
-      model: undefined,
-      prompt: "hello world",
-      help: false,
-    },
+    parsed({ tools: ["grep", "read_file"], prompt: "hello world" }),
   );
 });
 
 Deno.test("parseAgentArgs accepts --tool, --tools=, and repetition", () => {
   assertEquals(
     parseAgentArgs(["--tool", "grep", "--tools=read_file,write_file", "go"]),
-    {
-      tools: ["grep", "read_file", "write_file"],
-      systemPrompt: undefined,
-      model: undefined,
-      prompt: "go",
-      help: false,
-    },
+    parsed({ tools: ["grep", "read_file", "write_file"], prompt: "go" }),
   );
 });
 
 Deno.test("parseAgentArgs leaves an empty prompt for the REPL", () => {
-  assertEquals(parseAgentArgs(["--tools", "grep"]), {
-    tools: ["grep"],
-    systemPrompt: undefined,
-    model: undefined,
-    prompt: "",
-    help: false,
-  });
+  assertEquals(
+    parseAgentArgs(["--tools", "grep"]),
+    parsed({ tools: ["grep"] }),
+  );
 });
 
 Deno.test("parseAgentArgs treats leading non-flags as the prompt", () => {
-  assertEquals(parseAgentArgs(["hello", "there"]), {
-    tools: [],
-    systemPrompt: undefined,
-    model: undefined,
-    prompt: "hello there",
-    help: false,
-  });
+  assertEquals(
+    parseAgentArgs(["hello", "there"]),
+    parsed({ prompt: "hello there" }),
+  );
 });
 
 Deno.test("parseAgentArgs stops flag parsing at --", () => {
-  assertEquals(parseAgentArgs(["--tools", "grep", "--", "--verbatim"]), {
-    tools: ["grep"],
-    systemPrompt: undefined,
-    model: undefined,
-    prompt: "--verbatim",
-    help: false,
-  });
+  assertEquals(
+    parseAgentArgs(["--tools", "grep", "--", "--verbatim"]),
+    parsed({ tools: ["grep"], prompt: "--verbatim" }),
+  );
 });
 
 Deno.test("parseAgentArgs signals --help and -h", () => {
-  const help = {
-    tools: [],
-    systemPrompt: undefined,
-    model: undefined,
-    prompt: "",
-    help: true,
-  };
-  assertEquals(parseAgentArgs(["--help"]), help);
-  assertEquals(parseAgentArgs(["-h"]), help);
+  assertEquals(parseAgentArgs(["--help"]), parsed({ help: true }));
+  assertEquals(parseAgentArgs(["-h"]), parsed({ help: true }));
   // --help wins even after otherwise-valid flags.
-  assertEquals(parseAgentArgs(["--tools", "grep", "--help"]), help);
+  assertEquals(
+    parseAgentArgs(["--tools", "grep", "--help"]),
+    parsed({ help: true }),
+  );
 });
 
 Deno.test("parseAgentArgs keeps --help in the prompt position as text", () => {
-  assertEquals(parseAgentArgs(["explain", "--help"]), {
-    tools: [],
-    systemPrompt: undefined,
-    model: undefined,
-    prompt: "explain --help",
-    help: false,
-  });
+  assertEquals(
+    parseAgentArgs(["explain", "--help"]),
+    parsed({ prompt: "explain --help" }),
+  );
 });
 
 Deno.test("parseAgentArgs rejects an unknown flag", () => {
@@ -100,24 +88,15 @@ Deno.test("parseAgentArgs rejects --tools without a value", () => {
 Deno.test("parseAgentArgs reads --system-prompt before the prompt", () => {
   assertEquals(
     parseAgentArgs(["--system-prompt", "Be terse.", "fix", "the", "tests"]),
-    {
-      tools: [],
-      systemPrompt: "Be terse.",
-      model: undefined,
-      prompt: "fix the tests",
-      help: false,
-    },
+    parsed({ systemPrompt: "Be terse.", prompt: "fix the tests" }),
   );
 });
 
 Deno.test("parseAgentArgs accepts the --system-prompt= form", () => {
-  assertEquals(parseAgentArgs(["--system-prompt=Be terse.", "go"]), {
-    tools: [],
-    systemPrompt: "Be terse.",
-    model: undefined,
-    prompt: "go",
-    help: false,
-  });
+  assertEquals(
+    parseAgentArgs(["--system-prompt=Be terse.", "go"]),
+    parsed({ systemPrompt: "Be terse.", prompt: "go" }),
+  );
 });
 
 Deno.test("parseAgentArgs combines --tools and --system-prompt", () => {
@@ -129,39 +108,25 @@ Deno.test("parseAgentArgs combines --tools and --system-prompt", () => {
       "Be terse.",
       "fix tests",
     ]),
-    {
+    parsed({
       tools: ["grep"],
       systemPrompt: "Be terse.",
-      model: undefined,
       prompt: "fix tests",
-      help: false,
-    },
+    }),
   );
 });
 
 Deno.test("parseAgentArgs lets the last --system-prompt win", () => {
   assertEquals(
     parseAgentArgs(["--system-prompt", "A", "--system-prompt", "B", "go"]),
-    {
-      tools: [],
-      systemPrompt: "B",
-      model: undefined,
-      prompt: "go",
-      help: false,
-    },
+    parsed({ systemPrompt: "B", prompt: "go" }),
   );
 });
 
 Deno.test("parseAgentArgs threads --system-prompt through -- to the prompt", () => {
   assertEquals(
     parseAgentArgs(["--system-prompt", "Be terse.", "--", "literal --words"]),
-    {
-      tools: [],
-      systemPrompt: "Be terse.",
-      model: undefined,
-      prompt: "literal --words",
-      help: false,
-    },
+    parsed({ systemPrompt: "Be terse.", prompt: "literal --words" }),
   );
 });
 
@@ -200,37 +165,28 @@ Deno.test("parseAgentArgs rejects a whitespace-only --system-prompt value", () =
 Deno.test("parseAgentArgs consumes a flag-like next token as the --system-prompt value", () => {
   assertEquals(
     parseAgentArgs(["--system-prompt", "--tools", "grep", "the code"]),
-    {
-      tools: [],
-      systemPrompt: "--tools",
-      model: undefined,
-      prompt: "grep the code",
-      help: false,
-    },
+    parsed({ systemPrompt: "--tools", prompt: "grep the code" }),
   );
 });
 
 Deno.test("parseAgentArgs reads --model before the prompt", () => {
   assertEquals(
     parseAgentArgs(["--model", "anthropic/claude-haiku-4-5", "hello"]),
-    {
-      tools: [],
-      systemPrompt: undefined,
+    parsed({
       model: { provider: "anthropic", modelId: "claude-haiku-4-5" },
       prompt: "hello",
-      help: false,
-    },
+    }),
   );
 });
 
 Deno.test("parseAgentArgs accepts the --model= form", () => {
-  assertEquals(parseAgentArgs(["--model=ollama/llama3.2", "go"]), {
-    tools: [],
-    systemPrompt: undefined,
-    model: { provider: "ollama", modelId: "llama3.2" },
-    prompt: "go",
-    help: false,
-  });
+  assertEquals(
+    parseAgentArgs(["--model=ollama/llama3.2", "go"]),
+    parsed({
+      model: { provider: "ollama", modelId: "llama3.2" },
+      prompt: "go",
+    }),
+  );
 });
 
 Deno.test("parseAgentArgs lowercases the provider but keeps the model id's case", () => {
@@ -242,13 +198,10 @@ Deno.test("parseAgentArgs lowercases the provider but keeps the model id's case"
 
 Deno.test("parseAgentArgs splits --model on the first slash only", () => {
   // Ids on OpenAI-compatible routers may contain slashes themselves.
-  assertEquals(parseAgentArgs(["--model", "openai/meta-llama/Llama-3-8b"]), {
-    tools: [],
-    systemPrompt: undefined,
-    model: { provider: "openai", modelId: "meta-llama/Llama-3-8b" },
-    prompt: "",
-    help: false,
-  });
+  assertEquals(
+    parseAgentArgs(["--model", "openai/meta-llama/Llama-3-8b"]),
+    parsed({ model: { provider: "openai", modelId: "meta-llama/Llama-3-8b" } }),
+  );
 });
 
 Deno.test("parseAgentArgs lets the last --model win", () => {
@@ -284,4 +237,73 @@ Deno.test("parseAgentArgs rejects a --model value without a provider/model split
       `Invalid --model value "${value}"`,
     );
   }
+});
+
+Deno.test("parseAgentArgs reads --cli-commands in both forms and accumulates", () => {
+  assertEquals(
+    parseAgentArgs(["--cli-commands", "deno, git", "--cli-commands=npm", "go"]),
+    parsed({ cliCommands: ["deno", "git", "npm"], prompt: "go" }),
+  );
+});
+
+Deno.test("parseAgentArgs rejects --cli-commands without a value", () => {
+  assertThrows(
+    () => parseAgentArgs(["--cli-commands"]),
+    Error,
+    "Missing value for --cli-commands",
+  );
+  assertThrows(
+    () => parseAgentArgs(["--cli-commands", " "]),
+    Error,
+    "Missing value for --cli-commands",
+  );
+  assertThrows(
+    () => parseAgentArgs(["--cli-commands="]),
+    Error,
+    "Missing value for --cli-commands",
+  );
+});
+
+Deno.test("parseAgentArgs reads --host in both forms, last wins", () => {
+  assertEquals(
+    parseAgentArgs(["--host", "http://a:1234", "--host=http://b:5678"]),
+    parsed({ host: "http://b:5678" }),
+  );
+});
+
+Deno.test("parseAgentArgs rejects --host without a value", () => {
+  assertThrows(
+    () => parseAgentArgs(["--host"]),
+    Error,
+    "Missing value for --host",
+  );
+  assertThrows(
+    () => parseAgentArgs(["--host="]),
+    Error,
+    "Missing value for --host",
+  );
+});
+
+Deno.test("parseAgentArgs reads --search-engine in both forms, last wins", () => {
+  assertEquals(
+    parseAgentArgs(["--search-engine", "brave", "find deno"]),
+    parsed({ searchEngine: "brave", prompt: "find deno" }),
+  );
+  assertEquals(
+    parseAgentArgs(["--search-engine=brave", "--search-engine=perplexity"]),
+    parsed({ searchEngine: "perplexity" }),
+  );
+});
+
+Deno.test("parseAgentArgs rejects --search-engine without a value", () => {
+  assertThrows(
+    () => parseAgentArgs(["--search-engine"]),
+    Error,
+    "Missing value for --search-engine",
+  );
+  assertThrows(
+    () => parseAgentArgs(["--search-engine="]),
+    Error,
+    "Missing value for --search-engine",
+  );
 });

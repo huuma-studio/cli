@@ -8,30 +8,42 @@ export interface ModelSelection {
   modelId: string;
 }
 
-/** Splits the agent's argv into the `--tools`/`--tool` selection and the
- * remaining prompt, or signals `--help`/`-h`. Flags must come before the
- * prompt; the first non-flag token (or a `--` terminator) begins the prompt, so
- * a one-shot prompt can contain dashes once it has started. */
-export function parseAgentArgs(
-  args: string[],
-): {
+/** The agent's parsed argv. Behavioral configuration lives in flags, never
+ * env vars, so a tooled agent cannot rewrite it for future runs (ADR 0007,
+ * ADR 0008); only secrets stay in the environment. */
+export interface AgentArgs {
   tools: string[];
+  cliCommands: string[];
   systemPrompt: string | undefined;
   model: ModelSelection | undefined;
+  host: string | undefined;
+  searchEngine: string | undefined;
   prompt: string;
   help: boolean;
-} {
+}
+
+/** Splits the agent's argv into its flags and the remaining prompt, or
+ * signals `--help`/`-h`. Flags must come before the prompt; the first
+ * non-flag token (or a `--` terminator) begins the prompt, so a one-shot
+ * prompt can contain dashes once it has started. */
+export function parseAgentArgs(args: string[]): AgentArgs {
   const tools: string[] = [];
+  const cliCommands: string[] = [];
   let systemPrompt: string | undefined;
   let model: ModelSelection | undefined;
+  let host: string | undefined;
+  let searchEngine: string | undefined;
   let i = 0;
   for (; i < args.length; i++) {
     const arg = args[i];
     if (isHelpFlag(arg)) {
       return {
         tools: [],
+        cliCommands: [],
         systemPrompt: undefined,
         model: undefined,
+        host: undefined,
+        searchEngine: undefined,
         prompt: "",
         help: true,
       };
@@ -50,63 +62,75 @@ export function parseAgentArgs(
       tools.push(...parseList(value));
       continue;
     }
-    if (arg === "--system-prompt") {
-      const value = args[++i];
-      if (!value || value.trim() === "") {
-        throw new Error(
-          'Missing value for --system-prompt. Example: --system-prompt "Be a SQL expert."',
-        );
-      }
-      systemPrompt = value;
-      continue;
-    }
-    if (arg === "--model") {
-      const value = args[++i];
-      if (!value || value.trim() === "") {
-        throw new Error(
-          "Missing value for --model. Example: --model anthropic/claude-haiku-4-5",
-        );
-      }
-      model = parseModelValue(value);
-      continue;
-    }
-    const inlineTools = inlineValue(arg);
+    const inlineTools = toolsInlineValue(arg);
     if (inlineTools !== undefined) {
       tools.push(...parseList(inlineTools));
       continue;
     }
-    const inlineSystem = systemPromptInlineValue(arg);
-    if (inlineSystem !== undefined) {
-      if (inlineSystem.trim() === "") {
-        throw new Error(
-          'Missing value for --system-prompt. Example: --system-prompt "Be a SQL expert."',
-        );
+    // Space and `=` forms of a flag whose value must be non-empty. The space
+    // form consumes the next token verbatim, even when it looks like another
+    // flag (ADR 0006 pins this for --system-prompt; all value flags match).
+    const valueFlag = (name: string, example: string): string | undefined => {
+      if (arg !== name && !arg.startsWith(`${name}=`)) return undefined;
+      const value = arg === name ? args[++i] : arg.slice(name.length + 1);
+      if (!value || value.trim() === "") {
+        throw new Error(`Missing value for ${name}. Example: ${example}`);
       }
-      systemPrompt = inlineSystem;
+      return value;
+    };
+    const systemPromptValue = valueFlag(
+      "--system-prompt",
+      '--system-prompt "Be a SQL expert."',
+    );
+    if (systemPromptValue !== undefined) {
+      systemPrompt = systemPromptValue;
       continue;
     }
-    const inlineModel = modelInlineValue(arg);
-    if (inlineModel !== undefined) {
-      if (inlineModel.trim() === "") {
-        throw new Error(
-          "Missing value for --model. Example: --model anthropic/claude-haiku-4-5",
-        );
-      }
-      model = parseModelValue(inlineModel);
+    const modelValue = valueFlag(
+      "--model",
+      "--model anthropic/claude-haiku-4-5",
+    );
+    if (modelValue !== undefined) {
+      model = parseModelValue(modelValue);
+      continue;
+    }
+    const cliCommandsValue = valueFlag(
+      "--cli-commands",
+      "--cli-commands deno,git",
+    );
+    if (cliCommandsValue !== undefined) {
+      cliCommands.push(...parseList(cliCommandsValue));
+      continue;
+    }
+    const hostValue = valueFlag("--host", "--host http://localhost:11434");
+    if (hostValue !== undefined) {
+      host = hostValue;
+      continue;
+    }
+    const searchEngineValue = valueFlag(
+      "--search-engine",
+      "--search-engine brave",
+    );
+    if (searchEngineValue !== undefined) {
+      searchEngine = searchEngineValue;
       continue;
     }
     if (arg.startsWith("--")) {
       throw new Error(
         `Unknown flag "${arg}". The agent accepts --model <provider/model>, ` +
-          "--tools <list>, and --system-prompt <text>.",
+          "--tools <list>, --system-prompt <text>, --cli-commands <list>, " +
+          "--host <url>, and --search-engine <brave|perplexity>.",
       );
     }
     break;
   }
   return {
     tools,
+    cliCommands,
     systemPrompt,
     model,
+    host,
+    searchEngine,
     prompt: args.slice(i).join(" ").trim(),
     help: false,
   };
@@ -128,24 +152,12 @@ function parseModelValue(value: string): ModelSelection {
   return { provider: provider.toLowerCase(), modelId };
 }
 
-/** Returns the value of a `--tools=`/`--tool=` token, or undefined otherwise. */
-function inlineValue(arg: string): string | undefined {
+/** Returns the value of a `--tools=`/`--tool=` token, or undefined otherwise.
+ * Unlike the value flags, an empty list value is allowed and means "no
+ * tools", so `--tools` does not go through the non-empty check. */
+function toolsInlineValue(arg: string): string | undefined {
   for (const prefix of ["--tools=", "--tool="]) {
     if (arg.startsWith(prefix)) return arg.slice(prefix.length);
   }
-  return undefined;
-}
-
-/** Returns the value of a `--system-prompt=` token, or undefined otherwise. */
-function systemPromptInlineValue(arg: string): string | undefined {
-  const prefix = "--system-prompt=";
-  if (arg.startsWith(prefix)) return arg.slice(prefix.length);
-  return undefined;
-}
-
-/** Returns the value of a `--model=` token, or undefined otherwise. */
-function modelInlineValue(arg: string): string | undefined {
-  const prefix = "--model=";
-  if (arg.startsWith(prefix)) return arg.slice(prefix.length);
   return undefined;
 }

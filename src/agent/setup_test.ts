@@ -26,10 +26,24 @@ Deno.test("resolveApiKey uses HUUMA_AGENT_API_KEY even when provider keys are se
 
 Deno.test("setup rejects an unknown --model provider", async () => {
   await assertRejects(
-    () => setup([], undefined, { provider: "gemini", modelId: "gemini-pro" }),
+    () => setup({ model: { provider: "gemini", modelId: "gemini-pro" } }),
     Error,
     'Unknown provider "gemini"',
   );
+});
+
+Deno.test("setup rejects --host for non-ollama providers", async () => {
+  for (const provider of ["anthropic", "openai"]) {
+    await assertRejects(
+      () =>
+        setup({
+          model: { provider, modelId: "some-model" },
+          host: "http://localhost:11434",
+        }),
+      Error,
+      "--host is only supported for the ollama provider",
+    );
+  }
 });
 
 Deno.test("ollamaApiKey returns HUUMA_AGENT_API_KEY, else undefined", async () => {

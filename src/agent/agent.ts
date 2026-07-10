@@ -9,12 +9,12 @@ export default async (args: string[] = []): Promise<string> => {
   let assistant: Assistant;
   let prompt: string;
   try {
-    // A bad --tools or --model flag is rendered like a turn error, not a
-    // crash.
+    // A bad flag (--tools, --model, --cli-commands, ...) is rendered like a
+    // turn error, not a crash.
     const parsed = parseAgentArgs(args);
     if (parsed.help) return agentHelp();
     prompt = parsed.prompt;
-    assistant = await setup(parsed.tools, parsed.systemPrompt, parsed.model);
+    assistant = await setup(parsed);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`${red("✖")} ${red(message)}\n`);
@@ -39,7 +39,11 @@ OPTIONS
   --model <provider/model>  Provider and model for this run, e.g.
                             anthropic/claude-haiku-4-5 (without the flag the
                             agent asks; providers: anthropic, openai, ollama)
+  --host <url>              Ollama host (default http://localhost:11434);
+                            only valid with the ollama provider
   --tools <list>            Comma-separated tools to enable (default: none)
+  --cli-commands <list>     Allow-list for the cli tool, e.g. deno,git
+  --search-engine <engine>  Engine for the search tool: brave | perplexity
   --system-prompt <text>    Replace the built-in system prompt for this run;
                             output style is then yours to manage
   -h, --help                Show this help
@@ -57,15 +61,14 @@ ${
   Enabled like any tool (--tools explorer); the model decides when to
   delegate. Sub-agents run on the same provider and model as the agent.
 
-ENVIRONMENT
-  HUUMA_AGENT_API_KEY        provider API key (omit for a local Ollama)
-  HUUMA_AGENT_HOST           Ollama host (default http://localhost:11434)
-  HUUMA_AGENT_CLI_COMMANDS   allow-list for the cli tool, e.g. "deno,git"
-  HUUMA_AGENT_SEARCH_ENGINE  brave | perplexity
+ENVIRONMENT (secrets only — everything else is a flag)
+  HUUMA_AGENT_API_KEY                 provider API key (omit for a local Ollama)
+  BRAVE_API_KEY / PERPLEXITY_API_KEY  API key for the chosen search engine
 
 EXAMPLES
   huuma agent "What is the capital of France?"
   huuma agent --model anthropic/claude-haiku-4-5 "Explain git rebase"
   huuma agent --tools read_file,grep "What does src/mod.ts export?"
+  huuma agent --tools files,cli --cli-commands deno,git "Run the tests"
   huuma agent --system-prompt "Be a SQL expert, answer only in SQL." "select all users"`;
 }
