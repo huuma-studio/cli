@@ -1,6 +1,12 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import type { Message } from "@huuma/ai/agent";
-import { type Assistant, chat, modelText, respond } from "./chat.ts";
+import {
+  type Assistant,
+  chat,
+  modelText,
+  respond,
+  showToolCalls,
+} from "./chat.ts";
 import { quiet } from "./testing.ts";
 
 function modelReply(text: string): Message {
@@ -82,6 +88,53 @@ Deno.test("respond threads the prompt and prior history into run", async () => {
   await quiet(() => respond(assistant, "Tell me more", history));
 
   assertEquals(seen, { prompt: "Tell me more", history });
+});
+
+Deno.test("respond passes showToolCalls as the run's onMessage", async () => {
+  let options: Parameters<Assistant["run"]>[2];
+  const assistant: Assistant = {
+    run: (prompt, _history, opts) => {
+      options = opts;
+      return Promise.resolve([
+        { role: "user", contents: prompt },
+        modelReply("done"),
+      ]);
+    },
+  };
+
+  await quiet(() => respond(assistant, "Hi", []));
+
+  assertEquals(options?.onMessage, showToolCalls);
+});
+
+Deno.test("showToolCalls prints one line per requested tool call", () => {
+  const lines: string[] = [];
+  const { log } = console;
+  const writeSync = Deno.stdout.writeSync.bind(Deno.stdout);
+  console.log = (line: unknown) => {
+    lines.push(String(line));
+  };
+  Deno.stdout.writeSync = () => 0;
+  try {
+    showToolCalls({
+      role: "model",
+      contents: [],
+      toolCalls: [
+        { id: "1", name: "grep", props: {} },
+        { id: "2", name: "read_file", props: {} },
+      ],
+    });
+    // Messages without tool calls stay silent.
+    showToolCalls(modelReply("plain answer"));
+    showToolCalls({ role: "user", contents: "Hi" });
+  } finally {
+    console.log = log;
+    Deno.stdout.writeSync = writeSync;
+  }
+
+  assertEquals(lines.length, 2);
+  assertStringIncludes(lines[0], "grep");
+  assertStringIncludes(lines[1], "read_file");
 });
 
 Deno.test("respond keeps the prior history when run fails", async () => {

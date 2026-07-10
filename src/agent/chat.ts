@@ -62,7 +62,9 @@ export async function respond(
 ): Promise<Turn> {
   write(dim("Thinking..."));
   try {
-    const messages = await assistant.run(prompt, history);
+    const messages = await assistant.run(prompt, history, {
+      onMessage: showToolCalls,
+    });
     write(CLEAR_LINE);
     console.log(`${green("Agent:")} ${modelText(messages)}\n`);
     return { messages, ok: true };
@@ -72,6 +74,19 @@ export async function respond(
     console.error(`${red("✖")} ${red(message)}\n`);
     return { messages: history, ok: false };
   }
+}
+
+/** Prints the name of each tool the model calls, live as the run emits the
+ * message, then restores the Thinking... indicator the names interrupted.
+ * Sub-agent tools show up as one call (their name); the calls a sub-agent
+ * makes internally run on a separate inner agent and are not emitted here. */
+export function showToolCalls(message: Message): void {
+  if (message.role !== "model" || !message.toolCalls.length) return;
+  write(CLEAR_LINE);
+  for (const { name } of message.toolCalls) {
+    console.log(dim(`⚙ ${name}`));
+  }
+  write(dim("Thinking..."));
 }
 
 /** Extracts the text of the last model message that contains any. */
