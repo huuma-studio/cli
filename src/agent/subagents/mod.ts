@@ -1,11 +1,6 @@
-import {
-  agent,
-  type AgentOptions,
-  type Message,
-  type OnMessage,
-} from "@huuma/ai/agent";
-import { grep, readFile, subagent } from "@huuma/ai/tools";
-import { CLEAR_LINE, dim, write } from "../terminal.ts";
+import type { AgentOptions, Message, OnMessage } from "@huuma/ai/agent";
+import { CLEAR_LINE, dim, write } from "../../terminal.ts";
+import { explorer } from "./explorer.ts";
 
 /** The provider adapter and model id a preset sub-agent runs on. Presets
  * inherit the parent's resolution (ADR 0005), so setup() passes the same
@@ -17,9 +12,9 @@ export interface SubagentContext<T extends string = string> {
 
 /** The agent's tool list, derived like tools.ts's `AgentTools` so both
  * track @huuma/ai rather than re-declaring the element type. */
-type AgentTools = NonNullable<AgentOptions<string>["tools"]>;
+export type AgentTools = NonNullable<AgentOptions<string>["tools"]>;
 
-type SubagentFactory = <T extends string>(
+export type SubagentFactory = <T extends string>(
   ctx: SubagentContext<T>,
 ) => AgentTools;
 
@@ -32,7 +27,10 @@ export const SUBAGENT_FACTORIES: Record<string, SubagentFactory> = {
 };
 
 /** One-sentence help entries, keyed like {@link SUBAGENT_FACTORIES} so the
- * SUBAGENTS section of --help cannot list a preset that doesn't exist. */
+ * SUBAGENTS section of --help cannot list a preset that doesn't exist.
+ * The strings live here, not in the preset modules — a preset export read
+ * at this module's top level would hit the mod ⇄ preset import cycle
+ * before the preset module has initialized. */
 export const SUBAGENT_SUMMARIES: Record<
   keyof typeof SUBAGENT_FACTORIES,
   string
@@ -40,36 +38,6 @@ export const SUBAGENT_SUMMARIES: Record<
   explorer:
     "delegates a read-only investigation (read_file, grep) to a fresh sub-agent",
 };
-
-/** No parent history crosses the delegation boundary, so the description
- * must make the parent model send self-contained prompts. */
-const EXPLORER_DESCRIPTION =
-  "Delegate a read-only file or codebase investigation to a research " +
-  "sub-agent equipped with read_file and grep. The sub-agent shares no " +
-  "conversation history, so provide a self-contained prompt with all " +
-  "needed context and file paths. Returns concise findings.";
-
-const EXPLORER_SYSTEM_PROMPT =
-  "You are Explorer, a read-only research sub-agent. Investigate the files " +
-  "described in the prompt using your read_file and grep tools, then reply " +
-  "with concise findings in plain text — conclusions and the file paths " +
-  "that support them, not a transcript of what you did.";
-
-function explorer<T extends string>(
-  ctx: SubagentContext<T>,
-): AgentTools[number] {
-  return subagent({
-    name: "explorer",
-    description: EXPLORER_DESCRIPTION,
-    agent: agent({
-      model: ctx.model,
-      modelId: ctx.modelId,
-      systemPrompt: EXPLORER_SYSTEM_PROMPT,
-      tools: [readFile(), grep()],
-      onMessage: announceDelegation("explorer"),
-    }),
-  });
-}
 
 /** An {@link OnMessage} that prints one dim status line per delegation —
  * the run's initial user message — and stays silent for the sub-agent's
