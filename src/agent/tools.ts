@@ -11,20 +11,27 @@ import {
   search,
   writeFile,
 } from "@huuma/ai/tools";
-import { envValue, parseList } from "./env.ts";
 import { SUBAGENT_FACTORIES, type SubagentContext } from "./subagents/mod.ts";
 
 /** The agent's tool list, derived from @huuma/ai so it tracks the library
  * rather than re-declaring the element type by hand. */
 export type AgentTools = NonNullable<AgentOptions<string>["tools"]>;
 
+/** Per-run configuration the configurable tools need, from the agent's flags
+ * (`--cli-commands`, `--search-engine`). Flags, never env vars, so a tooled
+ * agent cannot rewrite the config for future runs (ADR 0008). */
+export interface ToolConfig {
+  cliCommands?: string[];
+  searchEngine?: string;
+}
+
 /** Tool factories keyed by the name used on the `--tools` flag. Each one builds
  * its tools lazily so nothing is constructed unless requested — `cli` and
  * `search` validate their own config and would otherwise throw. `files` is
  * shorthand for the whole file-system set; every other key is the tool name
  * the model sees. */
-const TOOL_FACTORIES: Record<string, () => AgentTools> = {
-  cli: () => [cliTool()],
+const TOOL_FACTORIES: Record<string, (config: ToolConfig) => AgentTools> = {
+  cli: (config) => [cliTool(config.cliCommands ?? [])],
   grep: () => [grep()],
   read_file: () => [readFile()],
   write_file: () => [writeFile()],
@@ -33,7 +40,7 @@ const TOOL_FACTORIES: Record<string, () => AgentTools> = {
   edit_file: () => [editFile()],
   files: () => files(),
   fetch_website: () => [fetchWebsite()],
-  search: () => [searchTool()],
+  search: (config) => [searchTool(config.searchEngine)],
 };
 
 /** Outcome of resolving the `--tools` selection: the tools built eagerly,
@@ -53,18 +60,21 @@ export function allToolNames(): string[] {
 
 /** Builds the tools named on the `--tools` flag (see {@link TOOL_FACTORIES}).
  * An empty list means no tools, keeping the plain chat behavior. Tool-specific
- * configuration still comes from env vars (e.g. $HUUMA_AGENT_CLI_COMMANDS). An
- * unknown name throws, mirroring setup()'s strict handling of an unknown
- * provider. Preset sub-agent names are validated here but built later by
+ * configuration comes from flags via `config` (ADR 0008). An unknown name
+ * throws, mirroring setup()'s strict handling of an unknown provider. Preset
+ * sub-agent names are validated here but built later by
  * {@link resolveSubagents}, once a model exists to run them on. */
-export function resolveTools(names: string[]): ResolvedTools {
+export function resolveTools(
+  names: string[],
+  config: ToolConfig = {},
+): ResolvedTools {
   const tools: AgentTools = [];
   const subagentNames: string[] = [];
   for (const name of names) {
     const key = name.toLowerCase();
     const build = TOOL_FACTORIES[key];
     if (build) {
-      tools.push(...build());
+      tools.push(...build(config));
       continue;
     }
     if (SUBAGENT_FACTORIES[key]) {
@@ -90,29 +100,28 @@ export function resolveSubagents<T extends string>(
   return names.flatMap((name) => SUBAGENT_FACTORIES[name](ctx));
 }
 
-/** The `cli` tool, limited to the allow-list in $HUUMA_AGENT_CLI_COMMANDS.
- * Without it the tool would expose no runnable commands, so we fail with a
- * hint instead of registering a dead tool. */
-function cliTool(): AgentTools[number] {
-  const allowedCommands = parseList(envValue("HUUMA_AGENT_CLI_COMMANDS"));
+/** The `cli` tool, limited to the allow-list from `--cli-commands`. Without
+ * it the tool would expose no runnable commands, so we fail with a hint
+ * instead of registering a dead tool. */
+function cliTool(allowedCommands: string[]): AgentTools[number] {
   if (allowedCommands.length === 0) {
     throw new Error(
-      "The cli tool needs an allow-list. Set HUUMA_AGENT_CLI_COMMANDS to a " +
-        'comma-separated list of commands (e.g. "deno,git").',
+      "The cli tool needs an allow-list. Pass --cli-commands with a " +
+        "comma-separated list of commands (e.g. --cli-commands deno,git).",
     );
   }
   return cli({ allowedCommands });
 }
 
-/** The `search` tool. The engine is required via $HUUMA_AGENT_SEARCH_ENGINE so
- * the choice is explicit; the provider reads its key from $BRAVE_API_KEY or
+/** The `search` tool. The engine is required via `--search-engine` so the
+ * choice is explicit; the provider reads its key from $BRAVE_API_KEY or
  * $PERPLEXITY_API_KEY when the tool runs. */
-function searchTool(): AgentTools[number] {
-  const engine = envValue("HUUMA_AGENT_SEARCH_ENGINE")?.toLowerCase();
+function searchTool(selectedEngine: string | undefined): AgentTools[number] {
+  const engine = selectedEngine?.toLowerCase();
   if (engine !== "brave" && engine !== "perplexity") {
     throw new Error(
-      "The search tool needs an engine. Set HUUMA_AGENT_SEARCH_ENGINE to " +
-        '"brave" or "perplexity".',
+      "The search tool needs an engine. Pass --search-engine brave or " +
+        "--search-engine perplexity.",
     );
   }
   return search({ engine });

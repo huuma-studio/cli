@@ -141,18 +141,20 @@ HUUMA_AGENT_API_KEY=sk-... \
 
 Supported providers are `anthropic`, `openai`, and `ollama`; the model id is
 whatever the provider accepts (`anthropic/claude-haiku-4-5`,
-`openai/gpt-4o-mini`, `ollama/llama3.2`). Only the credentials and host stay
-environment variables:
+`openai/gpt-4o-mini`, `ollama/llama3.2`). For Ollama, `--host` sets the
+endpoint (default `http://localhost:11434`); the flag is rejected for other
+providers, whose endpoints are fixed. Only the credentials stay environment
+variables:
 
 | Variable              | Description                                        |
 | --------------------- | -------------------------------------------------- |
 | `HUUMA_AGENT_API_KEY` | API key for the provider (omit for a local Ollama) |
-| `HUUMA_AGENT_HOST`    | Ollama host (default `http://localhost:11434`)     |
 
-> **Why a flag and not env vars?** With `cli` or file tools enabled the agent
+> **Why flags and not env vars?** With `cli` or file tools enabled the agent
 > can edit the files that set env vars (a shell rc, a `.env`), silently
-> steering which model its future runs talk to. The flag lives in process
-> argv, which the agent cannot mutate. See ADR 0007.
+> steering which model — or whose server — its future runs talk to. Flags
+> live in process argv, which the agent cannot mutate; only secrets stay in
+> the environment. See ADR 0007 and 0008.
 
 ### Tools
 
@@ -198,13 +200,14 @@ empty value is rejected. The flag must come before the prompt, like `--tools`.
 | `fetch_website`    | Fetch a URL and return it as Markdown   |
 | `search`           | Search the web                          |
 
-A few tools need extra configuration, supplied through environment variables
-(the tool stays inert unless you also select it with `--tools`):
+A few tools need extra configuration, supplied through flags (the tool stays
+inert unless you also select it with `--tools`); only the search API keys are
+environment variables:
 
-| Variable                               | Tool     | Description                                                           |
+| Flag / variable                        | Tool     | Description                                                           |
 | -------------------------------------- | -------- | --------------------------------------------------------------------- |
-| `HUUMA_AGENT_CLI_COMMANDS`             | `cli`    | Comma-separated allow-list of commands the agent may run (`deno,git`) |
-| `HUUMA_AGENT_SEARCH_ENGINE`            | `search` | `brave` or `perplexity`                                               |
+| `--cli-commands <list>`                | `cli`    | Comma-separated allow-list of commands the agent may run (`deno,git`) |
+| `--search-engine <engine>`             | `search` | `brave` or `perplexity`                                               |
 | `BRAVE_API_KEY` / `PERPLEXITY_API_KEY` | `search` | API key for the chosen search engine                                  |
 
 ```bash
@@ -212,14 +215,14 @@ A few tools need extra configuration, supplied through environment variables
 huuma agent --tools read_file,grep,fetch_website "Find where Registry is defined"
 
 # A coding agent allowed to run Deno and Git
-HUUMA_AGENT_CLI_COMMANDS=deno,git \
-  huuma agent --tools files,cli "Run the tests and fix any failures"
+huuma agent --tools files,cli --cli-commands deno,git \
+  "Run the tests and fix any failures"
 ```
 
-> **Heads up:** the `cli` tool runs real commands. Keep
-> `HUUMA_AGENT_CLI_COMMANDS` as narrow as possible — anything that can spawn
-> other programs (a shell, `env`, or an interpreter such as `deno`/`node`/
-> `python`) effectively grants arbitrary command execution.
+> **Heads up:** the `cli` tool runs real commands. Keep `--cli-commands` as
+> narrow as possible — anything that can spawn other programs (a shell,
+> `env`, or an interpreter such as `deno`/`node`/`python`) effectively grants
+> arbitrary command execution.
 
 ### Sub-agents
 
