@@ -1,6 +1,6 @@
 {
   "name": "@huuma/cli",
-  "version": "0.0.32",
+  "version": "0.0.33",
   "exports": {
     ".": "./src/mod.ts"
   },
