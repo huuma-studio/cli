@@ -81,7 +81,9 @@ export async function respond(
  * Sub-agent tools show up as one call (their name); the calls a sub-agent
  * makes internally run on a separate inner agent and are not emitted here. */
 export function showToolCalls(message: Message): void {
-  if (message.role !== "model" || !message.toolCalls.length) return;
+  // Optional chaining although the type requires toolCalls: a loosely-typed
+  // adapter can omit it at runtime, and the library guards the same way.
+  if (message.role !== "model" || !message.toolCalls?.length) return;
   write(CLEAR_LINE);
   for (const { name } of message.toolCalls) {
     console.log(dim(`⚙ ${name}`));

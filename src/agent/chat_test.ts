@@ -127,6 +127,10 @@ Deno.test("showToolCalls prints one line per requested tool call", () => {
     // Messages without tool calls stay silent.
     showToolCalls(modelReply("plain answer"));
     showToolCalls({ role: "user", contents: "Hi" });
+    // A model message missing toolCalls entirely (loosely-typed adapter).
+    showToolCalls(
+      { role: "model", contents: [{ text: "hi" }] } as unknown as Message,
+    );
   } finally {
     console.log = log;
     Deno.stdout.writeSync = writeSync;
