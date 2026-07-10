@@ -1,15 +1,15 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import agentCommand from "./agent.ts";
-import { quiet, withEnv } from "./testing.ts";
+import { quiet } from "./testing.ts";
 
 Deno.test("the agent command renders a setup failure instead of crashing", async () => {
   const priorExitCode = Deno.exitCode;
   try {
-    await withEnv({ HUUMA_AGENT_PROVIDER: "gemini" }, async () => {
-      const result = await quiet(() => agentCommand(["hi"]));
-      assertEquals(result, ""); // handled cleanly, not thrown
-      assertEquals(Deno.exitCode, 1);
-    });
+    const result = await quiet(() =>
+      agentCommand(["--model", "gemini/gemini-pro", "hi"])
+    );
+    assertEquals(result, ""); // handled cleanly, not thrown
+    assertEquals(Deno.exitCode, 1);
   } finally {
     Deno.exitCode = priorExitCode;
   }
@@ -29,10 +29,11 @@ Deno.test("the agent command renders an unknown --tools value as an error", asyn
 });
 
 Deno.test("the agent command returns help for --help without starting a chat", async () => {
-  // No HUUMA_AGENT_PROVIDER set: reaching setup() would block on the provider
+  // Reaching setup() without a --model flag would block on the provider
   // prompt, so returning the usage text proves --help short-circuits first.
   const result = await quiet(() => agentCommand(["--help"]));
   assertStringIncludes(result, "huuma agent [OPTIONS] [PROMPT]");
+  assertStringIncludes(result, "--model");
   assertStringIncludes(result, "--tools");
   assertStringIncludes(result, "--system-prompt");
 });

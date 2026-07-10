@@ -2,10 +2,11 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { ollamaApiKey, resolveApiKey, resolveModel, setup } from "./setup.ts";
 import { withEnv } from "./testing.ts";
 
-Deno.test("resolveModel returns HUUMA_AGENT_MODEL without prompting", async () => {
-  await withEnv({ HUUMA_AGENT_MODEL: "claude-opus-4-8" }, async () => {
-    assertEquals(await resolveModel("fallback-model"), "claude-opus-4-8");
-  });
+Deno.test("resolveModel returns the --model selection without prompting", async () => {
+  assertEquals(
+    await resolveModel("claude-opus-4-8", "fallback-model"),
+    "claude-opus-4-8",
+  );
 });
 
 Deno.test("resolveApiKey uses HUUMA_AGENT_API_KEY even when provider keys are set", async () => {
@@ -23,10 +24,12 @@ Deno.test("resolveApiKey uses HUUMA_AGENT_API_KEY even when provider keys are se
   );
 });
 
-Deno.test("setup rejects an unknown HUUMA_AGENT_PROVIDER", async () => {
-  await withEnv({ HUUMA_AGENT_PROVIDER: "gemini" }, async () => {
-    await assertRejects(() => setup(), Error, 'Unknown provider "gemini"');
-  });
+Deno.test("setup rejects an unknown --model provider", async () => {
+  await assertRejects(
+    () => setup([], undefined, { provider: "gemini", modelId: "gemini-pro" }),
+    Error,
+    'Unknown provider "gemini"',
+  );
 });
 
 Deno.test("ollamaApiKey returns HUUMA_AGENT_API_KEY, else undefined", async () => {

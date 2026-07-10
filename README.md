@@ -131,19 +131,28 @@ variables described below.
 ### Providers
 
 On first run the agent asks which model provider to use and prompts for whatever
-it needs (API key, model). Set environment variables to skip the prompts:
-
-| Variable               | Description                                                   |
-| ---------------------- | ------------------------------------------------------------- |
-| `HUUMA_AGENT_PROVIDER` | `anthropic`, `openai`, or `ollama`                            |
-| `HUUMA_AGENT_MODEL`    | Model id (e.g. `claude-haiku-4-5`, `gpt-4o-mini`, `llama3.2`) |
-| `HUUMA_AGENT_API_KEY`  | API key for the provider (omit for a local Ollama)            |
-| `HUUMA_AGENT_HOST`     | Ollama host (default `http://localhost:11434`)                |
+it needs (API key, model). Pass `--model provider/model` to skip the provider
+and model prompts:
 
 ```bash
-HUUMA_AGENT_PROVIDER=anthropic HUUMA_AGENT_API_KEY=sk-... \
-  huuma agent "Summarize what git is in one line"
+HUUMA_AGENT_API_KEY=sk-... \
+  huuma agent --model anthropic/claude-haiku-4-5 "Summarize what git is in one line"
 ```
+
+Supported providers are `anthropic`, `openai`, and `ollama`; the model id is
+whatever the provider accepts (`anthropic/claude-haiku-4-5`,
+`openai/gpt-4o-mini`, `ollama/llama3.2`). Only the credentials and host stay
+environment variables:
+
+| Variable              | Description                                        |
+| --------------------- | -------------------------------------------------- |
+| `HUUMA_AGENT_API_KEY` | API key for the provider (omit for a local Ollama) |
+| `HUUMA_AGENT_HOST`    | Ollama host (default `http://localhost:11434`)     |
+
+> **Why a flag and not env vars?** With `cli` or file tools enabled the agent
+> can edit the files that set env vars (a shell rc, a `.env`), silently
+> steering which model its future runs talk to. The flag lives in process
+> argv, which the agent cannot mutate. See ADR 0007.
 
 ### Tools
 
