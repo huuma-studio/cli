@@ -3,6 +3,7 @@ import { anthropic } from "@huuma/ai/models/anthropic";
 import { ollama } from "@huuma/ai/models/ollama";
 import { openai } from "@huuma/ai/models/openai";
 import { choose, question } from "../input.ts";
+import type { ModelSelection } from "./args.ts";
 import type { Assistant } from "./chat.ts";
 import { envValue } from "./env.ts";
 import type { SubagentContext } from "./subagents/mod.ts";
@@ -15,6 +16,7 @@ const SYSTEM_PROMPT =
 export async function setup(
   toolNames: string[] = [],
   systemPrompt?: string,
+  model?: ModelSelection,
 ): Promise<Assistant> {
   // Resolved first so a bad tool name or config fails before any provider
   // prompt. Preset sub-agents need the resolved model, so only their names
@@ -34,7 +36,11 @@ export async function setup(
       tools: [...tools, ...resolveSubagents(subagentNames, ctx)],
     });
 
-  const provider = envValue("HUUMA_AGENT_PROVIDER")?.toLowerCase() ??
+  // The provider and model come from the --model flag (argv is the one
+  // channel a tooled agent cannot mutate mid-run — same argument as the
+  // system prompt, ADR 0006), otherwise from interactive prompts. There is
+  // deliberately no env var for either (ADR 0007).
+  const provider = model?.provider ??
     await choose(
       [
         { label: "anthropic", description: "Anthropic API" },
@@ -46,14 +52,14 @@ export async function setup(
 
   if (provider === "anthropic") {
     const apiKey = await resolveApiKey("Anthropic");
-    const modelId = await resolveModel("claude-haiku-4-5");
+    const modelId = await resolveModel(model?.modelId, "claude-haiku-4-5");
 
     return build({ model: anthropic({ apiKey }), modelId });
   }
 
   if (provider === "openai") {
     const apiKey = await resolveApiKey("OpenAI");
-    const modelId = await resolveModel("gpt-4o-mini");
+    const modelId = await resolveModel(model?.modelId, "gpt-4o-mini");
 
     return build({ model: openai({ apiKey }), modelId });
   }
@@ -62,21 +68,23 @@ export async function setup(
     const host = envValue("HUUMA_AGENT_HOST") ??
       await question("Ollama host:", { default: "http://localhost:11434" });
     const apiKey = ollamaApiKey();
-    const modelId = await resolveModel("llama3.2");
+    const modelId = await resolveModel(model?.modelId, "llama3.2");
 
     return build({ model: ollama({ host, apiKey }), modelId });
   }
 
   throw new Error(
-    `Unknown provider "${provider}". Set HUUMA_AGENT_PROVIDER to one of: ` +
-      "anthropic, openai, ollama.",
+    `Unknown provider "${provider}". Use --model <provider>/<model> with ` +
+      "one of: anthropic, openai, ollama.",
   );
 }
 
-/** Model id from $HUUMA_AGENT_MODEL, otherwise an interactive prompt. */
-export async function resolveModel(fallback: string): Promise<string> {
-  return envValue("HUUMA_AGENT_MODEL") ??
-    await question("Model:", { default: fallback });
+/** Model id from the --model flag, otherwise an interactive prompt. */
+export async function resolveModel(
+  selected: string | undefined,
+  fallback: string,
+): Promise<string> {
+  return selected ?? await question("Model:", { default: fallback });
 }
 
 /** Required API key from $HUUMA_AGENT_API_KEY, otherwise an interactive prompt.

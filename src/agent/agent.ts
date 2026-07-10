@@ -9,12 +9,12 @@ export default async (args: string[] = []): Promise<string> => {
   let assistant: Assistant;
   let prompt: string;
   try {
-    // A bad --tools flag or HUUMA_AGENT_PROVIDER is rendered like a turn error,
-    // not a crash.
+    // A bad --tools or --model flag is rendered like a turn error, not a
+    // crash.
     const parsed = parseAgentArgs(args);
     if (parsed.help) return agentHelp();
     prompt = parsed.prompt;
-    assistant = await setup(parsed.tools, parsed.systemPrompt);
+    assistant = await setup(parsed.tools, parsed.systemPrompt, parsed.model);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`${red("✖")} ${red(message)}\n`);
@@ -36,10 +36,13 @@ USAGE
   interactive session — type "exit" or "quit" to leave.
 
 OPTIONS
-  --tools <list>         Comma-separated tools to enable (default: none)
-  --system-prompt <text> Replace the built-in system prompt for this run;
-                         output style is then yours to manage
-  -h, --help             Show this help
+  --model <provider/model>  Provider and model for this run, e.g.
+                            anthropic/claude-haiku-4-5 (without the flag the
+                            agent asks; providers: anthropic, openai, ollama)
+  --tools <list>            Comma-separated tools to enable (default: none)
+  --system-prompt <text>    Replace the built-in system prompt for this run;
+                            output style is then yours to manage
+  -h, --help                Show this help
 
 TOOLS
   ${allToolNames().join(", ")}
@@ -55,8 +58,6 @@ ${
   delegate. Sub-agents run on the same provider and model as the agent.
 
 ENVIRONMENT
-  HUUMA_AGENT_PROVIDER       anthropic | openai | ollama
-  HUUMA_AGENT_MODEL          model id (e.g. claude-haiku-4-5, gpt-4o-mini)
   HUUMA_AGENT_API_KEY        provider API key (omit for a local Ollama)
   HUUMA_AGENT_HOST           Ollama host (default http://localhost:11434)
   HUUMA_AGENT_CLI_COMMANDS   allow-list for the cli tool, e.g. "deno,git"
@@ -64,6 +65,7 @@ ENVIRONMENT
 
 EXAMPLES
   huuma agent "What is the capital of France?"
+  huuma agent --model anthropic/claude-haiku-4-5 "Explain git rebase"
   huuma agent --tools read_file,grep "What does src/mod.ts export?"
   huuma agent --system-prompt "Be a SQL expert, answer only in SQL." "select all users"`;
 }
