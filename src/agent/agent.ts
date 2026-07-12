@@ -38,7 +38,8 @@ USAGE
 OPTIONS
   --model <provider/model>  Provider and model for this run, e.g.
                             anthropic/claude-haiku-4-5 (without the flag the
-                            agent asks; providers: anthropic, openai, ollama)
+                            agent asks; providers: anthropic, openai, google,
+                            mistral, ollama)
   --host <url>              Ollama host (default http://localhost:11434);
                             only valid with the ollama provider
   --tools <list>            Comma-separated tools to enable (default: none)

@@ -139,10 +139,11 @@ HUUMA_AGENT_API_KEY=sk-... \
   huuma agent --model anthropic/claude-haiku-4-5 "Summarize what git is in one line"
 ```
 
-Supported providers are `anthropic`, `openai`, and `ollama`; the model id is
-whatever the provider accepts (`anthropic/claude-haiku-4-5`,
-`openai/gpt-4o-mini`, `ollama/llama3.2`). For Ollama, `--host` sets the
-endpoint (default `http://localhost:11434`); the flag is rejected for other
+Supported providers are `anthropic`, `openai`, `google`, `mistral`, and
+`ollama`; the model id is whatever the provider accepts
+(`anthropic/claude-haiku-4-5`, `openai/gpt-4o-mini`, `google/gemini-2.5-flash`,
+`mistral/mistral-small-latest`, `ollama/llama3.2`). For Ollama, `--host` sets
+the endpoint (default `http://localhost:11434`); the flag is rejected for other
 providers, whose endpoints are fixed. Only the credentials stay environment
 variables:
 
@@ -150,11 +151,11 @@ variables:
 | --------------------- | -------------------------------------------------- |
 | `HUUMA_AGENT_API_KEY` | API key for the provider (omit for a local Ollama) |
 
-> **Why flags and not env vars?** With `cli` or file tools enabled the agent
-> can edit the files that set env vars (a shell rc, a `.env`), silently
-> steering which model — or whose server — its future runs talk to. Flags
-> live in process argv, which the agent cannot mutate; only secrets stay in
-> the environment. See ADR 0007 and 0008.
+> **Why flags and not env vars?** With `cli` or file tools enabled the agent can
+> edit the files that set env vars (a shell rc, a `.env`), silently steering
+> which model — or whose server — its future runs talk to. Flags live in process
+> argv, which the agent cannot mutate; only secrets stay in the environment. See
+> ADR 0007 and 0008.
 
 ### Tools
 
@@ -220,21 +221,21 @@ huuma agent --tools files,cli --cli-commands deno,git \
 ```
 
 > **Heads up:** the `cli` tool runs real commands. Keep `--cli-commands` as
-> narrow as possible — anything that can spawn other programs (a shell,
-> `env`, or an interpreter such as `deno`/`node`/`python`) effectively grants
-> arbitrary command execution.
+> narrow as possible — anything that can spawn other programs (a shell, `env`,
+> or an interpreter such as `deno`/`node`/`python`) effectively grants arbitrary
+> command execution.
 
 ### Sub-agents
 
-The `--tools` list also accepts preset sub-agents — self-contained helpers
-the agent can delegate a task to. A sub-agent runs its own loop with its own
-tools on the same provider and model, and only its findings return to the
-conversation. The agent decides when to delegate; each delegation prints a
-dim status line so you can see it happening.
+The `--tools` list also accepts preset sub-agents — self-contained helpers the
+agent can delegate a task to. A sub-agent runs its own loop with its own tools
+on the same provider and model, and only its findings return to the
+conversation. The agent decides when to delegate; each delegation prints a dim
+status line so you can see it happening.
 
-| Sub-agent  | Description                                                    |
-| ---------- | -------------------------------------------------------------- |
-| `explorer` | Read-only investigation with `read_file` and `grep`            |
+| Sub-agent  | Description                                         |
+| ---------- | --------------------------------------------------- |
+| `explorer` | Read-only investigation with `read_file` and `grep` |
 
 ```bash
 huuma agent --tools explorer "How does src/skills/update.ts handle conflicts?"
@@ -262,8 +263,8 @@ https://github.com/<owner>/<repo>/tree/<ref>[/<subpath>]
 ```
 
 - `<owner>`, `<repo>`: non-empty, no `/`.
-- `<ref>`: a single path segment (no `/`). Branch names containing slashes
-  (e.g. `feature/foo`) cannot be represented — pin a tag or a top-level branch
+- `<ref>`: a single path segment (no `/`). Branch names containing slashes (e.g.
+  `feature/foo`) cannot be represented — pin a tag or a top-level branch
   instead.
 - `<subpath>`: zero or more segments; the skill directory is `<subpath>`
   resolved against the repo root, or the repo root when absent.
@@ -285,13 +286,12 @@ Notes:
   you pass `--force`, which also discards any local edits you've made to an
   installed skill.
 
-Run `huuma skills --help` and `huuma skills add --help` for the quick
-reference.
+Run `huuma skills --help` and `huuma skills add --help` for the quick reference.
 
 ### Updating skills
 
-Re-fetch tracked skills from the GitHub ref recorded at install time and
-update the on-disk copy when upstream has moved:
+Re-fetch tracked skills from the GitHub ref recorded at install time and update
+the on-disk copy when upstream has moved:
 
 ```bash
 huuma skills update

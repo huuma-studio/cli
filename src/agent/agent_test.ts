@@ -34,6 +34,8 @@ Deno.test("the agent command returns help for --help without starting a chat", a
   const result = await quiet(() => agentCommand(["--help"]));
   assertStringIncludes(result, "huuma agent [OPTIONS] [PROMPT]");
   assertStringIncludes(result, "--model");
+  assertStringIncludes(result, "google");
+  assertStringIncludes(result, "mistral");
   assertStringIncludes(result, "--host");
   assertStringIncludes(result, "--tools");
   assertStringIncludes(result, "--cli-commands");
