@@ -32,8 +32,22 @@ Deno.test("setup rejects an unknown --model provider", async () => {
   );
 });
 
+Deno.test("setup builds an assistant for the google and mistral providers", async () => {
+  await withEnv({ HUUMA_AGENT_API_KEY: "key" }, async () => {
+    for (
+      const [provider, modelId] of [
+        ["google", "gemini-2.5-flash"],
+        ["mistral", "mistral-small-latest"],
+      ]
+    ) {
+      const assistant = await setup({ model: { provider, modelId } });
+      assertEquals(typeof assistant.run, "function");
+    }
+  });
+});
+
 Deno.test("setup rejects --host for non-ollama providers", async () => {
-  for (const provider of ["anthropic", "openai"]) {
+  for (const provider of ["anthropic", "openai", "google", "mistral"]) {
     await assertRejects(
       () =>
         setup({

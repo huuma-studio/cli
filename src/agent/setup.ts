@@ -2,6 +2,8 @@ import { agent } from "@huuma/ai/agent";
 import { anthropic } from "@huuma/ai/models/anthropic";
 import { ollama } from "@huuma/ai/models/ollama";
 import { openai } from "@huuma/ai/models/openai";
+import { google } from "@huuma/ai/models/google";
+import { mistral } from "@huuma/ai/models/mistral";
 import { choose, question } from "../input.ts";
 import type { ModelSelection } from "./args.ts";
 import type { Assistant } from "./chat.ts";
@@ -57,18 +59,20 @@ export async function setup(options: SetupOptions = {}): Promise<Assistant> {
       [
         { label: "anthropic", description: "Anthropic API" },
         { label: "openai", description: "OpenAI or any OpenAI-compatible API" },
-        { label: "ollama", description: "Local models running via Ollama" },
+        {
+          label: "ollama",
+          description: "Local or cloud models running via Ollama",
+        },
+        { label: "google", description: "Google Gemini API" },
+        { label: "mistral", description: "Mistral API" },
       ],
       "Select a model provider:",
     );
 
-  // Anthropic and OpenAI endpoints are fixed in code; only the ollama branch
+  // Hosted-provider endpoints are fixed in code; only the ollama branch
   // reads --host. A supplied flag elsewhere is a mistake, and failing loud
   // beats silently ignoring it (ADR 0008).
-  if (
-    options.host !== undefined &&
-    (provider === "anthropic" || provider === "openai")
-  ) {
+  if (options.host !== undefined && provider !== "ollama") {
     throw new Error("--host is only supported for the ollama provider.");
   }
 
@@ -90,14 +94,28 @@ export async function setup(options: SetupOptions = {}): Promise<Assistant> {
     const host = options.host ??
       await question("Ollama host:", { default: "http://localhost:11434" });
     const apiKey = ollamaApiKey();
-    const modelId = await resolveModel(model?.modelId, "llama3.2");
+    const modelId = await resolveModel(model?.modelId, "glm-5.2:cloud");
 
     return build({ model: ollama({ host, apiKey }), modelId });
   }
 
+  if (provider === "google") {
+    const apiKey = await resolveApiKey("Google");
+    const modelId = await resolveModel(model?.modelId, "gemini-2.5-flash");
+
+    return build({ model: google({ apiKey }), modelId });
+  }
+
+  if (provider === "mistral") {
+    const apiKey = await resolveApiKey("Mistral");
+    const modelId = await resolveModel(model?.modelId, "mistral-small-latest");
+
+    return build({ model: mistral({ apiKey }), modelId });
+  }
+
   throw new Error(
     `Unknown provider "${provider}". Use --model <provider>/<model> with ` +
-      "one of: anthropic, openai, ollama.",
+      "one of: anthropic, openai, google, mistral, ollama.",
   );
 }
 
