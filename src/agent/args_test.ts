@@ -11,6 +11,7 @@ function parsed(overrides: Partial<AgentArgs> = {}): AgentArgs {
     model: undefined,
     host: undefined,
     searchEngine: undefined,
+    skillsPath: undefined,
     prompt: "",
     help: false,
     ...overrides,
@@ -305,5 +306,42 @@ Deno.test("parseAgentArgs rejects --search-engine without a value", () => {
     () => parseAgentArgs(["--search-engine="]),
     Error,
     "Missing value for --search-engine",
+  );
+});
+
+Deno.test("parseAgentArgs reads --skills-path in both forms, last wins", () => {
+  assertEquals(
+    parseAgentArgs(["--skills-path", "./skills-a", "list them"]),
+    parsed({ skillsPath: "./skills-a", prompt: "list them" }),
+  );
+  assertEquals(
+    parseAgentArgs(["--skills-path=./a", "--skills-path=./b"]),
+    parsed({ skillsPath: "./b" }),
+  );
+});
+
+Deno.test("parseAgentArgs rejects --skills-path without a value", () => {
+  assertThrows(
+    () => parseAgentArgs(["--skills-path"]),
+    Error,
+    "Missing value for --skills-path",
+  );
+  assertThrows(
+    () => parseAgentArgs(["--skills-path="]),
+    Error,
+    "Missing value for --skills-path",
+  );
+  assertThrows(
+    () => parseAgentArgs(["--skills-path", "  "]),
+    Error,
+    "Missing value for --skills-path",
+  );
+});
+
+Deno.test("parseAgentArgs mentions --skills-path in the unknown-flag error", () => {
+  assertThrows(
+    () => parseAgentArgs(["--bogus"]),
+    Error,
+    "--skills-path",
   );
 });

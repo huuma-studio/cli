@@ -9,11 +9,44 @@ import type { ModelSelection } from "./args.ts";
 import type { Assistant } from "./chat.ts";
 import { envValue } from "./env.ts";
 import type { SubagentContext } from "./subagents/mod.ts";
-import { resolveSubagents, resolveTools } from "./tools.ts";
+import { resolveSubagents, resolveTools, skillsTool } from "./tools.ts";
 
 const SYSTEM_PROMPT =
   "You are Huuma Agent, a helpful assistant running in a terminal. " +
   "Answer concisely in plain text without markdown formatting.";
+
+/** Outcome of {@link resolveAgentTools}: the eager action tools, the preset
+ * sub-agent names whose construction is deferred until a model exists, and
+ * the always-on skills baseline (empty when `--tools` already lists `skills`,
+ * so the agent gets one skills factory and one disk scan either way). */
+export interface ResolvedAgentTools {
+  tools: ReturnType<typeof resolveTools>["tools"];
+  subagentNames: string[];
+  skillsBaseline: ReturnType<typeof resolveTools>["tools"];
+}
+
+/** Resolves the `--tools` selection and the always-on skills baseline from a
+ * run's options, ahead of provider/model resolution. Extracted from
+ * {@link setup} so the "skills are on by default" behavior (ADR 0009) is
+ * testable without a provider. Bad tool names or `cli`/`search` config throw
+ * here, keeping the fail-early invariant. */
+export function resolveAgentTools(options: SetupOptions): ResolvedAgentTools {
+  const { cliCommands, searchEngine, skillsPath } = options;
+  const { tools, subagentNames } = resolveTools(options.tools ?? [], {
+    cliCommands,
+    searchEngine,
+    skillsPath,
+  });
+  // Skills are a baseline capability, on for every run. The pair is prepended to
+  // the action tools unless `--tools` already listed `skills` — in which case
+  // `resolveTools` built it with this run's `skillsPath`, so we avoid a second
+  // factory and a second disk scan. The agent's Tools map dedupes by name.
+  const skillsBaseline =
+    options.tools?.some((t) => t.toLowerCase() === "skills")
+      ? []
+      : skillsTool(skillsPath);
+  return { tools, subagentNames, skillsBaseline };
+}
 
 /** The agent's run configuration, a subset of the parsed argv (`AgentArgs`).
  * Everything here arrives via flags — never env vars — so a tooled agent
@@ -25,29 +58,35 @@ export interface SetupOptions {
   cliCommands?: string[];
   host?: string;
   searchEngine?: string;
+  /** Override for the skills directory scanned by the always-on skills
+   * tools; absent means the CLI default `.agents/skills` (ADR 0009). */
+  skillsPath?: string;
 }
 
 export async function setup(options: SetupOptions = {}): Promise<Assistant> {
-  const { model, cliCommands, searchEngine } = options;
-  // Resolved first so a bad tool name or config fails before any provider
-  // prompt. Preset sub-agents need the resolved model, so only their names
-  // are validated here and their construction waits for a provider branch.
-  const { tools, subagentNames } = resolveTools(options.tools ?? [], {
-    cliCommands,
-    searchEngine,
-  });
+  const { model } = options;
+  // Resolve tools and the always-on skills baseline first so a bad tool name or
+  // config fails before any provider prompt. Preset sub-agents need the
+  // resolved model, so only their names are validated here and their
+  // construction waits for a provider branch.
+  const { tools, subagentNames, skillsBaseline } = resolveAgentTools(options);
   // A supplied system prompt replaces the built-in for this run; absent falls
   // back to SYSTEM_PROMPT. See ADR 0006.
   const resolvedSystemPrompt = options.systemPrompt ?? SYSTEM_PROMPT;
 
   // Shared tail of every provider branch: the sub-agent presets run on the
-  // same model the parent agent is built with (ADR 0005).
+  // same model the parent agent is built with (ADR 0005). Skills go first so a
+  // model that lists tools sees discovery before actions.
   const build = <T extends string>(ctx: SubagentContext<T>): Assistant =>
     agent({
       model: ctx.model,
       modelId: ctx.modelId,
       systemPrompt: resolvedSystemPrompt,
-      tools: [...tools, ...resolveSubagents(subagentNames, ctx)],
+      tools: [
+        ...skillsBaseline,
+        ...tools,
+        ...resolveSubagents(subagentNames, ctx),
+      ],
     });
 
   // The provider and model come from the --model flag (argv is the one

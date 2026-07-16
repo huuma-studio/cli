@@ -1,4 +1,5 @@
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { join } from "@std/path";
 import { withEnv } from "./testing.ts";
 import { resolveTools } from "./tools.ts";
 
@@ -23,6 +24,50 @@ Deno.test("resolveTools expands the files group", () => {
     "delete_file",
     "edit_file",
   ]);
+});
+
+Deno.test("resolveTools expands skills into list_skills and retrieve_skill", () => {
+  assertEquals(toolNames(["skills"]), ["list_skills", "retrieve_skill"]);
+});
+
+Deno.test("resolveTools wires --skills-path into the scan directory", async () => {
+  // Build a throwaway skills tree the factory will scan.
+  const root = await Deno.makeTempDir();
+  try {
+    const skillDir = join(root, "mcp-builder");
+    await Deno.mkdir(skillDir);
+    await Deno.writeTextFile(
+      join(skillDir, "SKILL.md"),
+      "---\nname: mcp-builder\ndescription: builds MCP servers\n---\n# mcp-builder\n",
+    );
+
+    const tools = resolveTools(["skills"], { skillsPath: root }).tools;
+    const list = tools.find((t) => t.name === "list_skills")!;
+    const retrieve = tools.find((t) => t.name === "retrieve_skill")!;
+
+    assertEquals(await list.call({}), [{
+      name: "mcp-builder",
+      description: "builds MCP servers",
+    }]);
+    const loaded = (await retrieve.call({ name: "mcp-builder" })) as {
+      instructions: string;
+      name: string;
+    };
+    assertStringIncludes(loaded.instructions, "# mcp-builder");
+    assertEquals(loaded.name, "mcp-builder");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("resolveTools skills are lenient about a missing directory", async () => {
+  // A nonexistent path yields an empty list rather than throwing, so the
+  // always-on baseline costs nothing in a project with no skills (ADR 0009).
+  const tools =
+    resolveTools(["skills"], { skillsPath: "./nope-does-not-exist" })
+      .tools;
+  const list = tools.find((t) => t.name === "list_skills")!;
+  assertEquals(await list.call({}), []);
 });
 
 Deno.test("resolveTools rejects an unknown tool", () => {

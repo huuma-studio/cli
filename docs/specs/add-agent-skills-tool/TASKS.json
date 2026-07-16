@@ -1,0 +1,109 @@
+{
+  "plan": "PLAN.md",
+  "context": "docs/CONTEXT.md",
+  "adr": "docs/adr/0009-agent-skills-default-tool.md",
+  "goal": "Give every `huuma agent` run the Agent-Skills discovery tools (list_skills + retrieve_skill) as a baseline capability, on by default, scanning .agents/skills/ (the CLI-owned default, matching where huuma skills add installs) and overridable via a new --skills-path flag. Skills are orthogonal to the --tools action tools; --tools adds actions on top, it does not gate skill discovery. Implemented against @huuma/ai@^0.0.14, which exports the skills factory and defaults its path to .agents/skills. The CLI still passes that path explicitly, insulating the scan target from any future change to the library default.",
+  "status": "done",
+  "status_legend": {
+    "pending": "not started",
+    "in_progress": "actively being implemented",
+    "blocked": "waiting on a dependency or a user decision",
+    "done": "implemented and verified per the `verify` command"
+  },
+  "tasks": [
+    {
+      "id": "T1",
+      "step": "Step 1",
+      "title": "Bump @huuma/ai to ^0.0.14",
+      "status": "done",
+      "summary": "Change jsr:@huuma/ai@^0.0.12 to jsr:@huuma/ai@^0.0.14 in deno.json, regenerate deno.lock. No agent code changes in this task — it gates everything else. 0.0.14 exports the skills factory and defaults its path to .agents/skills; the CLI still passes that path explicitly (ADR 0009), so the scan target is independent of the library default. Note 0.0.x caret semantics: ^0.0.12 pins 0.0.12 exactly, so the bump must be explicit. Deno 2.9's --minimum-dependency-age gate blocks packages published within ~24h, so the first resolve needs --minimum-dependency-age=0; subsequent runs use the cached/locked version.",
+      "depends_on": [],
+      "parallel_batch": "A",
+      "files": {
+        "edit": ["deno.json", "deno.lock"]
+      },
+      "tests": [],
+      "verify": "deno task check passes and the existing agent tests pass unchanged against 0.0.14; deno eval importing skills from jsr:@huuma/ai/tools prints 'function'."
+    },
+    {
+      "id": "T2",
+      "step": "Step 2",
+      "title": "Register the skills factory and its config in src/agent/tools.ts",
+      "status": "done",
+      "summary": "Import skills from @huuma/ai/tools. Add skillsPath?: string to ToolConfig. Add an exported skillsTool(path) wrapper calling skills({ path: path ?? \".agents/skills\" }) — the CLI owns the default path rather than relying on the library's (which differs across releases). Register skills: (config) => skillsTool(config.skillsPath) in TOOL_FACTORIES. The entry expands to two tools (list_skills, retrieve_skill), like files expands to five, so allToolNames()/help list it automatically.",
+      "depends_on": ["T1"],
+      "parallel_batch": "B",
+      "files": {
+        "edit": ["src/agent/tools.ts"]
+      },
+      "tests": [],
+      "verify": "deno check src/agent/tools.ts passes; resolveTools([\"skills\"]).tools maps to [\"list_skills\", \"retrieve_skill\"]; resolveTools([\"skills\"], { skillsPath: <tmp> }) does not throw. Behavioural coverage is T5."
+    },
+    {
+      "id": "T3",
+      "step": "Step 2",
+      "title": "Parse --skills-path in src/agent/args.ts",
+      "status": "done",
+      "summary": "Add skillsPath: string | undefined to AgentArgs (and to the --help early-return object). Add a valueFlag(\"--skills-path\", \"--skills-path ./.agents/skills\") branch, last-wins like --host/--search-engine (non-empty value enforced). Extend the unknown-flag error message to name --skills-path.",
+      "depends_on": ["T1"],
+      "parallel_batch": "B",
+      "files": {
+        "edit": ["src/agent/args.ts"]
+      },
+      "tests": [],
+      "verify": "deno check src/agent/args.ts passes; parseAgentArgs([\"--skills-path\", \"./x\"]) yields skillsPath \"./x\"; --skills-path=./x works; missing/empty value throws with the example. Behavioural coverage is T5."
+    },
+    {
+      "id": "T4",
+      "step": "Step 3",
+      "title": "Wire skills as a default baseline in setup.ts and update help",
+      "status": "done",
+      "summary": "Add skillsPath?: string to SetupOptions. Extract resolveAgentTools(options) from setup(): it calls resolveTools with { cliCommands, searchEngine, skillsPath } and builds the skills baseline via skillsTool(skillsPath) unless the user's --tools already lists skills (case-insensitive) — one factory, one scan. Returns { tools, subagentNames, skillsBaseline }. setup() calls it and prepends the baseline in build(): [...skillsBaseline, ...tools, ...resolveSubagents(...)]. Update agentHelp(): the --tools line notes skills are on by default; add an OPTIONS entry for --skills-path <dir>; the TOOLS list auto-includes skills via allToolNames() — add a parenthetical that skills expands to list_skills, retrieve_skill and is always enabled.",
+      "depends_on": ["T2", "T3"],
+      "parallel_batch": "C",
+      "files": {
+        "edit": ["src/agent/setup.ts", "src/agent/agent.ts"]
+      },
+      "tests": [],
+      "verify": "deno check passes; resolveAgentTools({}) yields skillsBaseline [list_skills, retrieve_skill]; resolveAgentTools({ tools: [\"skills\"] }) yields an empty skillsBaseline; --skills-path redirects the scan. --help lists --skills-path and states skills are on by default. Behavioural coverage is T5."
+    },
+    {
+      "id": "T5",
+      "step": "Step 4",
+      "title": "Tests for expansion, parsing, default-on, and help",
+      "status": "done",
+      "summary": "tools_test.ts: resolveTools([\"skills\"]) returns [\"list_skills\", \"retrieve_skill\"]; resolveTools([\"skills\"], { skillsPath: <tmp> }) wires the path via a temp skills dir scan; a missing path yields an empty list. args_test.ts: add skillsPath: undefined to the parsed() baseline; --skills-path space/=/last-wins/missing-value cases; the unknown-flag error mentions --skills-path. setup_test.ts: resolveAgentTools({}) includes the skills baseline; alongside --tools grep it remains; skipped when --tools lists skills; --skills-path redirects to a fixture dir. agent_test.ts: --help includes --skills-path and states skills are always enabled.",
+      "depends_on": ["T4"],
+      "parallel_batch": "D",
+      "files": {
+        "edit": [
+          "src/agent/tools_test.ts",
+          "src/agent/args_test.ts",
+          "src/agent/setup_test.ts",
+          "src/agent/agent_test.ts"
+        ]
+      },
+      "tests": [
+        "src/agent/tools_test.ts",
+        "src/agent/args_test.ts",
+        "src/agent/setup_test.ts",
+        "src/agent/agent_test.ts"
+      ],
+      "verify": "deno task test passes."
+    },
+    {
+      "id": "T6",
+      "step": "Step 5",
+      "title": "ADR 0009, README, and CONTEXT glossary",
+      "status": "done",
+      "summary": "Write docs/adr/0009-agent-skills-default-tool.md recording the Model A (always-on baseline) decision, the CLI-owns-the-default-path choice, and the rejected Model B (default selection, explicit replaces). README: replace 'By default the agent only chats' with the skills-tools-are-always-on explanation; add --skills-path to the config table and one example; note --tools adds actions on top. docs/CONTEXT.md: add a Skills tools glossary entry (list_skills / retrieve_skill, default .agents/skills/, --skills-path) and cross-reference it from the Skill entry.",
+      "depends_on": ["T5"],
+      "parallel_batch": "E",
+      "files": {
+        "edit": ["docs/adr/0009-agent-skills-default-tool.md", "README.md", "docs/CONTEXT.md"]
+      },
+      "tests": [],
+      "verify": "deno lint passes; manual smoke: huuma agent \"What skills are installed?\" against a project with a skill in .agents/skills/ shows the model calling list_skills then retrieve_skill; huuma agent --skills-path ./other-skills \"...\" scans the redirected dir."
+    }
+  ]
+}

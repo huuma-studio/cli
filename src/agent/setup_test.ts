@@ -1,6 +1,60 @@
 import { assertEquals, assertRejects } from "@std/assert";
-import { ollamaApiKey, resolveApiKey, resolveModel, setup } from "./setup.ts";
+import { join } from "@std/path";
+import {
+  ollamaApiKey,
+  resolveAgentTools,
+  resolveApiKey,
+  resolveModel,
+  setup,
+} from "./setup.ts";
 import { withEnv } from "./testing.ts";
+
+Deno.test("resolveAgentTools includes the skills baseline by default", () => {
+  // Skills are on for every run (ADR 0009): with no --tools the skills pair is
+  // the only thing on the agent.
+  const { tools, skillsBaseline } = resolveAgentTools({});
+  assertEquals(tools, []);
+  assertEquals(skillsBaseline.map((t) => t.name), [
+    "list_skills",
+    "retrieve_skill",
+  ]);
+});
+
+Deno.test("resolveAgentTools keeps the skills baseline alongside --tools actions", () => {
+  const { tools, skillsBaseline } = resolveAgentTools({ tools: ["grep"] });
+  assertEquals(tools.map((t) => t.name), ["grep"]);
+  assertEquals(skillsBaseline.map((t) => t.name), [
+    "list_skills",
+    "retrieve_skill",
+  ]);
+});
+
+Deno.test("resolveAgentTools skips the skills baseline when --tools already lists skills", () => {
+  // One factory, one scan: listing skills in --tools builds it via resolveTools,
+  // so the baseline stays empty to avoid a second factory / second disk scan.
+  const { tools, skillsBaseline } = resolveAgentTools({ tools: ["skills"] });
+  assertEquals(tools.map((t) => t.name), ["list_skills", "retrieve_skill"]);
+  assertEquals(skillsBaseline, []);
+});
+
+Deno.test("resolveAgentTools threads --skills-path into the scan directory", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    const skillDir = join(root, "mcp-builder");
+    await Deno.mkdir(skillDir);
+    await Deno.writeTextFile(
+      join(skillDir, "SKILL.md"),
+      "---\nname: mcp-builder\ndescription: builds MCP servers\n---\n# mcp-builder\n",
+    );
+    const { skillsBaseline } = resolveAgentTools({ skillsPath: root });
+    const list = skillsBaseline.find((t) => t.name === "list_skills")!;
+    assertEquals(await list.call({}), [
+      { name: "mcp-builder", description: "builds MCP servers" },
+    ]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
 
 Deno.test("resolveModel returns the --model selection without prompting", async () => {
   assertEquals(

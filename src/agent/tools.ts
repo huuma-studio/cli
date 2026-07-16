@@ -9,9 +9,16 @@ import {
   grep,
   readFile,
   search,
+  skills,
   writeFile,
 } from "@huuma/ai/tools";
 import { SUBAGENT_FACTORIES, type SubagentContext } from "./subagents/mod.ts";
+
+/** Default skills directory the agent scans when `--skills-path` is absent.
+ * Matches `huuma skills add` / `huuma skills update`, which install into
+ * `<cwd>/.agents/skills/`. The skills factory resolves this against
+ * `Deno.cwd()` eagerly, so a relative path is sufficient. */
+const DEFAULT_SKILLS_PATH = ".agents/skills";
 
 /** The agent's tool list, derived from @huuma/ai so it tracks the library
  * rather than re-declaring the element type by hand. */
@@ -23,6 +30,11 @@ export type AgentTools = NonNullable<AgentOptions<string>["tools"]>;
 export interface ToolConfig {
   cliCommands?: string[];
   searchEngine?: string;
+  /** Directory the skills tools scan for `SKILL.md` folders. Defaults to
+   * `.agents/skills` (where `huuma skills add` installs) when unset, so the
+   * CLI owns the default rather than relying on the library's own default
+   * — which differs across @huuma/ai releases. See ADR 0009. */
+  skillsPath?: string;
 }
 
 /** Tool factories keyed by the name used on the `--tools` flag. Each one builds
@@ -41,6 +53,7 @@ const TOOL_FACTORIES: Record<string, (config: ToolConfig) => AgentTools> = {
   files: () => files(),
   fetch_website: () => [fetchWebsite()],
   search: (config) => [searchTool(config.searchEngine)],
+  skills: (config) => skillsTool(config.skillsPath),
 };
 
 /** Outcome of resolving the `--tools` selection: the tools built eagerly,
@@ -111,6 +124,20 @@ function cliTool(allowedCommands: string[]): AgentTools[number] {
     );
   }
   return cli({ allowedCommands });
+}
+
+/** The `skills` tool pair (`list_skills` + `retrieve_skill`), scanning the
+ * skills directory. `path` defaults to `.agents/skills` when unset (see
+ * {@link DEFAULT_SKILLS_PATH}); a missing directory is lenient — the factory
+ * yields an empty list, so the always-on baseline costs nothing in a project
+ * with no skills installed (ADR 0009). Exported for {@link setup}'s always-on
+ * baseline construction. */
+export function skillsTool(path: string | undefined): AgentTools {
+  // The CLI owns the default path so the scan targets `.agents/skills/`
+  // (where `huuma skills add` installs) on every @huuma/ai release. The
+  // library resolves the path to an absolute one eagerly via `resolve()`, so
+  // a relative path is fine.
+  return [...skills({ path: path ?? DEFAULT_SKILLS_PATH })];
 }
 
 /** The `search` tool. The engine is required via `--search-engine` so the

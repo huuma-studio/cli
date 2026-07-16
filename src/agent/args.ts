@@ -18,6 +18,9 @@ export interface AgentArgs {
   model: ModelSelection | undefined;
   host: string | undefined;
   searchEngine: string | undefined;
+  /** Directory the always-on skills tools scan. From `--skills-path`; absent
+   * means the CLI default `.agents/skills` applies (ADR 0009). */
+  skillsPath: string | undefined;
   prompt: string;
   help: boolean;
 }
@@ -33,6 +36,7 @@ export function parseAgentArgs(args: string[]): AgentArgs {
   let model: ModelSelection | undefined;
   let host: string | undefined;
   let searchEngine: string | undefined;
+  let skillsPath: string | undefined;
   let i = 0;
   for (; i < args.length; i++) {
     const arg = args[i];
@@ -44,6 +48,7 @@ export function parseAgentArgs(args: string[]): AgentArgs {
         model: undefined,
         host: undefined,
         searchEngine: undefined,
+        skillsPath: undefined,
         prompt: "",
         help: true,
       };
@@ -115,11 +120,20 @@ export function parseAgentArgs(args: string[]): AgentArgs {
       searchEngine = searchEngineValue;
       continue;
     }
+    const skillsPathValue = valueFlag(
+      "--skills-path",
+      "--skills-path ./.agents/skills",
+    );
+    if (skillsPathValue !== undefined) {
+      skillsPath = skillsPathValue;
+      continue;
+    }
     if (arg.startsWith("--")) {
       throw new Error(
         `Unknown flag "${arg}". The agent accepts --model <provider/model>, ` +
           "--tools <list>, --system-prompt <text>, --cli-commands <list>, " +
-          "--host <url>, and --search-engine <brave|perplexity>.",
+          "--host <url>, --search-engine <brave|perplexity>, and " +
+          "--skills-path <dir>.",
       );
     }
     break;
@@ -131,6 +145,7 @@ export function parseAgentArgs(args: string[]): AgentArgs {
     model,
     host,
     searchEngine,
+    skillsPath,
     prompt: args.slice(i).join(" ").trim(),
     help: false,
   };
