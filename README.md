@@ -159,12 +159,19 @@ variables:
 
 ### Tools
 
-By default the agent only chats. Give it tools with the `--tools` flag — a
-comma-separated list. Tools are opt-in per run, so nothing powerful is enabled
-unless you ask for it on the command line.
+The agent's **skills tools are always on**: `list_skills` and `retrieve_skill`
+scan `.agents/skills/` (the directory `huuma skills add` installs into) so the
+model can find and follow installed skills. They are a baseline capability —
+they do not need to be listed in `--tools`, and `--tools` does not gate them. A
+missing skills directory is harmless (the tools report an empty list). Use
+`--skills-path <dir>` to point them elsewhere for a run.
+
+Action tools are opt-in per run via the `--tools` flag (a comma-separated list),
+so nothing powerful is enabled unless you ask for it on the command line.
 
 ```bash
 huuma agent --tools read_file,grep "What does src/mod.ts export?"
+huuma agent --skills-path ./other-skills "What skills are installed there?"
 ```
 
 ### System prompt
@@ -188,27 +195,28 @@ empty value is rejected. The flag must come before the prompt, like `--tools`.
 > inline flag lives in process argv, which the agent cannot mutate. See
 > ADR 0006.
 
-| Tool               | Description                             |
-| ------------------ | --------------------------------------- |
-| `cli`              | Run allow-listed CLI commands           |
-| `grep`             | Search files for a pattern              |
-| `read_file`        | Read a file                             |
-| `write_file`       | Write a file                            |
-| `create_directory` | Create a directory                      |
-| `delete_file`      | Delete a file or directory              |
-| `edit_file`        | Make an in-place edit to a file         |
-| `files`            | Shorthand for the five file tools above |
-| `fetch_website`    | Fetch a URL and return it as Markdown   |
-| `search`           | Search the web                          |
+| Tool               | Description                                                  |
+| ------------------ | ------------------------------------------------------------ |
+| `cli`              | Run allow-listed CLI commands                                |
+| `grep`             | Search files for a pattern                                   |
+| `read_file`        | Read a file                                                  |
+| `write_file`       | Write a file                                                 |
+| `create_directory` | Create a directory                                           |
+| `delete_file`      | Delete a file or directory                                   |
+| `edit_file`        | Make an in-place edit to a file                              |
+| `files`            | Shorthand for the five file tools above                      |
+| `fetch_website`    | Fetch a URL and return it as Markdown                        |
+| `search`           | Search the web                                               |
+| `skills`           | `list_skills` + `retrieve_skill`; always enabled (see Tools) |
 
-A few tools need extra configuration, supplied through flags (the tool stays
-inert unless you also select it with `--tools`); only the search API keys are
-environment variables:
+A few tools need extra configuration, supplied through flags; only the search
+API keys are environment variables:
 
 | Flag / variable                        | Tool     | Description                                                           |
 | -------------------------------------- | -------- | --------------------------------------------------------------------- |
 | `--cli-commands <list>`                | `cli`    | Comma-separated allow-list of commands the agent may run (`deno,git`) |
 | `--search-engine <engine>`             | `search` | `brave` or `perplexity`                                               |
+| `--skills-path <dir>`                  | `skills` | Directory the always-on skills tools scan (default `.agents/skills`)  |
 | `BRAVE_API_KEY` / `PERPLEXITY_API_KEY` | `search` | API key for the chosen search engine                                  |
 
 ```bash

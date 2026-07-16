@@ -1,21 +1,22 @@
 {
   "name": "@huuma/cli",
-  "version": "0.0.34",
+  "version": "0.0.35",
   "exports": {
     ".": "./src/mod.ts"
   },
   "imports": {
-    "@huuma/ai": "jsr:@huuma/ai@^0.0.12",
-    "@huuma/validate": "jsr:@huuma/validate@^0.1.5",
+    "@huuma/ai": "jsr:@huuma/ai@^0.0.14",
+    "@huuma/validate": "jsr:@huuma/validate@^0.2.0",
     "@std/assert": "jsr:@std/assert@^1.0.19",
-    "@std/path": "jsr:@std/path@^1.1.5",
-    "@std/cli": "jsr:@std/cli@^1.0.30",
+    "@std/path": "jsr:@std/path@^1.1.6",
+    "@std/cli": "jsr:@std/cli@^1.0.32",
     "@std/tar": "jsr:@std/tar@^0.1.10",
     "@std/front-matter": "jsr:@std/front-matter@^1.0.9",
-    "@std/yaml": "jsr:@std/yaml@^1.1.1"
+    "@std/yaml": "jsr:@std/yaml@^1.1.2"
   },
   "tasks": {
     "check": "deno check src/**/*.ts",
     "test": "deno test --allow-run --allow-read --allow-env --allow-net --allow-write src/"
-  }
+  },
+  "minimumDependencyAge": "0"
 }

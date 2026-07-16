@@ -40,7 +40,14 @@ Deno.test("the agent command returns help for --help without starting a chat", a
   assertStringIncludes(result, "--tools");
   assertStringIncludes(result, "--cli-commands");
   assertStringIncludes(result, "--search-engine");
+  assertStringIncludes(result, "--skills-path");
   assertStringIncludes(result, "--system-prompt");
+});
+
+Deno.test("the agent help states the skills tools are always enabled", async () => {
+  const result = await quiet(() => agentCommand(["--help"]));
+  assertStringIncludes(result, "skills");
+  assertStringIncludes(result, "always enabled");
 });
 
 Deno.test("the agent help lists the explorer preset", async () => {

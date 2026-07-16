@@ -42,16 +42,21 @@ OPTIONS
                             mistral, ollama)
   --host <url>              Ollama host (default http://localhost:11434);
                             only valid with the ollama provider
-  --tools <list>            Comma-separated tools to enable (default: none)
+  --tools <list>            Comma-separated action tools to enable (default: none;
+                            the skills tools are always on — see below)
   --cli-commands <list>     Allow-list for the cli tool, e.g. deno,git
   --search-engine <engine>  Engine for the search tool: brave | perplexity
+  --skills-path <dir>       Directory the skills tools scan (default:
+                            .agents/skills); skills are always enabled
   --system-prompt <text>    Replace the built-in system prompt for this run;
                             output style is then yours to manage
   -h, --help                Show this help
 
 TOOLS
   ${allToolNames().join(", ")}
-  ("files" is shorthand for every file tool)
+  ("files" is shorthand for every file tool; "skills" expands to
+  list_skills and retrieve_skill and is always enabled — it does not need
+  to be listed here)
 
 SUBAGENTS
 ${
@@ -71,5 +76,6 @@ EXAMPLES
   huuma agent --model anthropic/claude-haiku-4-5 "Explain git rebase"
   huuma agent --tools read_file,grep "What does src/mod.ts export?"
   huuma agent --tools files,cli --cli-commands deno,git "Run the tests"
+  huuma agent --skills-path ./other-skills "What skills are installed there?"
   huuma agent --system-prompt "Be a SQL expert, answer only in SQL." "select all users"`;
 }
