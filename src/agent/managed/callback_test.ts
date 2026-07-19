@@ -580,6 +580,28 @@ Deno.test("sanitizeError does not redact short snake_case identifiers or file pa
   assertEquals(out.includes("./src/agent/managed/callback.ts"), true);
 });
 
+Deno.test("sanitizeError redacts camelCase identifiers of 20+ alphanumeric chars", () => {
+  // The ≥20 alphanumeric-run rule (step 6) is intentionally conservative:
+  // a false positive (redacting a long but non-secret identifier) is
+  // preferable to leaking a credential. This test pins that contract so a
+  // future reviewer cannot accidentally tighten the threshold without
+  // acknowledging the tradeoff. `resolveManagedConfig` is exactly 20 chars;
+  // `decodeFinishTurnOutcome` is 23.
+  const out1 = sanitizeError("called resolveManagedConfig which failed");
+  assertEquals(out1.includes("resolveManagedConfig"), false);
+  assertEquals(out1.includes("[redacted]"), true);
+  const out2 = sanitizeError("decodeFinishTurnOutcome returned undefined");
+  assertEquals(out2.includes("decodeFinishTurnOutcome"), false);
+  assertEquals(out2.includes("[redacted]"), true);
+});
+
+Deno.test("sanitizeError does not redact 19-char camelCase identifiers", () => {
+  // Pins the lower bound: 19 alphanumeric chars survive, 20+ does not.
+  // `resolveManagedConfi` (19 chars, truncated identifier) is left alone.
+  const out = sanitizeError("resolveManagedConfi threw");
+  assertEquals(out.includes("resolveManagedConfi"), true);
+});
+
 Deno.test("sanitizeError truncates to <=1024 UTF-8 bytes", () => {
   const out = sanitizeError(new Error("x".repeat(2000)));
   const bytes = new TextEncoder().encode(out);

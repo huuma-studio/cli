@@ -224,8 +224,8 @@ export class CallbackReporter {
       if (remaining <= 0) {
         throw new CallbackError(
           "budget-exhausted",
-          `callback deadline budget exhausted before attempt ${attempt} of ` +
-            `event ${idempotencyKey}`,
+          `callback deadline budget exhausted for event ${idempotencyKey} ` +
+            `after ${attempt} attempt(s)`,
         );
       }
       const timeoutMs = Math.min(MAX_ATTEMPT_TIMEOUT_MS, remaining);
