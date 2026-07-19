@@ -8,10 +8,14 @@ export interface ModelSelection {
   modelId: string;
 }
 
-/** The agent's parsed argv. Behavioral configuration lives in flags, never
- * env vars, so a tooled agent cannot rewrite it for future runs (ADR 0007,
+/** Local chat mode — the existing default. With a positional prompt the agent
+ * answers once and exits; without one it starts the interactive REPL. The
+ * provider and model come from `--model` or, when absent, from interactive
+ * prompts inside `setup`. Behavioral configuration lives in flags, never env
+ * vars, so a tooled agent cannot rewrite it for future runs (ADR 0007,
  * ADR 0008); only secrets stay in the environment. */
-export interface AgentArgs {
+export interface LocalAgentArgs {
+  mode: "local";
   tools: string[];
   cliCommands: string[];
   systemPrompt: string | undefined;
@@ -22,14 +26,74 @@ export interface AgentArgs {
    * means the CLI default `.agents/skills` applies (ADR 0009). */
   skillsPath: string | undefined;
   prompt: string;
-  help: boolean;
+  help: false;
 }
+
+/** Managed turn mode — selected explicitly by the presence of
+ * `--callback-url`. The triggering user message already exists at the end of
+ * `--history`, so a positional prompt is rejected at parse time and `prompt`
+ * is always `""` here. The full managed-turn flag group and the provider's
+ * non-interactive credential/host requirements are validated atomically by
+ * {@link resolveManagedConfig} before any prompt, stdin read, model call, or
+ * callback is attempted (PLAN, "Command modes" and "Execution flow").
+ *
+ * The managed-only fields below are `string | undefined` at the parse layer:
+ * `--callback-url` selects the mode, the others are required-together but their
+ * presence and shape are enforced by {@link resolveManagedConfig}. */
+export interface ManagedAgentArgs {
+  mode: "managed";
+  // Shared agent options (available in both modes):
+  tools: string[];
+  cliCommands: string[];
+  systemPrompt: string | undefined;
+  model: ModelSelection | undefined;
+  host: string | undefined;
+  searchEngine: string | undefined;
+  skillsPath: string | undefined;
+  /** Always `""` in managed mode — positional prompts are rejected. */
+  prompt: string;
+  help: false;
+  // Managed-turn-only flags (validated atomically by resolveManagedConfig):
+  history: string | undefined;
+  cwd: string | undefined;
+  /** Presence of `--callback-url` is what selects managed turn mode. */
+  callbackUrl: string;
+  runId: string | undefined;
+  turnId: string | undefined;
+  turnDeadline: string | undefined;
+}
+
+/** `--help` / `-h` short-circuits before mode selection. The runner returns
+ * the usage text without parsing flags or selecting a mode. */
+export interface HelpAgentArgs {
+  help: true;
+}
+
+/** The agent's parsed argv. `--help`/`-h` short-circuits before mode selection;
+ * otherwise the `mode` discriminant selects local chat (the existing default,
+ * entered when `--callback-url` is absent) or managed turn mode (entered when
+ * `--callback-url` is present). */
+export type ParsedAgentArgs =
+  | HelpAgentArgs
+  | LocalAgentArgs
+  | ManagedAgentArgs;
 
 /** Splits the agent's argv into its flags and the remaining prompt, or
  * signals `--help`/`-h`. Flags must come before the prompt; the first
  * non-flag token (or a `--` terminator) begins the prompt, so a one-shot
- * prompt can contain dashes once it has started. */
-export function parseAgentArgs(args: string[]): AgentArgs {
+ * prompt can contain dashes once it has started.
+ *
+ * Mode is selected by `--callback-url`: when present, the parse result is a
+ * {@link ManagedAgentArgs} and a positional prompt is rejected (the
+ * triggering user message already exists at the end of `--history`). When
+ * `--callback-url` is absent, supplying any other managed-turn-only flag
+ * (`--history`, `--cwd`, `--run-id`, `--turn-id`, `--turn-deadline`) is a
+ * configuration error rather than a local chat that ignores them. Value
+ * validation of the managed flag group — required-together, UUID shape,
+ * callback URL, RFC3339 deadline, secret, provider credentials — happens
+ * later in `resolveManagedConfig`; this function only parses flag values and
+ * selects the mode. */
+export function parseAgentArgs(args: string[]): ParsedAgentArgs {
   const tools: string[] = [];
   const cliCommands: string[] = [];
   let systemPrompt: string | undefined;
@@ -37,21 +101,17 @@ export function parseAgentArgs(args: string[]): AgentArgs {
   let host: string | undefined;
   let searchEngine: string | undefined;
   let skillsPath: string | undefined;
+  let history: string | undefined;
+  let cwd: string | undefined;
+  let callbackUrl: string | undefined;
+  let runId: string | undefined;
+  let turnId: string | undefined;
+  let turnDeadline: string | undefined;
   let i = 0;
   for (; i < args.length; i++) {
     const arg = args[i];
     if (isHelpFlag(arg)) {
-      return {
-        tools: [],
-        cliCommands: [],
-        systemPrompt: undefined,
-        model: undefined,
-        host: undefined,
-        searchEngine: undefined,
-        skillsPath: undefined,
-        prompt: "",
-        help: true,
-      };
+      return { help: true };
     }
     if (arg === "--") {
       i++;
@@ -128,17 +188,115 @@ export function parseAgentArgs(args: string[]): AgentArgs {
       skillsPath = skillsPathValue;
       continue;
     }
+    // Managed-turn-only flags. Parsed in both forms like every other value
+    // flag. --callback-url selects managed mode; the others are rejected after
+    // the loop if --callback-url is absent (a partial managed turn is a
+    // configuration error, not a local chat with ignored options).
+    const historyValue = valueFlag(
+      "--history",
+      "--history /workspace/history.json",
+    );
+    if (historyValue !== undefined) {
+      history = historyValue;
+      continue;
+    }
+    const cwdValue = valueFlag("--cwd", "--cwd /workspace");
+    if (cwdValue !== undefined) {
+      cwd = cwdValue;
+      continue;
+    }
+    const callbackUrlValue = valueFlag(
+      "--callback-url",
+      "--callback-url https://api.huuma.studio/runs/123/callback",
+    );
+    if (callbackUrlValue !== undefined) {
+      callbackUrl = callbackUrlValue;
+      continue;
+    }
+    const runIdValue = valueFlag(
+      "--run-id",
+      "--run-id 00000000-0000-0000-0000-000000000000",
+    );
+    if (runIdValue !== undefined) {
+      runId = runIdValue;
+      continue;
+    }
+    const turnIdValue = valueFlag(
+      "--turn-id",
+      "--turn-id 00000000-0000-0000-0000-000000000000",
+    );
+    if (turnIdValue !== undefined) {
+      turnId = turnIdValue;
+      continue;
+    }
+    const turnDeadlineValue = valueFlag(
+      "--turn-deadline",
+      "--turn-deadline 2026-07-19T12:00:00Z",
+    );
+    if (turnDeadlineValue !== undefined) {
+      turnDeadline = turnDeadlineValue;
+      continue;
+    }
     if (arg.startsWith("--")) {
       throw new Error(
         `Unknown flag "${arg}". The agent accepts --model <provider/model>, ` +
           "--tools <list>, --system-prompt <text>, --cli-commands <list>, " +
-          "--host <url>, --search-engine <brave|perplexity>, and " +
-          "--skills-path <dir>.",
+          "--host <url>, --search-engine <brave|perplexity>, " +
+          "--skills-path <dir>, and the managed-turn flags --history <path>, " +
+          "--cwd <dir>, --callback-url <url>, --run-id <uuid>, " +
+          "--turn-id <uuid>, and --turn-deadline <RFC3339>.",
       );
     }
     break;
   }
+  const prompt = args.slice(i).join(" ").trim();
+
+  // Mode selection. --callback-url selects managed turn mode; any other
+  // managed-turn-only flag without --callback-url is a configuration error,
+  // not a local chat with ignored options. Report the first such flag in a
+  // fixed canonical order so the failure is deterministic.
+  if (callbackUrl === undefined) {
+    const orphaned = [
+      ["--history", history] as const,
+      ["--cwd", cwd] as const,
+      ["--run-id", runId] as const,
+      ["--turn-id", turnId] as const,
+      ["--turn-deadline", turnDeadline] as const,
+    ].find(([, value]) => value !== undefined);
+    if (orphaned !== undefined) {
+      const [flag] = orphaned;
+      throw new Error(
+        `${flag} is a managed-turn flag and requires --callback-url. Pass ` +
+          "--callback-url to enter managed turn mode, or remove the flag.",
+      );
+    }
+    return {
+      mode: "local",
+      tools,
+      cliCommands,
+      systemPrompt,
+      model,
+      host,
+      searchEngine,
+      skillsPath,
+      prompt,
+      help: false,
+    };
+  }
+
+  // Managed turn mode rejects a positional prompt: the triggering user message
+  // already exists at the end of --history, so a prompt on the command line is
+  // a misuse. Value validation of the flag group happens in
+  // resolveManagedConfig; here we only enforce the mode shape.
+  if (prompt !== "") {
+    throw new Error(
+      "A positional prompt is not allowed in managed turn mode. The " +
+        "triggering user message already exists at the end of --history.",
+    );
+  }
+
   return {
+    mode: "managed",
     tools,
     cliCommands,
     systemPrompt,
@@ -146,8 +304,14 @@ export function parseAgentArgs(args: string[]): AgentArgs {
     host,
     searchEngine,
     skillsPath,
-    prompt: args.slice(i).join(" ").trim(),
+    prompt: "",
     help: false,
+    history,
+    cwd,
+    callbackUrl,
+    runId,
+    turnId,
+    turnDeadline,
   };
 }
 
