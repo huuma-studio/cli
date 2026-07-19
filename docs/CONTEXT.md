@@ -123,3 +123,31 @@ The parent agent calling a preset sub-agent's tool with a self-contained prompt.
 Delegation is model-initiated: the parent model decides when to delegate, guided
 only by the preset's tool name and description. The CLI adds no delegation
 heuristics of its own.
+
+## Managed turn
+
+One non-interactive, resumable `huuma agent` execution managed by Huuma Studio.
+It is selected by `--callback-url`, receives a persisted native conversation
+history, and reports lifecycle, message, and terminal events to Studio's
+callback endpoint. Managed mode never reads stdin or opens a REPL.
+
+_Avoid_: managed chat, background agent run
+
+## Turn
+
+One immutable Agent execution attempt within a Huuma Studio Run. A Turn has its
+own `turn_id` and one terminal outcome. Retrying Agent execution creates a new
+Turn with a new `turn_id`; HTTP retries of an event remain within the same Turn
+and reuse that event's idempotency key.
+
+_Avoid_: session, job, retry turn
+
+## Triggering user message
+
+The final `user` message in a managed turn's persisted native `Message[]`
+history. It is already owned by Studio as turn sequence `0`. The CLI supplies
+its contents as the `agent.run` prompt, supplies the preceding messages as
+history, and suppresses the corresponding first emitted user message from
+callback delivery.
+
+_Avoid_: initial prompt, new user message

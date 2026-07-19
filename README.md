@@ -151,6 +151,51 @@ variables:
 | --------------------- | -------------------------------------------------- |
 | `HUUMA_AGENT_API_KEY` | API key for the provider (omit for a local Ollama) |
 
+### Managed turns (Huuma Studio)
+
+`huuma agent` also supports a **managed turn**: one non-interactive execution of
+a resumable Studio conversation. Adding `--callback-url` selects this mode; it
+does not change the existing local one-shot or interactive chat behavior.
+
+A managed invocation supplies an atomic group of flags. The history is a native
+`@huuma/ai` `Message[]` JSON file which must be non-empty and end in the
+**triggering user message**. The runner reads that file before entering `--cwd`,
+then passes its final message as the Agent prompt and the preceding messages as
+history. Do not pass a positional prompt in this mode.
+
+```bash
+HUUMA_AGENT_CALLBACK_SECRET=replace-with-turn-secret \
+HUUMA_AGENT_API_KEY=replace-with-provider-key \
+  huuma agent \
+    --callback-url https://studio.example/runs/123/callback \
+    --history /workspace/history.json \
+    --cwd /workspace \
+    --run-id 11111111-1111-1111-1111-111111111111 \
+    --turn-id 22222222-2222-2222-2222-222222222222 \
+    --turn-deadline 2026-07-19T12:30:00Z \
+    --model anthropic/claude-haiku-4-5
+```
+
+All of `--history`, `--cwd`, `--run-id`, `--turn-id`, `--turn-deadline`, and
+`--model` are required with `--callback-url`. `HUUMA_AGENT_CALLBACK_SECRET` is
+also required and is accepted only from the environment; never place it in argv
+or a workspace file. Hosted providers require `HUUMA_AGENT_API_KEY`. An Ollama
+managed turn instead requires an explicit `--host` and may omit the provider key
+for an unauthenticated host.
+
+Managed mode never reads stdin or opens a REPL. It sends `turn.running`, ordered
+`message.appended` events, then exactly one terminal `turn.finished` or
+`turn.failed` event to the callback URL. Every callback has a deterministic
+idempotency key; transient network, `408`, `429`, and `5xx` responses are
+retried. Non-terminal retries stop 15 seconds before `--turn-deadline` so a
+terminal failure can be reported; terminal callbacks may retry through the hard
+deadline. The CLI exits `0` only after `turn.finished` is acknowledged.
+
+Errors reported through `turn.failed` are sanitized and truncated; callback
+secrets and raw provider payloads are never sent or printed. Studio owns retries
+of Agent execution: a retry is a new managed turn with a new `--turn-id`, while
+HTTP retries within one turn reuse its idempotency keys.
+
 > **Why flags and not env vars?** With `cli` or file tools enabled the agent can
 > edit the files that set env vars (a shell rc, a `.env`), silently steering
 > which model — or whose server — its future runs talk to. Flags live in process
