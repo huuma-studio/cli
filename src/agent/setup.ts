@@ -8,10 +8,11 @@ import { choose, question } from "../input.ts";
 import type { ModelSelection } from "./args.ts";
 import type { Assistant } from "./chat.ts";
 import { envValue } from "./env.ts";
+import type { ManagedConfig } from "./managed/config.ts";
 import type { SubagentContext } from "./subagents/mod.ts";
 import { resolveSubagents, resolveTools, skillsTool } from "./tools.ts";
 
-const SYSTEM_PROMPT =
+export const SYSTEM_PROMPT =
   "You are Huuma Agent, a helpful assistant running in a terminal. " +
   "Answer concisely in plain text without markdown formatting.";
 
@@ -180,4 +181,177 @@ export async function resolveApiKey(label: string): Promise<string> {
  * $HUUMA_AGENT_API_KEY. Undefined (and never prompted) for a local instance. */
 export function ollamaApiKey(): string | undefined {
   return envValue("HUUMA_AGENT_API_KEY");
+}
+
+/** Inputs to {@link buildManagedAgent}: the eager action tools, preset
+ * sub-agent names (construction is deferred until the provider model exists),
+ * the always-on skills baseline, and the resolved system prompt. Mirrors the
+ * local {@link setup} build tail, but with `finishTurn: true` so the built-in
+ * `finish_turn` control tool is registered (T1 / PLAN, "Execution flow"
+ * step 3). Exported so tests can verify the `finishTurn` invariant with a
+ * fake model, without constructing a real provider adapter. */
+export interface ManagedAgentBuildOptions {
+  tools: ReturnType<typeof resolveTools>["tools"];
+  skillsBaseline: ReturnType<typeof resolveTools>["tools"];
+  subagentNames: string[];
+  systemPrompt: string;
+}
+
+/** Builds the managed-turn Agent from a resolved provider model and the
+ * shared tool/skills/sub-agent composition. Identical to the local
+ * {@link setup} build tail except for `finishTurn: true`: the managed runner
+ * never registers a custom `finish_turn` tool — the built-in one is the only
+ * outcome channel (PLAN, "Non-goals"). */
+export function buildManagedAgent<T extends string>(
+  ctx: SubagentContext<T>,
+  options: ManagedAgentBuildOptions,
+): Assistant {
+  return agent({
+    model: ctx.model,
+    modelId: ctx.modelId,
+    systemPrompt: options.systemPrompt,
+    tools: [
+      ...options.skillsBaseline,
+      ...options.tools,
+      ...resolveSubagents(options.subagentNames, ctx),
+    ],
+    finishTurn: true,
+  });
+}
+
+/** The non-interactive counterpart of {@link setup} for managed turn mode.
+ * Builds an Agent from a fully-validated {@link ManagedConfig} (T2) with no
+ * stdin reads, no `choose`/`question` prompts, and no interactive fallbacks.
+ *
+ * Differences from {@link setup}:
+ * - Enters `config.cwd` via `Deno.chdir` BEFORE `resolveAgentTools`, so the
+ *   always-on skills tools' default `.agents/skills` and any relative
+ *   `--skills-path` resolve inside the workspace (PLAN, "Related upstream
+ *   work").
+ * - Sets `finishTurn: true` on the agent (T1).
+ * - Uses `config.model` directly (always present — `resolveManagedConfig`
+ *   enforced it) and reads `HUUMA_AGENT_API_KEY` via `envValue` for hosted
+ *   providers, re-checking defensively so a missing key fails fast with a
+ *   clean message instead of a cryptic provider-SDK error.
+ * - For ollama, uses `config.host` directly (always present) and treats
+ *   `HUUMA_AGENT_API_KEY` as optional via `ollamaApiKey`.
+ * - Enforces the existing `--host`-only-for-ollama rule and rejects unknown
+ *   providers with the same errors as {@link setup}.
+ *
+ * `config.callbackSecret` is never read here — T3's callback reporter is the
+ * sole consumer. */
+// `async` matches the `setup()` signature and the spec's `Promise<Assistant>`
+// return type; the body is synchronous today but stays async so future awaits
+// (e.g. async tool resolution) can be added without breaking the contract.
+// deno-lint-ignore require-await
+export async function managedSetup(
+  config: ManagedConfig,
+): Promise<Assistant> {
+  // Enter the workspace before tool setup so the default `.agents/skills`
+  // and any relative `--skills-path` resolve inside it (PLAN, "Related
+  // upstream work"). The caller (T5) is responsible for having already read
+  // `--history` via `loadManagedInput` before this chdir.
+  Deno.chdir(config.cwd);
+
+  // Resolve tools and the always-on skills baseline first so a bad tool name
+  // or config fails before any provider credential is read. Same fail-early
+  // invariant as the local `setup`.
+  const { tools, subagentNames, skillsBaseline } = resolveAgentTools(config);
+  const resolvedSystemPrompt = config.systemPrompt ?? SYSTEM_PROMPT;
+
+  const provider = config.model.provider;
+  // Hosted-provider endpoints are fixed in code; only ollama reads --host.
+  // `resolveManagedConfig` already enforced this, but the defensive check
+  // keeps `managedSetup` honest if it is ever called without the resolver.
+  if (config.host !== undefined && provider !== "ollama") {
+    throw new Error("--host is only supported for the ollama provider.");
+  }
+
+  if (provider === "anthropic") {
+    const apiKey = requiredManagedApiKey(provider);
+    return buildManagedAgent(
+      { model: anthropic({ apiKey }), modelId: config.model.modelId },
+      {
+        tools,
+        skillsBaseline,
+        subagentNames,
+        systemPrompt: resolvedSystemPrompt,
+      },
+    );
+  }
+
+  if (provider === "openai") {
+    const apiKey = requiredManagedApiKey(provider);
+    return buildManagedAgent(
+      { model: openai({ apiKey }), modelId: config.model.modelId },
+      {
+        tools,
+        skillsBaseline,
+        subagentNames,
+        systemPrompt: resolvedSystemPrompt,
+      },
+    );
+  }
+
+  if (provider === "ollama") {
+    // `resolveManagedConfig` enforced `--host` for ollama; `config.host` is
+    // always present here. The API key is optional for unauthenticated hosts.
+    const host = config.host!;
+    const apiKey = ollamaApiKey();
+    return buildManagedAgent(
+      { model: ollama({ host, apiKey }), modelId: config.model.modelId },
+      {
+        tools,
+        skillsBaseline,
+        subagentNames,
+        systemPrompt: resolvedSystemPrompt,
+      },
+    );
+  }
+
+  if (provider === "google") {
+    const apiKey = requiredManagedApiKey(provider);
+    return buildManagedAgent(
+      { model: google({ apiKey }), modelId: config.model.modelId },
+      {
+        tools,
+        skillsBaseline,
+        subagentNames,
+        systemPrompt: resolvedSystemPrompt,
+      },
+    );
+  }
+
+  if (provider === "mistral") {
+    const apiKey = requiredManagedApiKey(provider);
+    return buildManagedAgent(
+      { model: mistral({ apiKey }), modelId: config.model.modelId },
+      {
+        tools,
+        skillsBaseline,
+        subagentNames,
+        systemPrompt: resolvedSystemPrompt,
+      },
+    );
+  }
+
+  throw new Error(
+    `Unknown provider "${provider}". Use --model <provider>/<model> with ` +
+      "one of: anthropic, openai, google, mistral, ollama.",
+  );
+}
+
+/** Reads `HUUMA_AGENT_API_KEY` for a hosted provider in managed turn mode and
+ * fails fast with a clean, provider-named error when it is missing.
+ * `resolveManagedConfig` already validated its presence, so this is a
+ * defensive check — fail-fast beats a cryptic undefined-key error from the
+ * provider SDK. */
+function requiredManagedApiKey(provider: string): string {
+  const apiKey = envValue("HUUMA_AGENT_API_KEY");
+  if (!apiKey) {
+    throw new Error(
+      `HUUMA_AGENT_API_KEY is required in managed turn mode for the "${provider}" provider.`,
+    );
+  }
+  return apiKey;
 }
