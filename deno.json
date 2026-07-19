@@ -5,7 +5,7 @@
     ".": "./src/mod.ts"
   },
   "imports": {
-    "@huuma/ai": "jsr:@huuma/ai@^0.0.14",
+    "@huuma/ai": "jsr:@huuma/ai@0.0.15",
     "@huuma/validate": "jsr:@huuma/validate@^0.2.0",
     "@std/assert": "jsr:@std/assert@^1.0.19",
     "@std/path": "jsr:@std/path@^1.1.6",
