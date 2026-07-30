@@ -28,9 +28,13 @@
  *     subsequent message via `reporter.messageAppended` with monotonically
  *     increasing `turn_sequence` from 1, awaiting each acknowledgement
  *     before returning (backpressure).
- *  6. Decode the successful `finish_turn` outcome from the returned
+ *  6. Decode the `finish_turn` outcome from the returned
  *     `Message[]` (walk backwards for the last `tool` message containing a
- *     successful `finish_turn` tool result).
+ *     `finish_turn` tool result). When no `finish_turn` was called at all,
+ *     fall back to an implicit "question" outcome if the last model message
+ *     is text-only (no tool calls). A failed or malformed `finish_turn` call
+ *     is a protocol failure — the implicit-question fallback never applies
+ *     when `finish_turn` was attempted.
  *  7. Deliver `turn.finished` with the decoded outcome. This is the only
  *     path to exit 0.
  *
@@ -221,14 +225,30 @@ export async function runManagedTurn(
     return;
   }
 
-  // 6. Decode the `finish_turn` outcome from the returned messages. Loop
-  //    end without a successful `finish_turn` is a protocol failure (PLAN:
-  //    "the loop ended without finish_turn (a protocol failure — report it
-  //    as a failure; never guess an outcome)").
-  const outcome = decodeFinishTurnOutcome(messages);
+  // 6. Decode the `finish_turn` outcome from the returned messages.
+  //    `decodeFinishTurnOutcome` returns:
+  //      - "question" | "completion" — a successful finish_turn call.
+  //      - "failed" — finish_turn was called but errored or produced a
+  //        malformed output. This is a protocol failure; the implicit-question
+  //        fallback must NOT apply (the model explicitly attempted to end the
+  //        turn, so guessing an outcome would be unsafe).
+  //      - undefined — no finish_turn call at all. Fall back to an implicit
+  //        "question" if the last model message is text-only (no tool calls) —
+  //        the model addressed the user without continuing work.
+  const decoded = decodeFinishTurnOutcome(messages);
+  const outcome =
+    decoded === "question" || decoded === "completion"
+      ? decoded
+      : decoded === undefined && lastModelMessageIsTextOnly(messages)
+        ? "question"
+        : undefined;
   if (outcome === undefined) {
     await attemptTurnFailed(
-      new Error("agent loop ended without a successful finish_turn call"),
+      new Error(
+        decoded === "failed"
+          ? "agent loop ended with a failed or malformed finish_turn call"
+          : "agent loop ended without a successful finish_turn call",
+      ),
     );
     Deno.exitCode = 1;
     return;
@@ -270,16 +290,22 @@ function contentsEqual(
   return JSON.stringify(actual) === JSON.stringify(expected);
 }
 
-/** Decodes the successful `finish_turn` outcome from the returned native
- * `Message[]`. Walks backwards for the last `tool` message containing a
- * successful `finish_turn` tool result (`toolResult.name === "finish_turn"`,
- * `toolResult.result.error === undefined`, `output.outcome ∈
- * {"question", "completion"}`). Returns `undefined` when no such result
- * exists — the caller reports that as a protocol failure. Mirrors
- * `decodeFinishTurnOutcome` in `ai_api_fixture.ts` (T1). */
+/** Decodes the `finish_turn` outcome from the returned native `Message[]`.
+ * Walks backwards for the last `tool` message containing a `finish_turn` tool
+ * result. Returns:
+ *   - `"question"` | `"completion"` when the last `finish_turn` succeeded
+ *     (`result.error === undefined` and `output.outcome` is valid).
+ *   - `"failed"` when `finish_turn` was called but errored or produced a
+ *     malformed output. This is a protocol failure — the caller must NOT apply
+ *     the implicit-question fallback (the model explicitly attempted to end
+ *     the turn).
+ *   - `undefined` when no `finish_turn` call exists at all — the caller may
+ *     then check {@link lastModelMessageIsTextOnly} for an implicit "question"
+ *     fallback.
+ * Mirrors `decodeFinishTurnOutcome` in `ai_api_fixture.ts` (T1). */
 function decodeFinishTurnOutcome(
   messages: Message[],
-): "question" | "completion" | undefined {
+): "question" | "completion" | "failed" | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (message.role !== "tool") continue;
@@ -287,14 +313,39 @@ function decodeFinishTurnOutcome(
       if (!("toolResult" in content)) continue;
       const result = content as ToolResultContent;
       if (result.toolResult.name !== "finish_turn") continue;
-      if (result.toolResult.result.error !== undefined) continue;
+      // Found the last finish_turn result (walking backwards from the end).
+      // A failed or malformed finish_turn is a protocol failure, NOT an
+      // absent call — the implicit-question fallback must not apply.
+      if (result.toolResult.result.error !== undefined) {
+        return "failed";
+      }
       const output = result.toolResult.result.output as
         | { outcome?: "question" | "completion" }
         | undefined;
       if (output?.outcome === "question" || output?.outcome === "completion") {
         return output.outcome;
       }
+      return "failed";
     }
   }
   return undefined;
+}
+
+/** Checks whether the **last message** in the returned `Message[]` is a
+ * text-only model message (no tool calls). The `@huuma/ai` loop ends
+ * naturally when the model emits a response with no tool calls, so the last
+ * message of a no-`finish_turn` run is expected to be that model message.
+ * When `agent.run` ends without an explicit `finish_turn` call, this shape is
+ * treated as an implicit "question" — the model produced a response for the
+ * user without continuing work.
+ *
+ * Only the last message is examined: a run that ends on a non-model message
+ * (e.g. a tool result without `finish_turn`) is NOT treated as an implicit
+ * question, even if an earlier model message was text-only. Such an ending is
+ * abnormal and falls through to the protocol-failure path. Optional chaining
+ * on `toolCalls` guards against a loosely-typed adapter omitting the field at
+ * runtime. */
+function lastModelMessageIsTextOnly(messages: Message[]): boolean {
+  const last = messages.at(-1);
+  return last?.role === "model" && !last.toolCalls?.length;
 }

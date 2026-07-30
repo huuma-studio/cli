@@ -851,14 +851,56 @@ Deno.test("agent.run throws non-callback error → turn.failed with sanitized er
 });
 
 // ---------------------------------------------------------------------------
-// 13. Agent loop succeeds but no finish_turn → protocol failure → turn.failed
+// 13. No finish_turn: text-only model message → implicit "question";
+//     non-model last message → protocol failure → turn.failed
 // ---------------------------------------------------------------------------
 
-Deno.test("agent.run returns no finish_turn → protocol failure → turn.failed, exit 1", async () => {
+Deno.test("agent.run returns text-only model message without finish_turn → implicit question, exit 0", async () => {
   await withExitCode(async () => {
     const cb = makeCallbackDeps();
     const agent = makeFakeAgentFactory({
-      extraEmissions: [modelMessage("no finish_turn call")],
+      extraEmissions: [modelMessage("here is my answer to the user")],
+    });
+    const { config, cleanup } = await makeConfig();
+    try {
+      await runManagedTurn(config, {
+        agentFactory: agent.factory,
+        callbackDeps: cb.deps,
+      });
+      assertEquals(Deno.exitCode, 0);
+      assertEquals(eventKinds(cb.fetchCalls), [
+        "turn.running",
+        "message.appended",
+        "turn.finished",
+      ]);
+      const finished = decodeBody(cb.fetchCalls.at(-1)!.body) as {
+        outcome: string;
+      };
+      assertEquals(finished.outcome, "question");
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+Deno.test("agent.run returns non-model last message without finish_turn → protocol failure → turn.failed, exit 1", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    // A tool message that is NOT finish_turn as the last emission — the
+    // loop ended on a non-model message with no finish_turn, which is still
+    // a protocol failure (no text-only model fallback applies).
+    const toolMessage: Message = {
+      role: "tool",
+      contents: [{
+        toolResult: {
+          id: "other-tool",
+          name: "grep",
+          result: { output: "results" },
+        },
+      }],
+    };
+    const agent = makeFakeAgentFactory({
+      extraEmissions: [toolMessage],
     });
     const { config, cleanup } = await makeConfig();
     try {
@@ -869,6 +911,138 @@ Deno.test("agent.run returns no finish_turn → protocol failure → turn.failed
       assertEquals(Deno.exitCode, 1);
       assertEquals(eventKinds(cb.fetchCalls), [
         "turn.running",
+        "message.appended",
+        "turn.failed",
+      ]);
+      const failed = decodeBody(cb.fetchCalls.at(-1)!.body) as {
+        error: string;
+      };
+      assertNotEquals(failed.error.indexOf("finish_turn"), -1);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+Deno.test("text-only model message followed by non-finish tool message → protocol failure (not implicit question)", async () => {
+  // Regression: the fallback must only apply when the LAST message is a
+  // text-only model message. A run ending on a tool message (without
+  // finish_turn) is abnormal even if an earlier model message was text-only —
+  // walking backwards to find a model message would incorrectly report an
+  // implicit question here.
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    const toolMessage: Message = {
+      role: "tool",
+      contents: [{
+        toolResult: {
+          id: "other-tool",
+          name: "grep",
+          result: { output: "results" },
+        },
+      }],
+    };
+    const agent = makeFakeAgentFactory({
+      extraEmissions: [modelMessage("partial answer"), toolMessage],
+    });
+    const { config, cleanup } = await makeConfig();
+    try {
+      await runManagedTurn(config, {
+        agentFactory: agent.factory,
+        callbackDeps: cb.deps,
+      });
+      assertEquals(Deno.exitCode, 1);
+      assertEquals(eventKinds(cb.fetchCalls), [
+        "turn.running",
+        "message.appended",
+        "message.appended",
+        "turn.failed",
+      ]);
+      const failed = decodeBody(cb.fetchCalls.at(-1)!.body) as {
+        error: string;
+      };
+      assertNotEquals(failed.error.indexOf("finish_turn"), -1);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+Deno.test("failed finish_turn followed by text-only model message → protocol failure (not implicit question)", async () => {
+  // Regression: when finish_turn is called but errors (or produces a
+  // malformed output), decodeFinishTurnOutcome returns "failed" rather than
+  // undefined. The implicit-question fallback must NOT apply — the model
+  // explicitly attempted to end the turn, so guessing "question" from a
+  // later text-only model message would mask the failed call.
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    const failedFinishTurn: Message = {
+      role: "tool",
+      contents: [{
+        toolResult: {
+          id: "finish-turn-1",
+          name: "finish_turn",
+          result: { error: "invalid outcome value" },
+        },
+      }],
+    };
+    const agent = makeFakeAgentFactory({
+      extraEmissions: [failedFinishTurn, modelMessage("here is my answer")],
+    });
+    const { config, cleanup } = await makeConfig();
+    try {
+      await runManagedTurn(config, {
+        agentFactory: agent.factory,
+        callbackDeps: cb.deps,
+      });
+      assertEquals(Deno.exitCode, 1);
+      assertEquals(eventKinds(cb.fetchCalls), [
+        "turn.running",
+        "message.appended",
+        "message.appended",
+        "turn.failed",
+      ]);
+      const failed = decodeBody(cb.fetchCalls.at(-1)!.body) as {
+        error: string;
+      };
+      // The error must mention the failed/malformed finish_turn, not be
+      // swallowed into an implicit question.
+      assertNotEquals(failed.error.indexOf("finish_turn"), -1);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+Deno.test("malformed finish_turn (no error, missing output) → protocol failure, not implicit question", async () => {
+  // finish_turn was called and returned no error, but the output is missing
+  // (no `output.outcome`). This is a malformed call — a protocol failure,
+  // never an implicit question.
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    const malformedFinishTurn: Message = {
+      role: "tool",
+      contents: [{
+        toolResult: {
+          id: "finish-turn-1",
+          name: "finish_turn",
+          result: {},
+        },
+      }],
+    };
+    const agent = makeFakeAgentFactory({
+      extraEmissions: [malformedFinishTurn, modelMessage("my answer")],
+    });
+    const { config, cleanup } = await makeConfig();
+    try {
+      await runManagedTurn(config, {
+        agentFactory: agent.factory,
+        callbackDeps: cb.deps,
+      });
+      assertEquals(Deno.exitCode, 1);
+      assertEquals(eventKinds(cb.fetchCalls), [
+        "turn.running",
+        "message.appended",
         "message.appended",
         "turn.failed",
       ]);
