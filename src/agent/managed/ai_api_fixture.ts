@@ -68,13 +68,15 @@ function callRun(
   return assistant.run(prompt, history, options);
 }
 
-/** Decode the successful `finish_turn` outcome from the returned native
- * messages. `output.outcome` is exactly `"question" | "completion"`; a
- * missing or failed `finish_turn` is a protocol failure the runner reports
- * as `turn.failed`, never a guessed outcome. */
+/** Decode the `finish_turn` outcome from the returned native messages.
+ * Returns `"question" | "completion"` on success, `"failed"` when
+ * `finish_turn` was called but errored or produced a malformed output, or
+ * `undefined` when no `finish_turn` call exists at all. A failed/malformed
+ * call is a protocol failure (reported as `turn.failed`), never a guessed
+ * outcome or an implicit-question fallback. */
 function decodeFinishTurnOutcome(
   messages: Message[],
-): "question" | "completion" | undefined {
+): "question" | "completion" | "failed" | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
     if (message.role !== "tool") continue;
@@ -82,11 +84,15 @@ function decodeFinishTurnOutcome(
       if (!("toolResult" in content)) continue;
       const result = content as ToolResultContent;
       if (result.toolResult.name !== "finish_turn") continue;
-      if (result.toolResult.result.error !== undefined) continue;
+      if (result.toolResult.result.error !== undefined) {
+        return "failed";
+      }
       const output = result.toolResult.result.output as
         | FinishTurnOutput
         | undefined;
-      if (output === undefined) continue;
+      if (output === undefined) {
+        return "failed";
+      }
       return output.outcome;
     }
   }
