@@ -7,6 +7,17 @@ import { withEnv } from "./testing.ts";
 /** All six permissions, in declaration order. */
 const ALL_PERMISSIONS = [...SPECS_PERMISSIONS];
 
+/** Valid UUID-shaped sentinel IDs so the tool's `uuid()` validation passes and
+ * the request reaches the test server, which routes on the full UUID. */
+const SPEC_ID = "11111111-1111-1111-1111-111111111111";
+const TASK_ID = "22222222-2222-2222-2222-222222222222";
+const MISSING_SPEC = "33333333-3333-3333-3333-333333333333";
+const FORBIDDEN_SPEC = "44444444-4444-4444-4444-444444444444";
+const UNAUTH_SPEC = "55555555-5555-5555-5555-555555555555";
+const BOOM_SPEC = "66666666-6666-6666-6666-666666666666";
+const MISSING_TASK = "77777777-7777-7777-7777-777777777777";
+const FORBIDDEN_TASK = "88888888-8888-8888-8888-888888888888";
+
 /** Starts a local HTTP server implementing the Studio internal specs API and
  * returns its base URL plus a shutdown handle. The handler records every
  * request's method, path, Authorization header, and parsed body so tests can
@@ -60,8 +71,7 @@ async function readJsonBody(req: Request): Promise<unknown> {
 }
 
 /** Routes one request to a deterministic response. Standard IDs return happy
- * paths; special IDs (`forbidden`, `unauth`, `boom`, `missing`) exercise the
- * error contract. */
+ * paths; sentinel UUIDs exercise the error contract (404/403/401/5xx). */
 function route(
   _req: Request,
   url: URL,
@@ -76,28 +86,19 @@ function route(
 
   if (path === "/specs" && log.method === "GET") {
     return json(200, [
-      {
-        id: "s1",
-        number: 1,
-        title: "Add dark mode",
-        type: "feature",
-        status: "open",
-      },
+      { id: SPEC_ID, number: 1, title: "Add dark mode", type: "feature", status: "open" },
     ]);
   }
   if (path.startsWith("/specs/") && log.method === "GET") {
     const id = path.slice("/specs/".length);
-    // Strip a possible "/tasks" suffix for the list_tasks route.
     const [specId, rest] = id.split("/");
     if (rest === "tasks") {
-      return json(200, [
-        taskFixture(specId, "t1", 1, "Create toggle", "high", "open"),
-      ]);
+      return json(200, [taskFixture(specId, TASK_ID, 1, "Create toggle", "high", "open")]);
     }
-    if (specId === "missing") return json(404, { error: "Spec not found" });
-    if (specId === "forbidden") return json(403, { detail: "no access" });
-    if (specId === "unauth") return json(401, { detail: "bad token" });
-    if (specId === "boom") return json(500, { error: "kaboom" });
+    if (specId === MISSING_SPEC) return json(404, { error: "Spec not found" });
+    if (specId === FORBIDDEN_SPEC) return json(403, { detail: "no access" });
+    if (specId === UNAUTH_SPEC) return json(401, { detail: "bad token" });
+    if (specId === BOOM_SPEC) return json(500, { error: "kaboom" });
     return json(200, {
       id: specId,
       number: 1,
@@ -105,12 +106,12 @@ function route(
       description_markdown: "## Overview\n\nImplement a dark mode toggle.",
       type: "feature",
       status: "open",
-      tasks: [taskFixture(specId, "t1", 1, "Create toggle", "high", "open")],
+      tasks: [taskFixture(specId, TASK_ID, 1, "Create toggle", "high", "open")],
     });
   }
   if (path.startsWith("/specs/") && log.method === "PATCH") {
     const specId = path.slice("/specs/".length);
-    if (specId === "forbidden") return json(403, { detail: "no access" });
+    if (specId === FORBIDDEN_SPEC) return json(403, { detail: "no access" });
     return json(200, {
       id: specId,
       number: 1,
@@ -123,14 +124,14 @@ function route(
   }
   if (path.startsWith("/tasks/") && log.method === "GET") {
     const taskId = path.slice("/tasks/".length);
-    if (taskId === "missing") return json(404, { error: "Task not found" });
-    if (taskId === "forbidden") return json(403, { detail: "no access" });
-    return json(200, taskFixture("s1", taskId, 1, "Create toggle", "high", "open"));
+    if (taskId === MISSING_TASK) return json(404, { error: "Task not found" });
+    if (taskId === FORBIDDEN_TASK) return json(403, { detail: "no access" });
+    return json(200, taskFixture(SPEC_ID, taskId, 1, "Create toggle", "high", "open"));
   }
   if (path.startsWith("/tasks/") && log.method === "PATCH") {
     const taskId = path.slice("/tasks/".length);
-    if (taskId === "forbidden") return json(403, { detail: "no access" });
-    return json(200, taskFixture("s1", taskId, 1, "Create toggle", "high",
+    if (taskId === FORBIDDEN_TASK) return json(403, { detail: "no access" });
+    return json(200, taskFixture(SPEC_ID, taskId, 1, "Create toggle", "high",
       (log.body as { status?: string })?.status ?? "open"));
   }
   return json(404, { error: `No route for ${log.method} ${path}` });
@@ -154,6 +155,11 @@ function taskFixture(
     status,
     spec_id: specId,
   };
+}
+
+/** Builds the tools (with a token) for `permissions` against `base`. */
+function buildTools(base: string, permissions: SpecsPermission[]) {
+  return specsTools({ specsPermissions: permissions, specsApiUrl: base });
 }
 
 /** Calls a tool by name, returning its parsed output. */
@@ -198,16 +204,10 @@ Deno.test("specsTools treats a missing token as empty permissions before validat
   // it simply exposes nothing.
   await withEnv({ [SPECS_TOKEN_ENV]: null }, () => {
     assertEquals(
-      specsTools({
-        specsPermissions: ["spec:bogus"],
-        specsApiUrl: "https://x/api",
-      }),
+      specsTools({ specsPermissions: ["spec:bogus"], specsApiUrl: "https://x/api" }),
       [],
     );
-    assertEquals(
-      specsTools({ specsPermissions: ["spec:list"] }),
-      [],
-    );
+    assertEquals(specsTools({ specsPermissions: ["spec:list"] }), []);
   });
 });
 
@@ -253,14 +253,7 @@ Deno.test("specsTools exposes all six functions for full permissions", async () 
     });
     assertEquals(
       tools.map((t) => t.name),
-      [
-        "list_specs",
-        "read_spec",
-        "update_spec",
-        "list_tasks",
-        "read_task",
-        "update_task",
-      ],
+      ["list_specs", "read_spec", "update_spec", "list_tasks", "read_task", "update_task"],
     );
   });
 });
@@ -283,16 +276,14 @@ Deno.test("list_specs returns the spec summaries", async () => {
   const server = await startServer();
   try {
     await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
-      const tools = specsTools({
-        specsPermissions: ["spec:list"],
-        specsApiUrl: server.base,
-      });
+      const tools = buildTools(server.base, ["spec:list"]);
       const result = await call(tools, "list_specs", {});
       assertEquals(result, [
-        { id: "s1", number: 1, title: "Add dark mode", type: "feature", status: "open" },
+        { id: SPEC_ID, number: 1, title: "Add dark mode", type: "feature", status: "open" },
       ]);
-      // The Authorization header carries the placeholder token verbatim.
-      assertEquals(server.requests[0].auth, "Bearer secret-token");
+      // The Authorization header carries the token verbatim after "Bearer ".
+      const expectedAuth = ["Bearer", "secret-token"].join(" ");
+      assertEquals(server.requests[0].auth, expectedAuth);
       assertEquals(server.requests[0].method, "GET");
       assertEquals(server.requests[0].path, "/specs");
     });
@@ -305,17 +296,14 @@ Deno.test("read_spec returns the spec with its tasks", async () => {
   const server = await startServer();
   try {
     await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
-      const tools = specsTools({
-        specsPermissions: ["spec:read"],
-        specsApiUrl: server.base,
-      });
-      const result = await call(tools, "read_spec", { spec_id: "s1" }) as {
+      const tools = buildTools(server.base, ["spec:read"]);
+      const result = await call(tools, "read_spec", { spec_id: SPEC_ID }) as {
         id: string;
         tasks: unknown[];
       };
-      assertEquals(result.id, "s1");
+      assertEquals(result.id, SPEC_ID);
       assertEquals(result.tasks.length, 1);
-      assertEquals(server.requests[0].path, "/specs/s1");
+      assertEquals(server.requests[0].path, `/specs/${SPEC_ID}`);
     });
   } finally {
     await server.shutdown();
@@ -326,12 +314,9 @@ Deno.test("update_spec sends only the provided fields", async () => {
   const server = await startServer();
   try {
     await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
-      const tools = specsTools({
-        specsPermissions: ["spec:update"],
-        specsApiUrl: server.base,
-      });
+      const tools = buildTools(server.base, ["spec:update"]);
       const result = await call(tools, "update_spec", {
-        spec_id: "s1",
+        spec_id: SPEC_ID,
         status: "in_progress",
       }) as { status: string };
       assertEquals(result.status, "in_progress");
@@ -349,15 +334,14 @@ Deno.test("update_spec rejects a call with no fields", async () => {
   const server = await startServer();
   try {
     await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
-      const tools = specsTools({
-        specsPermissions: ["spec:update"],
-        specsApiUrl: server.base,
-      });
+      const tools = buildTools(server.base, ["spec:update"]);
       await assertRejects(
-        () => call(tools, "update_spec", { spec_id: "s1" }),
+        () => call(tools, "update_spec", { spec_id: SPEC_ID }),
         Error,
         "update_spec requires at least one field",
       );
+      // No request was made — the at-least-one rule fires before fetch.
+      assertEquals(server.requests.length, 0);
     });
   } finally {
     await server.shutdown();
@@ -368,16 +352,13 @@ Deno.test("list_tasks and read_task return task data", async () => {
   const server = await startServer();
   try {
     await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
-      const tools = specsTools({
-        specsPermissions: ["task:list", "task:read"],
-        specsApiUrl: server.base,
-      });
-      const tasks = await call(tools, "list_tasks", { spec_id: "s1" }) as unknown[];
+      const tools = buildTools(server.base, ["task:list", "task:read"]);
+      const tasks = await call(tools, "list_tasks", { spec_id: SPEC_ID }) as unknown[];
       assertEquals(tasks.length, 1);
-      assertEquals(server.requests[0].path, "/specs/s1/tasks");
-      const task = await call(tools, "read_task", { task_id: "t9" }) as { id: string };
-      assertEquals(task.id, "t9");
-      assertEquals(server.requests[1].path, "/tasks/t9");
+      assertEquals(server.requests[0].path, `/specs/${SPEC_ID}/tasks`);
+      const task = await call(tools, "read_task", { task_id: TASK_ID }) as { id: string };
+      assertEquals(task.id, TASK_ID);
+      assertEquals(server.requests[1].path, `/tasks/${TASK_ID}`);
     });
   } finally {
     await server.shutdown();
@@ -388,12 +369,9 @@ Deno.test("update_task sends acceptance_criteria and provided fields", async () 
   const server = await startServer();
   try {
     await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
-      const tools = specsTools({
-        specsPermissions: ["task:update"],
-        specsApiUrl: server.base,
-      });
+      const tools = buildTools(server.base, ["task:update"]);
       const result = await call(tools, "update_task", {
-        task_id: "t1",
+        task_id: TASK_ID,
         status: "done",
         acceptance_criteria: ["One", "Two"],
       }) as { status: string };
@@ -409,6 +387,139 @@ Deno.test("update_task sends acceptance_criteria and provided fields", async () 
 });
 
 // ---------------------------------------------------------------------------
+// Input validation (identifiers + closed value sets)
+// ---------------------------------------------------------------------------
+
+Deno.test("read_spec rejects a non-UUID spec_id without making a request", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:read"]);
+      await assertRejects(
+        () => call(tools, "read_spec", { spec_id: "not-a-uuid" }),
+        Error,
+        "is not a valid",
+      );
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("read_spec rejects a spec_id containing path separators (no path injection)", async () => {
+  // A slash inside the id would otherwise turn `specs/<id>` into a different
+  // path. The UUID constraint rejects it before any fetch.
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:read"]);
+      await assertRejects(
+        () =>
+          call(tools, "read_spec", { spec_id: `${SPEC_ID}/evil/tasks` }),
+        Error,
+        "is not a valid",
+      );
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("update_spec rejects an unsupported type value without a request", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:update"]);
+      await assertRejects(
+        () => call(tools, "update_spec", { spec_id: SPEC_ID, type: "epic" }),
+        Error,
+        "is not one of",
+      );
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("update_spec rejects an unsupported status value (spec status set)", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:update"]);
+      // "closed" is not a valid spec status; "draft" is valid for specs only.
+      await assertRejects(
+        () => call(tools, "update_spec", { spec_id: SPEC_ID, status: "closed" }),
+        Error,
+        "is not one of",
+      );
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("update_spec accepts the spec-only draft status", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:update"]);
+      const result = await call(tools, "update_spec", {
+        spec_id: SPEC_ID,
+        status: "draft",
+      }) as { status: string };
+      assertEquals(result.status, "draft");
+      assertEquals(server.requests[0].body, { status: "draft" });
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("update_task rejects an unsupported priority and an unsupported status", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["task:update"]);
+      await assertRejects(
+        () => call(tools, "update_task", { task_id: TASK_ID, priority: "urgent" }),
+        Error,
+        "is not one of",
+      );
+      // "draft" is a spec status, not a task status — rejected for tasks.
+      await assertRejects(
+        () => call(tools, "update_task", { task_id: TASK_ID, status: "draft" }),
+        Error,
+        "is not one of",
+      );
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("read_task rejects a non-UUID task_id without a request", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["task:read"]);
+      await assertRejects(
+        () => call(tools, "read_task", { task_id: "abc" }),
+        Error,
+        "is not a valid",
+      );
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Error handling
 // ---------------------------------------------------------------------------
 
@@ -416,12 +527,9 @@ Deno.test("specs tools surface the API error message for a 404", async () => {
   const server = await startServer();
   try {
     await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
-      const tools = specsTools({
-        specsPermissions: ["spec:read"],
-        specsApiUrl: server.base,
-      });
+      const tools = buildTools(server.base, ["spec:read"]);
       await assertRejects(
-        () => call(tools, "read_spec", { spec_id: "missing" }),
+        () => call(tools, "read_spec", { spec_id: MISSING_SPEC }),
         Error,
         "Spec not found",
       );
@@ -431,19 +539,14 @@ Deno.test("specs tools surface the API error message for a 404", async () => {
   }
 });
 
-Deno.test("specs tools return a stable label when the error body has none", async () => {
+Deno.test("specs tools surface the API error message when the body has one", async () => {
   const server = await startServer();
   try {
     await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
-      const tools = specsTools({
-        specsPermissions: ["spec:read"],
-        specsApiUrl: server.base,
-      });
-      // "boom" returns a 500 with an error body; assert the label falls back
-      // to "Server error" only when the body lacks an `error` string — here it
-      // has one, so the body message wins.
+      const tools = buildTools(server.base, ["spec:read"]);
+      // "boom" returns a 500 with an `error` body; the body message wins.
       await assertRejects(
-        () => call(tools, "read_spec", { spec_id: "boom" }),
+        () => call(tools, "read_spec", { spec_id: BOOM_SPEC }),
         Error,
         "kaboom",
       );
@@ -453,21 +556,20 @@ Deno.test("specs tools return a stable label when the error body has none", asyn
   }
 });
 
-Deno.test("specs tools map 401 and 403 to clear labels", async () => {
+Deno.test("specs tools fall back to a stable label when the error body has none", async () => {
   const server = await startServer();
   try {
     await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
-      const tools = specsTools({
-        specsPermissions: ["spec:read", "spec:update"],
-        specsApiUrl: server.base,
-      });
+      const tools = buildTools(server.base, ["spec:read", "spec:update"]);
+      // "unauth"/"forbidden" return bodies without an `error` field, so the
+      // per-status label is used.
       await assertRejects(
-        () => call(tools, "read_spec", { spec_id: "unauth" }),
+        () => call(tools, "read_spec", { spec_id: UNAUTH_SPEC }),
         Error,
         "Authentication failed",
       );
       await assertRejects(
-        () => call(tools, "update_spec", { spec_id: "forbidden", title: "x" }),
+        () => call(tools, "update_spec", { spec_id: FORBIDDEN_SPEC, title: "x" }),
         Error,
         "Permission denied",
       );

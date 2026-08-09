@@ -1,5 +1,5 @@
 import { type Tool, tool } from "@huuma/ai/tools";
-import { array, object, string } from "@huuma/validate";
+import { array, enums, object, string, uuid } from "@huuma/validate";
 import { envValue } from "./env.ts";
 import type { AgentTools } from "./tools.ts";
 
@@ -29,6 +29,15 @@ export const SPECS_PERMISSIONS: readonly SpecsPermission[] = [
 ];
 
 const SPECS_PERMISSION_SET = new Set<string>(SPECS_PERMISSIONS);
+
+/** The closed value sets the contract defines for the update fields
+ * (RUNNER-CONTRACT §5). Validating them locally rejects unsupported values
+ * before they reach the API. Note spec and task `status` differ: a spec may
+ * be `draft`, a task may not. */
+export const SPEC_TYPES = ["feature", "bug", "story"] as const;
+export const SPEC_STATUSES = ["draft", "open", "in_progress", "done"] as const;
+export const TASK_PRIORITIES = ["low", "medium", "high"] as const;
+export const TASK_STATUSES = ["open", "in_progress", "done"] as const;
 
 /** Sandbox env var the Studio declares as a host-scoped secret. Its value is
  * an opaque placeholder the sandbox egress layer substitutes with the real
@@ -230,38 +239,43 @@ function emptyObject() {
   return object({});
 }
 
-/** `{ spec_id: string }` — shared by `read_spec`, `update_spec`, `list_tasks`. */
+/** `{ spec_id: uuid }` — shared by `read_spec`, `update_spec`, `list_tasks`.
+ * The UUID constraint rejects malformed identifiers before they reach the API
+ * and, critically, blocks path separators (`/`) that would otherwise alter
+ * the declared request path (e.g. `specs/<id>/tasks`). */
 function specIdInput() {
-  return object({ spec_id: string() });
+  return object({ spec_id: uuid() });
 }
 
-/** `{ task_id: string }` — shared by `read_task`, `update_task`. */
+/** `{ task_id: uuid }` — shared by `read_task`, `update_task`. */
 function taskIdInput() {
-  return object({ task_id: string() });
+  return object({ task_id: uuid() });
 }
 
 /** `update_spec` parameters: all optional, at least one required. The
  * "at-least-one" rule is enforced in the function body, not the schema
- * (the validator cannot express cross-field requirements). */
+ * (the validator cannot express cross-field requirements). `type` and
+ * `status` are constrained to the contract's closed value sets. */
 function updateSpecInput() {
   return object({
-    spec_id: string(),
+    spec_id: uuid(),
     title: string().optional(),
     description_markdown: string().optional(),
-    type: string().optional(),
-    status: string().optional(),
+    type: enums([...SPEC_TYPES]).optional(),
+    status: enums([...SPEC_STATUSES]).optional(),
   });
 }
 
-/** `update_task` parameters: all optional, at least one required. */
+/** `update_task` parameters: all optional, at least one required. `priority`
+ * and `status` are constrained to the contract's closed value sets. */
 function updateTaskInput() {
   return object({
-    task_id: string(),
+    task_id: uuid(),
     title: string().optional(),
     description_markdown: string().optional(),
     acceptance_criteria: array(string()).optional(),
-    priority: string().optional(),
-    status: string().optional(),
+    priority: enums([...TASK_PRIORITIES]).optional(),
+    status: enums([...TASK_STATUSES]).optional(),
   });
 }
 
