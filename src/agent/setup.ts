@@ -32,11 +32,13 @@ export interface ResolvedAgentTools {
  * testable without a provider. Bad tool names or `cli`/`search` config throw
  * here, keeping the fail-early invariant. */
 export function resolveAgentTools(options: SetupOptions): ResolvedAgentTools {
-  const { cliCommands, searchEngine, skillsPath } = options;
+  const { cliCommands, searchEngine, skillsPath, specsPermissions, specsApiUrl } = options;
   const { tools, subagentNames } = resolveTools(options.tools ?? [], {
     cliCommands,
     searchEngine,
     skillsPath,
+    specsPermissions,
+    specsApiUrl,
   });
   // Skills are a baseline capability, on for every run. The pair is prepended to
   // the action tools unless `--tools` already listed `skills` — in which case
@@ -62,6 +64,10 @@ export interface SetupOptions {
   /** Override for the skills directory scanned by the always-on skills
    * tools; absent means the CLI default `.agents/skills` (ADR 0009). */
   skillsPath?: string;
+  /** Granted `specs` tool permissions from `--specs-permissions`. */
+  specsPermissions?: string[];
+  /** Studio internal API base URL from `--specs-api-url`. */
+  specsApiUrl?: string;
 }
 
 export async function setup(options: SetupOptions = {}): Promise<Assistant> {

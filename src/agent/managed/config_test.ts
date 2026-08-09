@@ -24,6 +24,8 @@ function validArgs(
     host: undefined,
     searchEngine: undefined,
     skillsPath: undefined,
+    specsPermissions: [],
+    specsApiUrl: undefined,
     prompt: "",
     help: false,
     history: "/workspace/history.json",
@@ -87,6 +89,27 @@ Deno.test("resolveManagedConfig threads shared agent options through", async () 
     assertEquals(config.systemPrompt, "Be a SQL expert.");
     assertEquals(config.searchEngine, "brave");
     assertEquals(config.skillsPath, "./skills");
+  });
+});
+
+Deno.test("resolveManagedConfig threads --specs-permissions and --specs-api-url through", async () => {
+  await withEnv(REQUIRED_ENV, () => {
+    const config = resolveManagedConfig(
+      validArgs({
+        specsPermissions: ["spec:list", "spec:read"],
+        specsApiUrl: "https://studio.huuma.app/api/internal",
+      }),
+    );
+    assertEquals(config.specsPermissions, ["spec:list", "spec:read"]);
+    assertEquals(config.specsApiUrl, "https://studio.huuma.app/api/internal");
+  });
+});
+
+Deno.test("resolveManagedConfig defaults the specs fields to empty/undefined", async () => {
+  await withEnv(REQUIRED_ENV, () => {
+    const config = resolveManagedConfig(validArgs());
+    assertEquals(config.specsPermissions, []);
+    assertEquals(config.specsApiUrl, undefined);
   });
 });
 

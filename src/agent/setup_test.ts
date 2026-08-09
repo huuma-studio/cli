@@ -206,6 +206,8 @@ function managedConfig(
     systemPrompt: overrides.systemPrompt,
     searchEngine: overrides.searchEngine,
     skillsPath: overrides.skillsPath,
+    specsPermissions: [],
+    specsApiUrl: undefined,
     callbackSecret: "secret",
   };
 }

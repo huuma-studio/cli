@@ -252,6 +252,7 @@ empty value is rejected. The flag must come before the prompt, like `--tools`.
 | `files`            | Shorthand for the five file tools above                      |
 | `fetch_website`    | Fetch a URL and return it as Markdown                        |
 | `search`           | Search the web                                               |
+| `specs`            | Live read/write access to a Project's Specs and Tasks        |
 | `skills`           | `list_skills` + `retrieve_skill`; always enabled (see Tools) |
 
 A few tools need extra configuration, supplied through flags; only the search
@@ -262,6 +263,9 @@ API keys are environment variables:
 | `--cli-commands <list>`                | `cli`    | Comma-separated allow-list of commands the agent may run (`deno,git`) |
 | `--search-engine <engine>`             | `search` | `brave` or `perplexity`                                               |
 | `--skills-path <dir>`                  | `skills` | Directory the always-on skills tools scan (default `.agents/skills`)  |
+| `--specs-permissions <list>`           | `specs`  | Comma-separated `entity:operation` permissions to expose             |
+| `--specs-api-url <url>`               | `specs`  | Studio internal API base URL the specs tool calls                     |
+| `HUUMA_SPECS_API_TOKEN`                | `specs`  | Host-scoped token placed in the `Authorization` header                |
 | `BRAVE_API_KEY` / `PERPLEXITY_API_KEY` | `search` | API key for the chosen search engine                                  |
 
 ```bash
@@ -277,6 +281,26 @@ huuma agent --tools files,cli --cli-commands deno,git \
 > narrow as possible — anything that can spawn other programs (a shell, `env`,
 > or an interpreter such as `deno`/`node`/`python`) effectively grants arbitrary
 > command execution.
+
+#### Specs tool
+
+The `specs` tool gives an Agent live access to the Specs and Tasks in its
+Project through the Studio's internal API. It is driven by a per-Turn,
+host-scoped token the Studio injects as `HUUMA_SPECS_API_TOKEN`; the runner
+passes that placeholder verbatim in the `Authorization` header and the sandbox
+egress layer substitutes the real JWT only for the Studio host. The runner
+exposes only the functions granted on `--specs-permissions`:
+
+```bash
+huuma agent \
+  --tools specs \
+  --specs-permissions spec:list,spec:read,spec:update,task:list,task:read,task:update \
+  --specs-api-url https://studio.huuma.app/api/internal \
+  "List the specs in this project and update the first task to done"
+```
+
+Without `HUUMA_SPECS_API_TOKEN` the runner registers no specs functions, so
+the tool is inert outside a Studio-managed sandbox.
 
 ### Sub-agents
 

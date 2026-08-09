@@ -1,0 +1,97 @@
+[
+  {
+    "id": "T1",
+    "title": "Add specs Tool kind to types and config schemas",
+    "description": "Add `specs` to `TOOL_KINDS`, `ToolKindSchema`, and the `Tool` / `CreateToolInput` / `UpdateToolInput` unions in `src/agents/tools/tools.types.ts`. Create `SpecsToolConfigSchema` with a non-empty `permissions` array (`spec:list`, `spec:read`, `spec:update`, `task:list`, `task:read`, `task:update`). Add `specs` to `parseUpdateToolInput`. Add `SPECS_API_SIGNING_KEY` to `ServerEnvSchema` in `src/env.server.ts`.",
+    "acceptance_criteria": [
+      "`specs` is in `TOOL_KINDS` and `ToolKindSchema`",
+      "`SpecsToolConfigSchema` validates a non-empty permissions array",
+      "`ToolSchema` and `CreateToolInputSchema` accept the `specs` kind",
+      "`UpdateToolInputSchema` and `parseUpdateToolInput` handle `specs`",
+      "`SPECS_API_SIGNING_KEY` is parsed in `ServerEnvSchema`",
+      "Existing tool type tests still pass"
+    ],
+    "priority": "high",
+    "status": "open"
+  },
+  {
+    "id": "T2",
+    "title": "Implement per-Turn specs JWT token module",
+    "description": "Create `src/agents/runs/specs-token.ts` with `mintSpecsToken(claims, signingKey)` and `verifySpecsToken(token, signingKey)` using HS256 via `crypto.subtle`. Claims include `project_id`, `run_id`, `turn_id`, `permissions`, `exp`. Write unit tests for sign/verify, expiry rejection, invalid signature, and malformed token.",
+    "acceptance_criteria": [
+      "`mintSpecsToken` returns a compact JWT string signed with HS256",
+      "`verifySpecsToken` validates signature and expiry and returns claims",
+      "Expired tokens are rejected",
+      "Tampered signatures are rejected",
+      "Malformed tokens are rejected",
+      "Unit tests pass"
+    ],
+    "priority": "high",
+    "status": "open"
+  },
+  {
+    "id": "T3",
+    "title": "Implement specs internal API controller",
+    "description": "Create `src/agents/tools/specs-api.controller.ts` with six routes under `/api/internal/specs`: GET /specs (list), GET /specs/:specId (read with tasks), PATCH /specs/:specId (update), GET /specs/:specId/tasks (list tasks), GET /tasks/:taskId (read task), PATCH /tasks/:taskId (update task). Each handler validates the Bearer [REDACTED] via `verifySpecsToken`, checks the required permission, and calls `SpecsService` / `TasksService` with `claims.project_id`. Convert descriptions between Markdown and TipTap content using `MarkdownManager`. Register routes in `app/root.tsx` under the existing `/api/internal` group. Write integration tests for each endpoint covering happy path, 401 (no/invalid token), 403 (missing permission), and 404 (nonexistent spec/task).",
+    "acceptance_criteria": [
+      "All six endpoints return correct data for valid tokens with matching permissions",
+      "Missing or invalid Bearer [REDACTED] returns 401",
+      "Missing permission returns 403",
+      "Nonexistent spec/task returns 404",
+      "Spec read includes its tasks",
+      "Update endpoints accept Markdown descriptions and persist as TipTap content",
+      "List endpoints return Markdown descriptions",
+      "Routes are registered in `app/root.tsx` under `/api/internal`",
+      "Integration tests pass"
+    ],
+    "priority": "high",
+    "status": "open"
+  },
+  {
+    "id": "T4",
+    "title": "Integrate specs token into Turn runtime and runner args",
+    "description": "Add `specsApiSecrets(token, callbackUrl)` to `src/infra/sandboxes/sandbox-secrets.ts` returning a host-scoped secret `HUUMA_SPECS_API_TOKEN` scoped to the Studio host derived from `RUN_TURN_CALLBACK_URL`. Update `AgentRuntimeService.resolve()` to extract the `specs` tool config and return `specsPermissions` in `ResolvedAgentRuntime` and `PreparedAgentRuntime`. Update `TurnRuntimeService.start()` to mint the specs JWT in the `resolveSecrets` callback when `specsPermissions` is present, and add the secret alongside model and GitHub secrets. Update `ManagedTurnLaunchInput` and `managedTurnArgs` in `src/infra/sandboxes/runner.ts` with `--specs-permissions` and `--specs-api-url` args. Derive `specsApiUrl` from `RunTurnConfig.callbackUrl` origin. Write tests for the Turn launch path with a `specs` tool linked.",
+    "acceptance_criteria": [
+      "`specsApiSecrets` returns a host-scoped secret keyed `HUUMA_SPECS_API_TOKEN`",
+      "`AgentRuntimeService.resolve()` returns `specsPermissions` when the agent has a linked `specs` tool",
+      "`TurnRuntimeService.start()` mints a JWT and includes it in sandbox secrets when `specsPermissions` is present",
+      "`managedTurnArgs` emits `--specs-permissions` and `--specs-api-url` when `specs` is in tools",
+      "`specsApiUrl` is derived from the callback URL origin",
+      "No JWT is minted when the agent has no `specs` tool",
+      "Tests pass"
+    ],
+    "priority": "high",
+    "status": "open"
+  },
+  {
+    "id": "T5",
+    "title": "Update frontend tool form and display for specs kind",
+    "description": "Add `specs: \"Specs\"` to `TOOL_KIND_LABELS` in `tool-kind-labels.ts`. Add `specsPermissions` to `ToolFormValues` in `tool-form-values.ts` and update `buildCreateToolInput` / `buildUpdateToolInput` to build the `specs` config. Add a permissions checkbox group section to `tool-form.client.tsx` for the `specs` kind (Specs: List/Read/Update, Tasks: List/Read/Update) with at-least-one-permission validation. Update `tool-detail.ts` to display `specs` config (permissions list) in read-only view. Update `tool-card.ts` for the `specs` kind. Write UI tests for form validation.",
+    "acceptance_criteria": [
+      "`specs` appears in the tool kind dropdown with label \"Specs\"",
+      "Selecting `specs` shows a permissions checkbox group",
+      "At least one permission must be selected to submit",
+      "Create and update flows persist the permissions config correctly",
+      "Tool detail page displays the permissions list",
+      "Tool card displays the `specs` kind",
+      "UI tests pass"
+    ],
+    "priority": "medium",
+    "status": "open"
+  },
+  {
+    "id": "T6",
+    "title": "Implement specs tool kind in @huuma/cli runner",
+    "description": "Update the `@huuma/cli` runner (separate repo) to recognize `specs` in `--tools`, parse `--specs-permissions` and `--specs-api-url`, and implement the six tool functions (list_specs, read_spec, update_spec, list_tasks, read_task, update_task). Each function makes an HTTP request to the Studio API with the `HUUMA_SPECS_API_TOKEN` placeholder in the Authorization header. Only expose functions for which the corresponding permission is present. Pin the new `@huuma/cli` version in `src/infra/sandboxes/runner.config.ts`. Run an end-to-end test: agent lists specs, reads a spec, updates a task status.",
+    "acceptance_criteria": [
+      "Runner recognizes `specs` in `--tools`",
+      "Runner parses `--specs-permissions` and `--specs-api-url`",
+      "Six tool functions make authenticated HTTP calls to the Studio API",
+      "Only permitted functions are exposed to the model",
+      "New `@huuma/cli` version is pinned in `runner.config.ts`",
+      "End-to-end test passes: list specs, read spec, update task"
+    ],
+    "priority": "medium",
+    "status": "open"
+  }
+]

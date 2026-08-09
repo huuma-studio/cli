@@ -50,6 +50,12 @@ export interface ManagedConfig {
   systemPrompt: string | undefined;
   searchEngine: string | undefined;
   skillsPath: string | undefined;
+  /** Granted `specs` tool permissions from `--specs-permissions` (a
+   * comma-separated `entity:operation` list). Threaded through to the `specs`
+   * tool factory. */
+  specsPermissions: string[];
+  /** Studio internal API base URL from `--specs-api-url`. */
+  specsApiUrl: string | undefined;
   /** SENSITIVE — per-turn callback secret from `$HUUMA_AGENT_CALLBACK_SECRET`.
    * Never log, print, or echo this value, and never include it in an error
    * message. T3 uses it once to set the `Authorization: Bearer` header;
@@ -188,6 +194,8 @@ export function resolveManagedConfig(parsed: ManagedAgentArgs): ManagedConfig {
     systemPrompt: parsed.systemPrompt,
     searchEngine: parsed.searchEngine,
     skillsPath: parsed.skillsPath,
+    specsPermissions: parsed.specsPermissions,
+    specsApiUrl: parsed.specsApiUrl,
     callbackSecret,
   };
 }

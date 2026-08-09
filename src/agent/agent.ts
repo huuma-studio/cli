@@ -86,6 +86,10 @@ OPTIONS
   --search-engine <engine>  Engine for the search tool: brave | perplexity
   --skills-path <dir>       Directory the skills tools scan (default:
                             .agents/skills); skills are always enabled
+  --specs-permissions <list> Granted specs-tool permissions (comma-separated
+                            entity:operation: spec:list,spec:read,spec:update,
+                            task:list,task:read,task:update)
+  --specs-api-url <url>     Studio internal API base URL for the specs tool
   --system-prompt <text>    Replace the built-in system prompt for this run;
                             output style is then yours to manage
   -h, --help                Show this help
@@ -108,6 +112,8 @@ ${
 ENVIRONMENT (secrets only — everything else is a flag)
   HUUMA_AGENT_API_KEY                 provider API key (omit for a local Ollama)
   BRAVE_API_KEY / PERPLEXITY_API_KEY  API key for the chosen search engine
+  HUUMA_SPECS_API_TOKEN              host-scoped specs-tool token (managed mode;
+                                      never a flag, never logged)
   HUUMA_AGENT_CALLBACK_SECRET         per-turn callback secret (managed mode
                                       only; never a flag, never logged)
 
