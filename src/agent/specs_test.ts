@@ -192,6 +192,25 @@ Deno.test("specsTools registers nothing when the token env is unset", async () =
   });
 });
 
+Deno.test("specsTools treats a missing token as empty permissions before validating", async () => {
+  // Criterion 7: an unset token is "treat as if --specs-permissions was empty",
+  // so a tokenless run never errors on a permission typo or a missing URL —
+  // it simply exposes nothing.
+  await withEnv({ [SPECS_TOKEN_ENV]: null }, () => {
+    assertEquals(
+      specsTools({
+        specsPermissions: ["spec:bogus"],
+        specsApiUrl: "https://x/api",
+      }),
+      [],
+    );
+    assertEquals(
+      specsTools({ specsPermissions: ["spec:list"] }),
+      [],
+    );
+  });
+});
+
 Deno.test("specsTools fails fast without --specs-api-url when permissions are granted", async () => {
   await withEnv({ [SPECS_TOKEN_ENV]: "token" }, () => {
     assertThrows(

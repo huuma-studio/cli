@@ -53,22 +53,37 @@ export interface SpecsToolOptions {
 /** Builds the `specs` tool set: the six Specs/Tasks functions the model can
  * call, restricted to the permissions granted on `--specs-permissions`.
  *
- * Registration rules (RUNNER-CONTRACT, "Sandbox secret" and "Error
- * Handling"):
- * - No permissions → register nothing (treat as if `--specs-permissions` was
- *   empty).
- * - Permissions present but `--specs-api-url` missing → fail fast with a
- *   clear hint, mirroring `cli`/`search` (a dead tool is worse than an error).
- * - Permissions and URL present but `$HUUMA_SPECS_API_TOKEN` unset → register
- *   nothing (the runner must not expose functions it cannot authenticate).
+ * Registration order (RUNNER-CONTRACT, "Sandbox secret" and "Error Handling"):
+ * 1. No granted permissions → register nothing (the Studio granted none).
+ * 2. `$HUUMA_SPECS_API_TOKEN` unset → register nothing. The contract says to
+ *    treat this exactly as if `--specs-permissions` was empty, so it short-
+ *    circuits BEFORE any validation: a tokenless run never errors on a typo
+ *    or a missing URL, it simply exposes nothing.
+ * 3. With a token, unknown permissions or a missing `--specs-api-url` fail
+ *    fast with a clear hint, mirroring `cli`/`search` (a dead or
+ *    misconfigured tool is worse than an error).
  *
  * Each function makes an authenticated HTTP call to the Studio internal API
  * using the placeholder token in the `Authorization` header and surfaces API
  * errors (401/403/404/5xx) to the model. */
 export function specsTools(options: SpecsToolOptions = {}): AgentTools {
   const permissions = options.specsPermissions ?? [];
-  // Unknown permissions are a configuration error, not a silent skip — a typo
-  // in the Studio's flag would otherwise quietly drop a function.
+
+  // No granted permissions means nothing to expose. Lenient, not an error: an
+  // empty `--specs-permissions` is valid (the Studio simply granted none).
+  if (permissions.length === 0) return [];
+
+  // The token is a runtime secret, not a flag. Without it the runner cannot
+  // authenticate any call, so it registers no functions (RUNNER-CONTRACT,
+  // acceptance criterion 7 — "treat as if --specs-permissions was empty").
+  // This short-circuits before validation so a tokenless run never throws on a
+  // permission typo or a missing URL; it simply exposes nothing.
+  const token = envValue(SPECS_TOKEN_ENV);
+  if (!token) return [];
+
+  // With a token present, unknown permissions are a configuration error, not
+  // a silent skip — a typo in the Studio's flag would otherwise quietly drop
+  // a function. (Unreachable when the token is unset, per the check above.)
   for (const permission of permissions) {
     if (!SPECS_PERMISSION_SET.has(permission)) {
       throw new Error(
@@ -78,10 +93,6 @@ export function specsTools(options: SpecsToolOptions = {}): AgentTools {
     }
   }
 
-  // No granted permissions means nothing to expose. Lenient, not an error: an
-  // empty `--specs-permissions` is valid (the Studio simply granted none).
-  if (permissions.length === 0) return [];
-
   const apiUrl = options.specsApiUrl;
   if (!apiUrl) {
     throw new Error(
@@ -89,12 +100,6 @@ export function specsTools(options: SpecsToolOptions = {}): AgentTools {
         "base URL, e.g. --specs-api-url https://studio.huuma.app/api/internal.",
     );
   }
-
-  // The token is a runtime secret, not a flag. Without it the runner cannot
-  // authenticate any call, so it registers no functions (RUNNER-CONTRACT,
-  // acceptance criterion 7) rather than dead tools that fail on every call.
-  const token = envValue(SPECS_TOKEN_ENV);
-  if (!token) return [];
 
   const base = apiUrl.replace(/\/+$/, "");
   const granted = new Set(permissions);
