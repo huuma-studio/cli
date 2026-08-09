@@ -149,6 +149,8 @@ async function config(
       systemPrompt: undefined,
       searchEngine: undefined,
       skillsPath: undefined,
+      specsPermissions: [],
+      specsApiUrl: undefined,
     },
     cleanup: async () => {
       if (!opts.missingHistory) await Deno.remove(historyPath);

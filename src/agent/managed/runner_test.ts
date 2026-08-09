@@ -288,6 +288,8 @@ async function makeConfig(
     systemPrompt: undefined,
     searchEngine: undefined,
     skillsPath: undefined,
+    specsPermissions: [],
+    specsApiUrl: undefined,
     callbackSecret: opts.callbackSecret ?? CALLBACK_SECRET,
   };
   return {

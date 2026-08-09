@@ -23,6 +23,8 @@ function configWithHistory(historyPath: string): ManagedConfig {
     systemPrompt: undefined,
     searchEngine: undefined,
     skillsPath: undefined,
+    specsPermissions: [],
+    specsApiUrl: undefined,
     callbackSecret: "secret",
   };
 }

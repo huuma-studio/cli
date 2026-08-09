@@ -12,6 +12,7 @@ import {
   skills,
   writeFile,
 } from "@huuma/ai/tools";
+import { specsTools } from "./specs.ts";
 import { SUBAGENT_FACTORIES, type SubagentContext } from "./subagents/mod.ts";
 
 /** Default skills directory the agent scans when `--skills-path` is absent.
@@ -35,6 +36,14 @@ export interface ToolConfig {
    * CLI owns the default rather than relying on the library's own default
    * — which differs across @huuma/ai releases. See ADR 0009. */
   skillsPath?: string;
+  /** Granted `specs` tool permissions from `--specs-permissions` (a
+   * comma-separated `entity:operation` list). The runner exposes only the
+   * Specs/Tasks functions whose permission is present here. See
+   * `docs/specs/agent-specs-tool/RUNNER-CONTRACT.md`. */
+  specsPermissions?: string[];
+  /** Studio internal API base URL from `--specs-api-url`, used by the `specs`
+   * tool. Does not end with a trailing slash. */
+  specsApiUrl?: string;
 }
 
 /** Tool factories keyed by the name used on the `--tools` flag. Each one builds
@@ -54,6 +63,7 @@ const TOOL_FACTORIES: Record<string, (config: ToolConfig) => AgentTools> = {
   fetch_website: () => [fetchWebsite()],
   search: (config) => [searchTool(config.searchEngine)],
   skills: (config) => skillsTool(config.skillsPath),
+  specs: (config) => specsTools(config),
 };
 
 /** Outcome of resolving the `--tools` selection: the tools built eagerly,

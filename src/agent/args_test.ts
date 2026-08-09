@@ -20,6 +20,8 @@ function parsed(overrides: Partial<LocalAgentArgs> = {}): LocalAgentArgs {
     host: undefined,
     searchEngine: undefined,
     skillsPath: undefined,
+    specsPermissions: [],
+    specsApiUrl: undefined,
     prompt: "",
     help: false,
     ...overrides,
@@ -41,6 +43,8 @@ function managed(
     host: undefined,
     searchEngine: undefined,
     skillsPath: undefined,
+    specsPermissions: [],
+    specsApiUrl: undefined,
     prompt: "",
     help: false,
     history: "/workspace/history.json",
@@ -380,6 +384,72 @@ Deno.test("parseAgentArgs mentions --skills-path in the unknown-flag error", () 
     () => parseAgentArgs(["--bogus"]),
     Error,
     "--skills-path",
+  );
+});
+
+Deno.test("parseAgentArgs reads --specs-permissions as a comma-separated list", () => {
+  assertEquals(
+    parseAgentArgs(["--specs-permissions", "spec:list,spec:read", "go"]),
+    parsed({
+      specsPermissions: ["spec:list", "spec:read"],
+      prompt: "go",
+    }),
+  );
+});
+
+Deno.test("parseAgentArgs reads --specs-api-url in both forms, last wins", () => {
+  assertEquals(
+    parseAgentArgs(["--specs-api-url", "https://x/api/internal", "list"]),
+    parsed({ specsApiUrl: "https://x/api/internal", prompt: "list" }),
+  );
+  assertEquals(
+    parseAgentArgs(["--specs-api-url=./a", "--specs-api-url=./b"]),
+    parsed({ specsApiUrl: "./b" }),
+  );
+});
+
+Deno.test("parseAgentArgs rejects --specs-permissions and --specs-api-url without a value", () => {
+  for (const flag of ["--specs-permissions", "--specs-api-url"]) {
+    assertThrows(() => parseAgentArgs([flag]), Error, `Missing value for ${flag}`);
+    assertThrows(() => parseAgentArgs([`${flag}=`]), Error, `Missing value for ${flag}`);
+    assertThrows(() => parseAgentArgs([flag, "  "]), Error, `Missing value for ${flag}`);
+  }
+});
+
+Deno.test("parseAgentArgs mentions the specs flags in the unknown-flag error", () => {
+  assertThrows(() => parseAgentArgs(["--bogus"]), Error, "--specs-permissions");
+  assertThrows(() => parseAgentArgs(["--bogus"]), Error, "--specs-api-url");
+});
+
+Deno.test("parseAgentArgs threads --specs-permissions and --specs-api-url into managed mode", () => {
+  assertEquals(
+    parseAgentArgs([
+      "--callback-url",
+      "https://x.invalid/cb",
+      "--history",
+      "/h.json",
+      "--cwd",
+      "/workspace",
+      "--run-id",
+      "11111111-1111-1111-1111-111111111111",
+      "--turn-id",
+      "22222222-2222-2222-2222-222222222222",
+      "--turn-deadline",
+      "2099-01-01T00:00:00Z",
+      "--model",
+      "anthropic/x",
+      "--specs-permissions",
+      "spec:list,task:read",
+      "--specs-api-url",
+      "https://studio/api/internal",
+    ]),
+    managed({
+      specsPermissions: ["spec:list", "task:read"],
+      specsApiUrl: "https://studio/api/internal",
+      model: { provider: "anthropic", modelId: "x" },
+      history: "/h.json",
+      callbackUrl: "https://x.invalid/cb",
+    }),
   );
 });
 

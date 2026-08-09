@@ -25,6 +25,11 @@ export interface LocalAgentArgs {
   /** Directory the always-on skills tools scan. From `--skills-path`; absent
    * means the CLI default `.agents/skills` applies (ADR 0009). */
   skillsPath: string | undefined;
+  /** Granted `specs` tool permissions from `--specs-permissions` (a
+   * comma-separated `entity:operation` list). */
+  specsPermissions: string[];
+  /** Studio internal API base URL from `--specs-api-url`. */
+  specsApiUrl: string | undefined;
   prompt: string;
   help: false;
 }
@@ -50,6 +55,11 @@ export interface ManagedAgentArgs {
   host: string | undefined;
   searchEngine: string | undefined;
   skillsPath: string | undefined;
+  /** Granted `specs` tool permissions from `--specs-permissions` (a
+   * comma-separated `entity:operation` list). */
+  specsPermissions: string[];
+  /** Studio internal API base URL from `--specs-api-url`. */
+  specsApiUrl: string | undefined;
   /** Always `""` in managed mode — positional prompts are rejected. */
   prompt: string;
   help: false;
@@ -101,6 +111,8 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
   let host: string | undefined;
   let searchEngine: string | undefined;
   let skillsPath: string | undefined;
+  let specsPermissions: string[] = [];
+  let specsApiUrl: string | undefined;
   let history: string | undefined;
   let cwd: string | undefined;
   let callbackUrl: string | undefined;
@@ -188,6 +200,22 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
       skillsPath = skillsPathValue;
       continue;
     }
+    const specsPermissionsValue = valueFlag(
+      "--specs-permissions",
+      "--specs-permissions spec:list,spec:read,spec:update",
+    );
+    if (specsPermissionsValue !== undefined) {
+      specsPermissions.push(...parseList(specsPermissionsValue));
+      continue;
+    }
+    const specsApiUrlValue = valueFlag(
+      "--specs-api-url",
+      "--specs-api-url https://studio.huuma.app/api/internal",
+    );
+    if (specsApiUrlValue !== undefined) {
+      specsApiUrl = specsApiUrlValue;
+      continue;
+    }
     // Managed-turn-only flags. Parsed in both forms like every other value
     // flag. --callback-url selects managed mode; the others are rejected after
     // the loop if --callback-url is absent (a partial managed turn is a
@@ -242,7 +270,8 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
         `Unknown flag "${arg}". The agent accepts --model <provider/model>, ` +
           "--tools <list>, --system-prompt <text>, --cli-commands <list>, " +
           "--host <url>, --search-engine <brave|perplexity>, " +
-          "--skills-path <dir>, and the managed-turn flags --history <path>, " +
+          "--skills-path <dir>, --specs-permissions <list>, " +
+          "--specs-api-url <url>, and the managed-turn flags --history <path>, " +
           "--cwd <dir>, --callback-url <url>, --run-id <uuid>, " +
           "--turn-id <uuid>, and --turn-deadline <RFC3339>.",
       );
@@ -279,6 +308,8 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
       host,
       searchEngine,
       skillsPath,
+      specsPermissions,
+      specsApiUrl,
       prompt,
       help: false,
     };
@@ -304,6 +335,8 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
     host,
     searchEngine,
     skillsPath,
+    specsPermissions,
+    specsApiUrl,
     prompt: "",
     help: false,
     history,
