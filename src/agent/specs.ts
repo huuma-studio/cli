@@ -3,7 +3,7 @@ import { array, enums, object, string, uuid } from "@huuma/validate";
 import { envValue } from "./env.ts";
 import type { AgentTools } from "./tools.ts";
 
-/** The six permissions the `specs` tool kind can expose. Each maps to one
+/** The eight permissions the `specs` tool kind can expose. Each maps to one
  * tool function the model may call. The Studio grants a subset per Turn and
  * passes it on the `--specs-permissions` flag; the runner exposes only those
  * functions (the Studio API re-checks each one server-side). See
@@ -12,9 +12,11 @@ export type SpecsPermission =
   | "spec:list"
   | "spec:read"
   | "spec:update"
+  | "spec:create"
   | "task:list"
   | "task:read"
-  | "task:update";
+  | "task:update"
+  | "task:create";
 
 /** The full set, for validation of the `--specs-permissions` flag. An unknown
  * entry is a configuration error rather than a silently-ignored one, so a
@@ -23,9 +25,11 @@ export const SPECS_PERMISSIONS: readonly SpecsPermission[] = [
   "spec:list",
   "spec:read",
   "spec:update",
+  "spec:create",
   "task:list",
   "task:read",
   "task:update",
+  "task:create",
 ];
 
 const SPECS_PERMISSION_SET = new Set<string>(SPECS_PERMISSIONS);
@@ -123,6 +127,9 @@ export function specsTools(options: SpecsToolOptions = {}): AgentTools {
   if (granted.has("spec:update")) {
     tools.push(updateSpecTool(base, token));
   }
+  if (granted.has("spec:create")) {
+    tools.push(createSpecTool(base, token));
+  }
   if (granted.has("task:list")) {
     tools.push(listTasksTool(base, token));
   }
@@ -131,6 +138,9 @@ export function specsTools(options: SpecsToolOptions = {}): AgentTools {
   }
   if (granted.has("task:update")) {
     tools.push(updateTaskTool(base, token));
+  }
+  if (granted.has("task:create")) {
+    tools.push(createTaskTool(base, token));
   }
   return tools;
 }
@@ -178,6 +188,27 @@ function updateSpecTool(base: string, token: string): Tool<ReturnType<typeof upd
       ]);
       requireAtLeastOne(body, "update_spec");
       return specsRequest("PATCH", `${base}/specs/${fields.spec_id}`, token, body);
+    },
+  });
+}
+
+/** `create_spec` — create a new Spec in the current Project. */
+function createSpecTool(base: string, token: string): Tool<ReturnType<typeof createSpecInput>, unknown> {
+  return tool({
+    name: "create_spec",
+    description:
+      "Create a new Spec in the current Project. Requires a title, " +
+      "description (Markdown), type, and status. Returns the created spec " +
+      "with its tasks (initially empty).",
+    input: createSpecInput(),
+    fn: (fields) => {
+      const body = pickDefined(fields, [
+        "title",
+        "description_markdown",
+        "type",
+        "status",
+      ]);
+      return specsRequest("POST", `${base}/specs`, token, body);
     },
   });
 }
@@ -232,6 +263,33 @@ function updateTaskTool(base: string, token: string): Tool<ReturnType<typeof upd
   });
 }
 
+/** `create_task` — create a new Task belonging to a Spec. */
+function createTaskTool(base: string, token: string): Tool<ReturnType<typeof createTaskInput>, unknown> {
+  return tool({
+    name: "create_task",
+    description:
+      "Create a new Task belonging to a Spec. Requires a spec_id, title, " +
+      "description (Markdown), priority, and status. Acceptance criteria are " +
+      "optional. Returns the created task.",
+    input: createTaskInput(),
+    fn: (fields) => {
+      const body = pickDefined(fields, [
+        "title",
+        "description_markdown",
+        "acceptance_criteria",
+        "priority",
+        "status",
+      ]);
+      return specsRequest(
+        "POST",
+        `${base}/specs/${fields.spec_id}/tasks`,
+        token,
+        body,
+      );
+    },
+  });
+}
+
 // --- input schemas --------------------------------------------------------
 
 /** Empty object — `list_specs` takes no parameters. */
@@ -276,6 +334,34 @@ function updateTaskInput() {
     acceptance_criteria: array(string()).optional(),
     priority: enums([...TASK_PRIORITIES]).optional(),
     status: enums([...TASK_STATUSES]).optional(),
+  });
+}
+
+/** `create_spec` parameters: all required. `type` and `status` are
+ * constrained to the contract's closed value sets. The `project_id` is
+ * injected server-side from the JWT claims, so the model does not provide
+ * it. */
+function createSpecInput() {
+  return object({
+    title: string(),
+    description_markdown: string(),
+    type: enums([...SPEC_TYPES]),
+    status: enums([...SPEC_STATUSES]),
+  });
+}
+
+/** `create_task` parameters: `spec_id` identifies the parent Spec (in the
+ * request path); the rest are the task's fields. `acceptance_criteria` is
+ * optional; `priority` and `status` are constrained to the contract's closed
+ * value sets. The `project_id` is injected server-side from the JWT claims. */
+function createTaskInput() {
+  return object({
+    spec_id: uuid(),
+    title: string(),
+    description_markdown: string(),
+    acceptance_criteria: array(string()).optional(),
+    priority: enums([...TASK_PRIORITIES]),
+    status: enums([...TASK_STATUSES]),
   });
 }
 

@@ -202,7 +202,7 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
     }
     const specsPermissionsValue = valueFlag(
       "--specs-permissions",
-      "--specs-permissions spec:list,spec:read,spec:update",
+      "--specs-permissions spec:list,spec:read,spec:update,spec:create",
     );
     if (specsPermissionsValue !== undefined) {
       specsPermissions.push(...parseList(specsPermissionsValue));

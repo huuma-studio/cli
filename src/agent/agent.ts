@@ -88,7 +88,8 @@ OPTIONS
                             .agents/skills); skills are always enabled
   --specs-permissions <list> Granted specs-tool permissions (comma-separated
                             entity:operation: spec:list,spec:read,spec:update,
-                            task:list,task:read,task:update)
+                            spec:create,task:list,task:read,task:update,
+                            task:create)
   --specs-api-url <url>     Studio internal API base URL for the specs tool
   --system-prompt <text>    Replace the built-in system prompt for this run;
                             output style is then yours to manage
