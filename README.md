@@ -294,7 +294,7 @@ exposes only the functions granted on `--specs-permissions`:
 ```bash
 huuma agent \
   --tools specs \
-  --specs-permissions spec:list,spec:read,spec:update,task:list,task:read,task:update \
+  --specs-permissions spec:list,spec:read,spec:update,spec:create,task:list,task:read,task:update,task:create \
   --specs-api-url https://studio.huuma.app/api/internal \
   "List the specs in this project and update the first task to done"
 ```

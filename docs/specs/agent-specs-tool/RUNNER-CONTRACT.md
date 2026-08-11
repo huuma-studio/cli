@@ -9,7 +9,7 @@ Reference ADR: `docs/adr/0011-specs-tool-per-turn-jwt-access.md`
 ## 1. Overview
 
 The `specs` tool gives an Agent live access to the Specs and Tasks in its
-Project. The runner exposes six tool functions to the model. Each function
+Project. The runner exposes eight tool functions to the model. Each function
 makes an HTTP call to the Studio's internal API. Authentication is handled by
 a host-scoped sandbox secret — the runner never sees the real credential.
 
@@ -19,7 +19,7 @@ When the `specs` tool is enabled (i.e., `specs` is in the `--tools` list), the
 runner receives two additional CLI args:
 
 ```
---specs-permissions spec:list,spec:read,spec:update,task:list,task:read,task:update
+--specs-permissions spec:list,spec:read,spec:update,spec:create,task:list,task:read,task:update,task:create
 --specs-api-url https://studio.huuma.app/api/internal
 ```
 
@@ -53,16 +53,18 @@ parse it.
 
 ## 4. Permission Model
 
-Six permissions control which tool functions are exposed:
+Eight permissions control which tool functions are exposed:
 
 | Permission     | Tool function  | HTTP call                              |
 |----------------|----------------|---------------------------------------|
 | `spec:list`    | `list_specs`   | `GET /specs`                          |
 | `spec:read`    | `read_spec`    | `GET /specs/:specId`                  |
 | `spec:update`  | `update_spec`  | `PATCH /specs/:specId`                |
+| `spec:create`  | `create_spec`  | `POST /specs`                         |
 | `task:list`    | `list_tasks`   | `GET /specs/:specId/tasks`            |
 | `task:read`    | `read_task`    | `GET /tasks/:taskId`                  |
 | `task:update`  | `update_task`  | `PATCH /tasks/:taskId`               |
+| `task:create`  | `create_task`  | `POST /specs/:specId/tasks`          |
 
 The runner exposes only the functions whose permission appears in
 `--specs-permissions`. The Studio API also enforces permissions server-side
@@ -173,7 +175,34 @@ existing tools (e.g., `read_file`, `grep`, `search`).
 
 **Response 200**: same shape as `read_spec` (the updated spec with all tasks).
 
-### 5.4 list_tasks
+### 5.4 create_spec
+
+**Permission**: `spec:create`
+
+**Parameters** (all required):
+- `title` (string) — spec title
+- `description_markdown` (string) — spec description in Markdown
+- `type` (string) — one of `"feature"`, `"bug"`, `"story"`
+- `status` (string) — one of `"draft"`, `"open"`, `"in_progress"`, `"done"`
+
+**HTTP**: `POST ${specsApiUrl}/specs`
+
+**Request body**: JSON object with all four fields above.
+
+```json
+{
+  "title": "Add dark mode",
+  "description_markdown": "## Overview\n\nImplement a dark mode toggle.",
+  "type": "feature",
+  "status": "draft"
+}
+```
+
+**Response 200**: same shape as `read_spec` (the created spec with an empty
+`tasks` array). The `project_id` is injected server-side from the JWT claims;
+the model does not provide it.
+
+### 5.5 list_tasks
 
 **Permission**: `task:list`
 
@@ -199,7 +228,7 @@ existing tools (e.g., `read_file`, `grep`, `search`).
 ]
 ```
 
-### 5.5 read_task
+### 5.6 read_task
 
 **Permission**: `task:read`
 
@@ -210,7 +239,7 @@ existing tools (e.g., `read_file`, `grep`, `search`).
 
 **Response 200** — JSON object (single task, same shape as items in `list_tasks`).
 
-### 5.6 update_task
+### 5.7 update_task
 
 **Permission**: `task:update`
 
@@ -233,6 +262,37 @@ existing tools (e.g., `read_file`, `grep`, `search`).
 ```
 
 **Response 200**: the updated task (same shape as `read_task`).
+
+### 5.8 create_task
+
+**Permission**: `task:create`
+
+**Parameters**:
+- `spec_id` (string, required) — the parent spec UUID
+- `title` (string, required) — task title
+- `description_markdown` (string, required) — task description in Markdown
+- `acceptance_criteria` (array of strings, optional) — defaults to empty
+- `priority` (string, required) — one of `"low"`, `"medium"`, `"high"`
+- `status` (string, required) — one of `"open"`, `"in_progress"`, `"done"`
+
+**HTTP**: `POST ${specsApiUrl}/specs/${spec_id}/tasks`
+
+**Request body**: JSON object with the fields above (excluding `spec_id`, which
+is in the URL path).
+
+```json
+{
+  "title": "Create toggle component",
+  "description_markdown": "Build a theme switcher.",
+  "priority": "high",
+  "status": "open",
+  "acceptance_criteria": ["Toggle persists across reloads"]
+}
+```
+
+**Response 200**: the created task (same shape as `read_task`). The
+`project_id` is injected server-side from the JWT claims; the model does not
+provide it.
 
 ## 6. Error Handling
 
@@ -282,6 +342,9 @@ what each function does. Suggested descriptions:
 - `update_spec`: "Update a Spec's title, description (Markdown), type, or
   status. At least one field must be provided. Returns the updated spec with
   all tasks."
+- `create_spec`: "Create a new Spec in the current Project. Requires a title,
+  description (Markdown), type, and status. Returns the created spec with its
+  tasks (initially empty)."
 - `list_tasks`: "List all Tasks belonging to a Spec. Returns an array of task
   objects with id, number, title, description (Markdown), acceptance criteria,
   priority, status, and spec_id."
@@ -290,20 +353,25 @@ what each function does. Suggested descriptions:
 - `update_task`: "Update a Task's title, description (Markdown), acceptance
   criteria, priority, or status. At least one field must be provided. Returns
   the updated task."
+- `create_task`: "Create a new Task belonging to a Spec. Requires a spec_id,
+  title, description (Markdown), priority, and status. Acceptance criteria are
+  optional. Returns the created task."
 
 ## 9. Acceptance Criteria
 
 1. Runner recognizes `specs` in `--tools` and parses `--specs-permissions`
    and `--specs-api-url`.
-2. Six tool functions are registered when their corresponding permission is
+2. Eight tool functions are registered when their corresponding permission is
    present in `--specs-permissions`.
 3. Each function makes an authenticated HTTP call to the Studio API using the
    `HUUMA_SPECS_API_TOKEN` env var in the `Authorization` header.
 4. Only functions with a matching permission are exposed to the model.
-5. PATCH request bodies contain only the fields the model specified.
+5. PATCH and POST request bodies contain only the fields the model specified.
 6. Error responses (401, 403, 404, 5xx) are surfaced to the model with the
    error message from the response body.
 7. If `HUUMA_SPECS_API_TOKEN` is not set, no specs tool functions are
    registered.
 8. End-to-end: agent can list specs, read a spec, update a task status, and
    the changes are persisted.
+9. End-to-end: agent can create a new spec and create a task under an existing
+   spec, and the changes are persisted.
