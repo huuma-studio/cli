@@ -109,6 +109,17 @@ function route(
       tasks: [taskFixture(specId, TASK_ID, 1, "Create toggle", "high", "open")],
     });
   }
+  if (path === "/specs" && log.method === "POST") {
+    return json(200, {
+      id: SPEC_ID,
+      number: 2,
+      title: (log.body as { title?: string })?.title ?? "New spec",
+      description_markdown: "## Overview\n\nNew spec.",
+      type: (log.body as { type?: string })?.type ?? "feature",
+      status: (log.body as { status?: string })?.status ?? "draft",
+      tasks: [],
+    });
+  }
   if (path.startsWith("/specs/") && log.method === "PATCH") {
     const specId = path.slice("/specs/".length);
     if (specId === FORBIDDEN_SPEC) return json(403, { detail: "no access" });
@@ -121,6 +132,23 @@ function route(
       status: (log.body as { status?: string })?.status ?? "open",
       tasks: [],
     });
+  }
+  if (path.startsWith("/specs/") && log.method === "POST") {
+    const id = path.slice("/specs/".length);
+    const [specId, rest] = id.split("/");
+    if (rest === "tasks") {
+      if (specId === MISSING_SPEC) return json(404, { error: "Spec not found" });
+      if (specId === FORBIDDEN_SPEC) return json(403, { detail: "no access" });
+      return json(200, taskFixture(
+        specId,
+        TASK_ID,
+        2,
+        (log.body as { title?: string })?.title ?? "New task",
+        (log.body as { priority?: string })?.priority ?? "medium",
+        (log.body as { status?: string })?.status ?? "open",
+      ));
+    }
+    return json(404, { error: `No route for ${log.method} ${path}` });
   }
   if (path.startsWith("/tasks/") && log.method === "GET") {
     const taskId = path.slice("/tasks/".length);
@@ -245,7 +273,7 @@ Deno.test("specsTools exposes only the permitted functions", async () => {
   });
 });
 
-Deno.test("specsTools exposes all six functions for full permissions", async () => {
+Deno.test("specsTools exposes all eight functions for full permissions", async () => {
   await withEnv({ [SPECS_TOKEN_ENV]: "token" }, () => {
     const tools = specsTools({
       specsPermissions: ALL_PERMISSIONS,
@@ -253,7 +281,16 @@ Deno.test("specsTools exposes all six functions for full permissions", async () 
     });
     assertEquals(
       tools.map((t) => t.name),
-      ["list_specs", "read_spec", "update_spec", "list_tasks", "read_task", "update_task"],
+      [
+        "list_specs",
+        "read_spec",
+        "update_spec",
+        "create_spec",
+        "list_tasks",
+        "read_task",
+        "update_task",
+        "create_task",
+      ],
     );
   });
 });
@@ -386,6 +423,113 @@ Deno.test("update_task sends acceptance_criteria and provided fields", async () 
   }
 });
 
+Deno.test("create_spec sends the required fields and returns the created spec", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:create"]);
+      const result = await call(tools, "create_spec", {
+        title: "New feature",
+        description_markdown: "## Overview\n\nBrand new.",
+        type: "feature",
+        status: "draft",
+      }) as { id: string; title: string; tasks: unknown[] };
+      assertEquals(result.id, SPEC_ID);
+      assertEquals(result.title, "New feature");
+      assertEquals(result.tasks, []);
+      assertEquals(server.requests[0].method, "POST");
+      assertEquals(server.requests[0].path, "/specs");
+      assertEquals(server.requests[0].body, {
+        title: "New feature",
+        description_markdown: "## Overview\n\nBrand new.",
+        type: "feature",
+        status: "draft",
+      });
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("create_task sends the required fields and returns the created task", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["task:create"]);
+      const result = await call(tools, "create_task", {
+        spec_id: SPEC_ID,
+        title: "New task",
+        description_markdown: "Build it.",
+        priority: "medium",
+        status: "open",
+        acceptance_criteria: ["It works", "It is tested"],
+      }) as { id: string; title: string };
+      assertEquals(result.id, TASK_ID);
+      assertEquals(result.title, "New task");
+      assertEquals(server.requests[0].method, "POST");
+      assertEquals(server.requests[0].path, `/specs/${SPEC_ID}/tasks`);
+      assertEquals(server.requests[0].body, {
+        title: "New task",
+        description_markdown: "Build it.",
+        priority: "medium",
+        status: "open",
+        acceptance_criteria: ["It works", "It is tested"],
+      });
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("create_task works without optional acceptance_criteria", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["task:create"]);
+      const result = await call(tools, "create_task", {
+        spec_id: SPEC_ID,
+        title: "Simple task",
+        description_markdown: "Just do it.",
+        priority: "low",
+        status: "open",
+      }) as { id: string };
+      assertEquals(result.id, TASK_ID);
+      // acceptance_criteria is optional; it must not appear in the body.
+      assertEquals(server.requests[0].body, {
+        title: "Simple task",
+        description_markdown: "Just do it.",
+        priority: "low",
+        status: "open",
+      });
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("create_task surfaces a 404 when the spec does not exist", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["task:create"]);
+      await assertRejects(
+        () =>
+          call(tools, "create_task", {
+            spec_id: MISSING_SPEC,
+            title: "Orphan",
+            description_markdown: "No parent.",
+            priority: "high",
+            status: "open",
+          }),
+        Error,
+        "Spec not found",
+      );
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Input validation (identifiers + closed value sets)
 // ---------------------------------------------------------------------------
@@ -494,6 +638,99 @@ Deno.test("update_task rejects an unsupported priority and an unsupported status
         () => call(tools, "update_task", { task_id: TASK_ID, status: "draft" }),
         Error,
         "is not one of",
+      );
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("create_spec rejects an unsupported type value without a request", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:create"]);
+      await assertRejects(
+        () =>
+          call(tools, "create_spec", {
+            title: "X",
+            description_markdown: "Y",
+            type: "epic",
+            status: "open",
+          }),
+        Error,
+        "is not one of",
+      );
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("create_spec rejects a missing required field without a request", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:create"]);
+      // Missing `status` — the schema requires it.
+      await assertRejects(
+        () =>
+          call(tools, "create_spec", {
+            title: "X",
+            description_markdown: "Y",
+            type: "feature",
+          }),
+        Error,
+      );
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("create_task rejects an unsupported priority without a request", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["task:create"]);
+      await assertRejects(
+        () =>
+          call(tools, "create_task", {
+            spec_id: SPEC_ID,
+            title: "X",
+            description_markdown: "Y",
+            priority: "urgent",
+            status: "open",
+          }),
+        Error,
+        "is not one of",
+      );
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("create_task rejects a non-UUID spec_id without a request", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["task:create"]);
+      await assertRejects(
+        () =>
+          call(tools, "create_task", {
+            spec_id: "not-a-uuid",
+            title: "X",
+            description_markdown: "Y",
+            priority: "high",
+            status: "open",
+          }),
+        Error,
+        "is not a valid",
       );
       assertEquals(server.requests.length, 0);
     });

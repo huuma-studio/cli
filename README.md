@@ -289,15 +289,23 @@ Project through the Studio's internal API. It is driven by a per-Turn,
 host-scoped token the Studio injects as `HUUMA_SPECS_API_TOKEN`; the runner
 passes that placeholder verbatim in the `Authorization` header and the sandbox
 egress layer substitutes the real JWT only for the Studio host. The runner
-exposes only the functions granted on `--specs-permissions`:
+exposes only the functions granted on `--specs-permissions` — grant the
+minimum set the task needs:
 
 ```bash
+# List specs, read one, and update a task — no create access granted
 huuma agent \
   --tools specs \
-  --specs-permissions spec:list,spec:read,spec:update,task:list,task:read,task:update \
+  --specs-permissions spec:list,spec:read,task:update \
   --specs-api-url https://studio.huuma.app/api/internal \
   "List the specs in this project and update the first task to done"
 ```
+
+The eight available permissions are `spec:list`, `spec:read`, `spec:update`,
+`spec:create`, `task:list`, `task:read`, `task:update`, and `task:create`.
+Grant only what the task requires — `spec:create` and `task:create` register
+tools that can add new Specs and Tasks, so omit them unless creation is
+intended.
 
 Without `HUUMA_SPECS_API_TOKEN` the runner registers no specs functions, so
 the tool is inert outside a Studio-managed sandbox.
