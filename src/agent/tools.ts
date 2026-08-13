@@ -1,4 +1,5 @@
 import type { AgentOptions } from "@huuma/ai/agent";
+import type { McpConnection } from "@huuma/ai/tools";
 import {
   cli,
   createDirectory,
@@ -44,6 +45,10 @@ export interface ToolConfig {
   /** Studio internal API base URL from `--specs-api-url`, used by the `specs`
    * tool. Does not end with a trailing slash. */
   specsApiUrl?: string;
+  /** Pre-resolved MCP tools from {@link resolveMcpServers}. The `mcp` tool
+   * factory returns these directly (they are already connected and listed),
+   * keeping the factory synchronous per the existing pattern. */
+  mcpTools?: AgentTools;
 }
 
 /** Tool factories keyed by the name used on the `--tools` flag. Each one builds
@@ -64,6 +69,7 @@ const TOOL_FACTORIES: Record<string, (config: ToolConfig) => AgentTools> = {
   search: (config) => [searchTool(config.searchEngine)],
   skills: (config) => skillsTool(config.skillsPath),
   specs: (config) => specsTools(config),
+  mcp: (config) => mcpTool(config.mcpTools),
 };
 
 /** Outcome of resolving the `--tools` selection: the tools built eagerly,
@@ -162,4 +168,22 @@ function searchTool(selectedEngine: string | undefined): AgentTools[number] {
     );
   }
   return search({ engine });
+}
+
+/** The `mcp` tool set — pre-resolved tools from connected MCP servers. The
+ * async connection happens in `resolveMcpServers()` (called from `setup` /
+ * `managedSetup`) before `resolveTools`, so this factory stays synchronous:
+ * it returns the already-connected tools from `config.mcpTools`. When no MCP
+ * tools are configured, throws with a helpful message so `--tools mcp`
+ * without any server is a clear error rather than a silent no-op. */
+function mcpTool(
+  mcpTools: AgentTools | undefined,
+): AgentTools {
+  if (!mcpTools || mcpTools.length === 0) {
+    throw new Error(
+      "The mcp tool requires at least one MCP server. Use --mcp-config " +
+        "<path> or --mcp-server <name=spec> to configure servers.",
+    );
+  }
+  return [...mcpTools];
 }

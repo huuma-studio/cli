@@ -56,6 +56,10 @@ export interface ManagedConfig {
   specsPermissions: string[];
   /** Studio internal API base URL from `--specs-api-url`. */
   specsApiUrl: string | undefined;
+  /** Path to the MCP config file from `--mcp-config`. */
+  mcpConfig: string | undefined;
+  /** Inline MCP server specs from `--mcp-server` (repeatable). */
+  mcpServers: string[];
   /** SENSITIVE — per-turn callback secret from `$HUUMA_AGENT_CALLBACK_SECRET`.
    * Never log, print, or echo this value, and never include it in an error
    * message. T3 uses it once to set the `Authorization: Bearer` header;
@@ -196,6 +200,8 @@ export function resolveManagedConfig(parsed: ManagedAgentArgs): ManagedConfig {
     skillsPath: parsed.skillsPath,
     specsPermissions: parsed.specsPermissions,
     specsApiUrl: parsed.specsApiUrl,
+    mcpConfig: parsed.mcpConfig,
+    mcpServers: parsed.mcpServers,
     callbackSecret,
   };
 }

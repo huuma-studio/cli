@@ -56,7 +56,10 @@ import type {
   TextContent,
   ToolResultContent,
 } from "@huuma/ai/agent";
+import type { McpConnection } from "@huuma/ai/tools";
 import type { Assistant } from "../chat.ts";
+import type { SetupResult } from "../setup.ts";
+import { closeMcpConnections } from "../mcp.ts";
 import {
   type CallbackDeps,
   CallbackError,
@@ -72,8 +75,10 @@ export interface ManagedTurnDeps {
    * `managedSetup`; T7 injects a fake Agent factory for integration tests.
    * The factory MAY chdir into `config.cwd` (the real `managedSetup` does);
    * the runner calls `loadManagedInput` before this factory so a relative
-   * `--history` path resolves against the CLI invocation cwd. */
-  agentFactory: (config: ManagedConfig) => Promise<Assistant>;
+   * `--history` path resolves against the CLI invocation cwd. Returns a
+   * {@link SetupResult} so the runner can close MCP connections after the
+   * turn. */
+  agentFactory: (config: ManagedConfig) => Promise<SetupResult>;
   /** Injectable callback deps (fetch/now/sleep/random) for deterministic
    * delivery behavior. T6 injects production deps; T7 injects fakes. */
   callbackDeps: CallbackDeps;
@@ -88,6 +93,10 @@ export async function runManagedTurn(
   config: ManagedConfig,
   deps: ManagedTurnDeps,
 ): Promise<void> {
+  // MCP connections opened by the agent factory. Tracked so the `finally`
+  // block can close them on every exit path (success, failure, early return).
+  let mcpConnections: McpConnection[] = [];
+  try {
   // 1. Construct the reporter FIRST. Setup and input failures can still
   //    produce `turn.failed` if delivery remains possible (PLAN: "Initialize
   //    the reporter early enough that sanitized setup failures can produce
@@ -145,10 +154,13 @@ export async function runManagedTurn(
   // 3. Build the Agent. `managedSetup` may throw on setup failure (bad
   //    tools, missing credentials, unknown provider — `resolveManagedConfig`
   //    caught most of these, but `managedSetup` still enforces
-  //    `--host`-only-for-ollama and defensive API-key checks).
+  //    `--host`-only-for-ollama and defensive API-key checks). Returns a
+  //    `SetupResult` so the runner can track MCP connections for cleanup.
   let assistant: Assistant;
   try {
-    assistant = await deps.agentFactory(config);
+    const result = await deps.agentFactory(config);
+    assistant = result.assistant;
+    mcpConnections = result.mcpConnections;
   } catch (error) {
     await attemptTurnFailed(error);
     Deno.exitCode = 1;
@@ -266,6 +278,13 @@ export async function runManagedTurn(
   } catch {
     // Terminal delivery failed. Never switch to `turn.failed`.
     Deno.exitCode = 1;
+  }
+  } finally {
+    // Close all MCP connections on every exit path — success, failure, and
+    // all early returns. `closeMcpConnections` is best-effort: individual
+    // `close()` failures are logged but never throw, so cleanup never
+    // interferes with the already-decided exit code or terminal callback.
+    await closeMcpConnections(mcpConnections);
   }
 }
 

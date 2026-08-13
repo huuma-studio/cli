@@ -1,7 +1,7 @@
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { withEnv } from "./testing.ts";
-import { resolveTools } from "./tools.ts";
+import { allToolNames, resolveTools } from "./tools.ts";
 
 /** The names of the tools {@link resolveTools} builds for `names`, in order. */
 function toolNames(names: string[]): string[] {
@@ -151,4 +151,43 @@ Deno.test("resolveTools ignores the removed env vars", async () => {
       assertThrows(() => resolveTools(["search"]), Error, "--search-engine");
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// mcp tool factory
+// ---------------------------------------------------------------------------
+
+Deno.test("allToolNames includes mcp", () => {
+  // allToolNames() is the source of truth for --help and the unknown-name
+  // error; mcp must appear so users can discover it.
+  assertStringIncludes(allToolNames().join(","), "mcp");
+});
+
+Deno.test("resolveTools mcp throws when no MCP tools are configured", () => {
+  assertThrows(
+    () => resolveTools(["mcp"]),
+    Error,
+    "The mcp tool requires at least one MCP server",
+  );
+});
+
+Deno.test("resolveTools mcp throws when mcpTools is empty", () => {
+  assertThrows(
+    () => resolveTools(["mcp"], { mcpTools: [] }),
+    Error,
+    "The mcp tool requires at least one MCP server",
+  );
+});
+
+Deno.test("resolveTools mcp returns pre-resolved tools when configured", () => {
+  // Pass fake tools through mcpTools — the factory should return them as-is.
+  const fakeTool = {
+    name: "mcp_echo",
+    description: "fake MCP tool",
+    inputSchema: { type: "object", properties: {} },
+    call: () => Promise.resolve({ output: "ok" }),
+  };
+  const { tools } = resolveTools(["mcp"], { mcpTools: [fakeTool] as never });
+  assertEquals(tools.length, 1);
+  assertEquals(tools[0]!.name, "mcp_echo");
 });

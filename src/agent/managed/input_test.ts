@@ -25,6 +25,8 @@ function configWithHistory(historyPath: string): ManagedConfig {
     skillsPath: undefined,
     specsPermissions: [],
     specsApiUrl: undefined,
+    mcpConfig: undefined,
+    mcpServers: [],
     callbackSecret: "secret",
   };
 }

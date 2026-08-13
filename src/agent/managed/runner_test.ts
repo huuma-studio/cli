@@ -19,6 +19,7 @@ import { assertEquals, assertNotEquals } from "@std/assert";
 import type { CallbackDeps, ResponseLike } from "./callback.ts";
 import type { ManagedConfig } from "./config.ts";
 import type { Assistant } from "../chat.ts";
+import type { SetupResult } from "../setup.ts";
 import { type ManagedTurnDeps, runManagedTurn } from "./runner.ts";
 
 // ---------------------------------------------------------------------------
@@ -160,9 +161,9 @@ function makeFakeAgentFactory(opts: FakeAgentOptions = {}) {
   let runCallCount = 0;
 
   // `async` matches the `ManagedTurnDeps.agentFactory` signature
-  // `(config) => Promise<Assistant>`; the body is synchronous today.
+  // `(config) => Promise<SetupResult>`; the body is synchronous today.
   // deno-lint-ignore require-await
-  const factory = async (config: ManagedConfig): Promise<Assistant> => {
+  const factory = async (config: ManagedConfig): Promise<SetupResult> => {
     receivedConfig = config;
     const run: Assistant["run"] = async (prompt, history, options) => {
       runCallCount += 1;
@@ -191,7 +192,7 @@ function makeFakeAgentFactory(opts: FakeAgentOptions = {}) {
       }
       return messages;
     };
-    return { run };
+    return { assistant: { run }, mcpConnections: [] };
   };
 
   return {
@@ -290,6 +291,8 @@ async function makeConfig(
     skillsPath: undefined,
     specsPermissions: [],
     specsApiUrl: undefined,
+    mcpConfig: undefined,
+    mcpServers: [],
     callbackSecret: opts.callbackSecret ?? CALLBACK_SECRET,
   };
   return {
@@ -1173,7 +1176,7 @@ Deno.test("loadManagedInput fails (missing file) → turn.failed, no turn.runnin
 Deno.test("agentFactory throws (setup failure) → turn.failed, no turn.running", async () => {
   await withExitCode(async () => {
     const cb = makeCallbackDeps();
-    const failingFactory = (_config: ManagedConfig): Promise<Assistant> =>
+    const failingFactory = (_config: ManagedConfig): Promise<SetupResult> =>
       Promise.reject(new Error("managedSetup blew up"));
     const { config, cleanup } = await makeConfig();
     try {
@@ -1340,6 +1343,87 @@ Deno.test("agentFactory receives the config and run receives the split prompt + 
       assertEquals(history!.length, 2);
       assertEquals((history![0] as Message).role, "user");
       assertEquals((history![1] as Message).role, "model");
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 24. MCP connection cleanup — connections are closed on every exit path
+// ---------------------------------------------------------------------------
+
+Deno.test("MCP connections are closed after a successful managed turn", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    let closed = false;
+    const fakeConn = {
+      close: () => { closed = true; return Promise.resolve(); },
+    };
+    const agent = makeFakeAgentFactory({
+      extraEmissions: [finishTurnMessage("completion")],
+    });
+    const { config, cleanup } = await makeConfig();
+    try {
+      // Wrap the factory to inject fake MCP connections.
+      await runManagedTurn(config, {
+        agentFactory: async (cfg) => {
+          const result = await agent.factory(cfg);
+          return { ...result, mcpConnections: [fakeConn] as never };
+        },
+        callbackDeps: cb.deps,
+      });
+      assertEquals(Deno.exitCode, 0);
+      assertEquals(closed, true);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+Deno.test("MCP connections are closed when agent.run throws", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    let closed = false;
+    const fakeConn = {
+      close: () => { closed = true; return Promise.resolve(); },
+    };
+    const agent = makeFakeAgentFactory({
+      extraEmissions: [modelMessage("partial")],
+      throwAfterAll: true,
+      throwError: new Error("provider failed"),
+    });
+    const { config, cleanup } = await makeConfig();
+    try {
+      await runManagedTurn(config, {
+        agentFactory: async (cfg) => {
+          const result = await agent.factory(cfg);
+          return { ...result, mcpConnections: [fakeConn] as never };
+        },
+        callbackDeps: cb.deps,
+      });
+      assertEquals(Deno.exitCode, 1);
+      assertEquals(closed, true);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+Deno.test("MCP connections are closed when agentFactory throws", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    // No connections to close since agentFactory threw before returning them,
+    // but the finally block must still run without error.
+    const failingFactory = (_config: ManagedConfig): Promise<SetupResult> =>
+      Promise.reject(new Error("setup failed"));
+    const { config, cleanup } = await makeConfig();
+    try {
+      await runManagedTurn(config, {
+        agentFactory: failingFactory,
+        callbackDeps: cb.deps,
+      });
+      assertEquals(Deno.exitCode, 1);
     } finally {
       await cleanup();
     }

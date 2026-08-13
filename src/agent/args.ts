@@ -30,6 +30,10 @@ export interface LocalAgentArgs {
   specsPermissions: string[];
   /** Studio internal API base URL from `--specs-api-url`. */
   specsApiUrl: string | undefined;
+  /** Path to the MCP config file from `--mcp-config`. */
+  mcpConfig: string | undefined;
+  /** Inline MCP server specs from `--mcp-server` (repeatable). */
+  mcpServers: string[];
   prompt: string;
   help: false;
 }
@@ -60,6 +64,10 @@ export interface ManagedAgentArgs {
   specsPermissions: string[];
   /** Studio internal API base URL from `--specs-api-url`. */
   specsApiUrl: string | undefined;
+  /** Path to the MCP config file from `--mcp-config`. */
+  mcpConfig: string | undefined;
+  /** Inline MCP server specs from `--mcp-server` (repeatable). */
+  mcpServers: string[];
   /** Always `""` in managed mode — positional prompts are rejected. */
   prompt: string;
   help: false;
@@ -113,6 +121,8 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
   let skillsPath: string | undefined;
   let specsPermissions: string[] = [];
   let specsApiUrl: string | undefined;
+  let mcpConfig: string | undefined;
+  let mcpServers: string[] = [];
   let history: string | undefined;
   let cwd: string | undefined;
   let callbackUrl: string | undefined;
@@ -216,6 +226,23 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
       specsApiUrl = specsApiUrlValue;
       continue;
     }
+    const mcpConfigValue = valueFlag(
+      "--mcp-config",
+      "--mcp-config .huuma/mcp.json",
+    );
+    if (mcpConfigValue !== undefined) {
+      mcpConfig = mcpConfigValue;
+      continue;
+    }
+    // --mcp-server is repeatable: each occurrence adds one inline spec.
+    const mcpServerValue = valueFlag(
+      "--mcp-server",
+      "--mcp-server myserver=command:npx -y @some/mcp-server",
+    );
+    if (mcpServerValue !== undefined) {
+      mcpServers.push(mcpServerValue);
+      continue;
+    }
     // Managed-turn-only flags. Parsed in both forms like every other value
     // flag. --callback-url selects managed mode; the others are rejected after
     // the loop if --callback-url is absent (a partial managed turn is a
@@ -271,9 +298,10 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
           "--tools <list>, --system-prompt <text>, --cli-commands <list>, " +
           "--host <url>, --search-engine <brave|perplexity>, " +
           "--skills-path <dir>, --specs-permissions <list>, " +
-          "--specs-api-url <url>, and the managed-turn flags --history <path>, " +
-          "--cwd <dir>, --callback-url <url>, --run-id <uuid>, " +
-          "--turn-id <uuid>, and --turn-deadline <RFC3339>.",
+          "--specs-api-url <url>, --mcp-config <path>, " +
+          "--mcp-server <name=spec>, and the managed-turn flags " +
+          "--history <path>, --cwd <dir>, --callback-url <url>, " +
+          "--run-id <uuid>, --turn-id <uuid>, and --turn-deadline <RFC3339>.",
       );
     }
     break;
@@ -310,6 +338,8 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
       skillsPath,
       specsPermissions,
       specsApiUrl,
+      mcpConfig,
+      mcpServers,
       prompt,
       help: false,
     };
@@ -337,6 +367,8 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
     skillsPath,
     specsPermissions,
     specsApiUrl,
+    mcpConfig,
+    mcpServers,
     prompt: "",
     help: false,
     history,

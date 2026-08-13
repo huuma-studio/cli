@@ -99,7 +99,7 @@ Deno.test("setup builds an assistant for the google and mistral providers", asyn
         ["mistral", "mistral-small-latest"],
       ]
     ) {
-      const assistant = await setup({ model: { provider, modelId } });
+      const { assistant } = await setup({ model: { provider, modelId } });
       assertEquals(typeof assistant.run, "function");
     }
   });
@@ -208,6 +208,8 @@ function managedConfig(
     skillsPath: overrides.skillsPath,
     specsPermissions: [],
     specsApiUrl: undefined,
+    mcpConfig: undefined,
+    mcpServers: [],
     callbackSecret: "secret",
   };
 }
@@ -225,7 +227,7 @@ Deno.test("managedSetup builds an assistant for every hosted provider", async ()
       const originalCwd = Deno.cwd();
       const dir = await Deno.makeTempDir();
       try {
-        const assistant = await managedSetup(
+        const { assistant } = await managedSetup(
           managedConfig({ model: { provider, modelId }, cwd: dir }),
         );
         assertEquals(typeof assistant.run, "function");
@@ -242,7 +244,7 @@ Deno.test("managedSetup builds an assistant for ollama with --host and no API ke
     const originalCwd = Deno.cwd();
     const dir = await Deno.makeTempDir();
     try {
-      const assistant = await managedSetup(
+      const { assistant } = await managedSetup(
         managedConfig({
           model: { provider: "ollama", modelId: "glm-5.2:cloud" },
           host: "http://localhost:11434",
@@ -373,7 +375,7 @@ Deno.test("managedSetup never reads stdin (completes without hanging when stdin 
     const originalCwd = Deno.cwd();
     const dir = await Deno.makeTempDir();
     try {
-      const assistant = await managedSetup(managedConfig({ cwd: dir }));
+      const { assistant } = await managedSetup(managedConfig({ cwd: dir }));
       assertEquals(typeof assistant.run, "function");
     } finally {
       Deno.chdir(originalCwd);
@@ -440,11 +442,11 @@ Deno.test("managedSetup uses config.systemPrompt when supplied, falls back to SY
     const originalCwd = Deno.cwd();
     const dir = await Deno.makeTempDir();
     try {
-      const a1 = await managedSetup(
+      const { assistant: a1 } = await managedSetup(
         managedConfig({ systemPrompt: "custom", cwd: dir }),
       );
       assertEquals(typeof a1.run, "function");
-      const a2 = await managedSetup(managedConfig({ cwd: dir }));
+      const { assistant: a2 } = await managedSetup(managedConfig({ cwd: dir }));
       assertEquals(typeof a2.run, "function");
     } finally {
       Deno.chdir(originalCwd);
