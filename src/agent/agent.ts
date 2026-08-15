@@ -51,9 +51,11 @@ export default async (args: string[] = []): Promise<string> => {
 
     // Local chat mode (the existing default — unchanged). `parsed` narrows to
     // `LocalAgentArgs` here, which is structurally compatible with
-    // `SetupOptions`.
-    const assistant = await setup(parsed);
-    return await chat(assistant, parsed.prompt);
+    // `SetupOptions`. `setup` returns a `SetupResult` containing the
+    // `Assistant` and any open MCP connections; `chat` closes the connections
+    // after the REPL exits.
+    const { assistant, mcpConnections } = await setup(parsed);
+    return await chat(assistant, parsed.prompt, mcpConnections);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`${red("✖")} ${red(message)}\n`);
@@ -91,6 +93,11 @@ OPTIONS
                             spec:create,task:list,task:read,task:update,
                             task:create)
   --specs-api-url <url>     Studio internal API base URL for the specs tool
+  --mcp-config <path>       Path to an MCP server config file (JSON mapping
+                            server names to transport configs; defaults to
+                            .huuma/mcp.json when present)
+  --mcp-server <name=spec>  Inline MCP server spec (repeatable). stdio:
+                            name=command:cmd args; http: name=url:url
   --system-prompt <text>    Replace the built-in system prompt for this run;
                             output style is then yours to manage
   -h, --help                Show this help
@@ -118,6 +125,44 @@ ENVIRONMENT (secrets only — everything else is a flag)
   HUUMA_AGENT_CALLBACK_SECRET         per-turn callback secret (managed mode
                                       only; never a flag, never logged)
 
+MCP SERVERS
+  Connect external tool servers via the Model Context Protocol. Use
+  --mcp-config <path> to load a JSON file mapping server names to transport
+  configs, or --mcp-server <name=spec> for ad-hoc single servers (repeatable).
+  Both are cumulative; an inline spec overrides a file entry with the same
+  name.
+
+  Config file format (.huuma/mcp.json):
+    {
+      "my-server": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@some/mcp-server"]
+      },
+      "remote-server": {
+        "type": "http",
+        "url": "https://mcp.example.com/sse"
+      },
+      "flaky-server": {
+        "type": "http",
+        "url": "https://mcp.example.com/flaky",
+        "optional": true
+      }
+    }
+
+  Inline specs:
+    --mcp-server myserver=command:npx -y @some/mcp-server
+    --mcp-server remote=url:https://mcp.example.com/sse
+
+  The "optional" field (or omitting a server) controls failure behavior: by
+  default a connection failure is fatal; "optional": true logs a warning and
+  skips the server. stdio servers need permission to spawn subprocesses;
+  HTTP servers need network access to their URL.
+
+  Add "mcp" to --tools to expose the connected servers' tools to the agent:
+    huuma agent --mcp-server myserver=command:npx -y @some/mcp-server \\
+      --tools mcp "Use the tools from myserver"
+
 EXAMPLES
   huuma agent "What is the capital of France?"
   huuma agent --model anthropic/claude-haiku-4-5 "Explain git rebase"
@@ -125,6 +170,8 @@ EXAMPLES
   huuma agent --tools files,cli --cli-commands deno,git "Run the tests"
   huuma agent --skills-path ./other-skills "What skills are installed there?"
   huuma agent --system-prompt "Be a SQL expert, answer only in SQL." "select all users"
+  huuma agent --mcp-server fs=command:npx -y @modelcontextprotocol/server-filesystem /tmp \\
+    --tools mcp,read_file "Read files via the MCP filesystem server"
 
 MANAGED TURN MODE
   Adding --callback-url selects managed turn mode: a single non-interactive

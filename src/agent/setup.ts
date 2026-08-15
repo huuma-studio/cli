@@ -11,6 +11,12 @@ import { envValue } from "./env.ts";
 import type { ManagedConfig } from "./managed/config.ts";
 import type { SubagentContext } from "./subagents/mod.ts";
 import { resolveSubagents, resolveTools, skillsTool } from "./tools.ts";
+import {
+  closeMcpConnections,
+  type McpConnection,
+  resolveMcpConfig,
+  resolveMcpServers,
+} from "./mcp.ts";
 
 export const SYSTEM_PROMPT =
   "You are Huuma Agent, a helpful assistant running in a terminal. " +
@@ -31,14 +37,24 @@ export interface ResolvedAgentTools {
  * {@link setup} so the "skills are on by default" behavior (ADR 0009) is
  * testable without a provider. Bad tool names or `cli`/`search` config throw
  * here, keeping the fail-early invariant. */
-export function resolveAgentTools(options: SetupOptions): ResolvedAgentTools {
-  const { cliCommands, searchEngine, skillsPath, specsPermissions, specsApiUrl } = options;
+export function resolveAgentTools(
+  options: SetupOptions,
+  mcpTools?: ReturnType<typeof resolveTools>["tools"],
+): ResolvedAgentTools {
+  const {
+    cliCommands,
+    searchEngine,
+    skillsPath,
+    specsPermissions,
+    specsApiUrl,
+  } = options;
   const { tools, subagentNames } = resolveTools(options.tools ?? [], {
     cliCommands,
     searchEngine,
     skillsPath,
     specsPermissions,
     specsApiUrl,
+    mcpTools,
   });
   // Skills are a baseline capability, on for every run. The pair is prepended to
   // the action tools unless `--tools` already listed `skills` — in which case
@@ -68,101 +84,145 @@ export interface SetupOptions {
   specsPermissions?: string[];
   /** Studio internal API base URL from `--specs-api-url`. */
   specsApiUrl?: string;
+  /** Path to the MCP config file from `--mcp-config`. */
+  mcpConfig?: string;
+  /** Inline MCP server specs from `--mcp-server` (repeatable). */
+  mcpServers?: string[];
 }
 
-export async function setup(options: SetupOptions = {}): Promise<Assistant> {
+/** The outcome of {@link setup}: the {@link Assistant} plus the open MCP
+ * connections (empty when no MCP servers are configured). The caller owns
+ * the connection lifecycle — closing them after the agent run. */
+export interface SetupResult {
+  assistant: Assistant;
+  mcpConnections: McpConnection[];
+}
+
+export async function setup(options: SetupOptions = {}): Promise<SetupResult> {
   const { model } = options;
-  // Resolve tools and the always-on skills baseline first so a bad tool name or
-  // config fails before any provider prompt. Preset sub-agents need the
-  // resolved model, so only their names are validated here and their
-  // construction waits for a provider branch.
-  const { tools, subagentNames, skillsBaseline } = resolveAgentTools(options);
-  // A supplied system prompt replaces the built-in for this run; absent falls
-  // back to SYSTEM_PROMPT. See ADR 0006.
-  const resolvedSystemPrompt = options.systemPrompt ?? SYSTEM_PROMPT;
+  const mcpSelected =
+    options.tools?.some((tool) => tool.toLowerCase() === "mcp") ?? false;
 
-  // Shared tail of every provider branch: the sub-agent presets run on the
-  // same model the parent agent is built with (ADR 0005). Skills go first so a
-  // model that lists tools sees discovery before actions.
-  const build = <T extends string>(ctx: SubagentContext<T>): Assistant =>
-    agent({
-      model: ctx.model,
-      modelId: ctx.modelId,
-      systemPrompt: resolvedSystemPrompt,
-      tools: [
-        ...skillsBaseline,
-        ...tools,
-        ...resolveSubagents(subagentNames, ctx),
-      ],
-    });
+  // Resolve MCP servers BEFORE resolveAgentTools so the `mcp` tool factory
+  // (which needs pre-connected tools) has them available. MCP connections are
+  // async, so they happen in this dedicated step before the synchronous
+  // tool-resolution and build closure.
+  const mcpServerConfigs = mcpSelected
+    ? await resolveMcpConfig(options.mcpConfig, options.mcpServers ?? [])
+    : [];
+  const { connections: mcpConnections, tools: mcpTools } =
+    await resolveMcpServers(mcpServerConfigs);
 
-  // The provider and model come from the --model flag (argv is the one
-  // channel a tooled agent cannot mutate mid-run — same argument as the
-  // system prompt, ADR 0006), otherwise from interactive prompts. There is
-  // deliberately no env var for either (ADR 0007).
-  const provider = model?.provider ??
-    await choose(
-      [
-        { label: "anthropic", description: "Anthropic API" },
-        { label: "openai", description: "OpenAI or any OpenAI-compatible API" },
-        {
-          label: "ollama",
-          description: "Local or cloud models running via Ollama",
-        },
-        { label: "google", description: "Google Gemini API" },
-        { label: "mistral", description: "Mistral API" },
-      ],
-      "Select a model provider:",
+  // Resolve tools and the always-on skills baseline. Preset sub-agents need
+  // the resolved model, so only their names are validated here and their
+  // construction waits for a provider branch. The `mcpTools` are passed
+  // through `ToolConfig` so the `mcp` factory returns them synchronously.
+  // If tool resolution throws (bad tool name, missing config), close the
+  // already-open MCP connections so they don't leak.
+  try {
+    const { tools, subagentNames, skillsBaseline } = resolveAgentTools(
+      options,
+      mcpTools,
     );
 
-  // Hosted-provider endpoints are fixed in code; only the ollama branch
-  // reads --host. A supplied flag elsewhere is a mistake, and failing loud
-  // beats silently ignoring it (ADR 0008).
-  if (options.host !== undefined && provider !== "ollama") {
-    throw new Error("--host is only supported for the ollama provider.");
+    // A supplied system prompt replaces the built-in for this run; absent falls
+    // back to SYSTEM_PROMPT. See ADR 0006.
+    const resolvedSystemPrompt = options.systemPrompt ?? SYSTEM_PROMPT;
+
+    // Shared tail of every provider branch: the sub-agent presets run on the
+    // same model the parent agent is built with (ADR 0005). Skills go first so a
+    // model that lists tools sees discovery before actions.
+    const build = <T extends string>(ctx: SubagentContext<T>): SetupResult => ({
+      assistant: agent({
+        model: ctx.model,
+        modelId: ctx.modelId,
+        systemPrompt: resolvedSystemPrompt,
+        tools: [
+          ...skillsBaseline,
+          ...tools,
+          ...resolveSubagents(subagentNames, ctx),
+        ],
+      }),
+      mcpConnections,
+    });
+
+    // The provider and model come from the --model flag (argv is the one
+    // channel a tooled agent cannot mutate mid-run — same argument as the
+    // system prompt, ADR 0006), otherwise from interactive prompts. There is
+    // deliberately no env var for either (ADR 0007).
+    const provider = model?.provider ??
+      await choose(
+        [
+          { label: "anthropic", description: "Anthropic API" },
+          {
+            label: "openai",
+            description: "OpenAI or any OpenAI-compatible API",
+          },
+          {
+            label: "ollama",
+            description: "Local or cloud models running via Ollama",
+          },
+          { label: "google", description: "Google Gemini API" },
+          { label: "mistral", description: "Mistral API" },
+        ],
+        "Select a model provider:",
+      );
+
+    // Hosted-provider endpoints are fixed in code; only the ollama branch
+    // reads --host. A supplied flag elsewhere is a mistake, and failing loud
+    // beats silently ignoring it (ADR 0008).
+    if (options.host !== undefined && provider !== "ollama") {
+      throw new Error("--host is only supported for the ollama provider.");
+    }
+
+    if (provider === "anthropic") {
+      const apiKey = await resolveApiKey("Anthropic");
+      const modelId = await resolveModel(model?.modelId, "claude-haiku-4-5");
+
+      return build({ model: anthropic({ apiKey }), modelId });
+    }
+
+    if (provider === "openai") {
+      const apiKey = await resolveApiKey("OpenAI");
+      const modelId = await resolveModel(model?.modelId, "gpt-4o-mini");
+
+      return build({ model: openai({ apiKey }), modelId });
+    }
+
+    if (provider === "ollama") {
+      const host = options.host ??
+        await question("Ollama host:", { default: "http://localhost:11434" });
+      const apiKey = ollamaApiKey();
+      const modelId = await resolveModel(model?.modelId, "glm-5.2:cloud");
+
+      return build({ model: ollama({ host, apiKey }), modelId });
+    }
+
+    if (provider === "google") {
+      const apiKey = await resolveApiKey("Google");
+      const modelId = await resolveModel(model?.modelId, "gemini-2.5-flash");
+
+      return build({ model: google({ apiKey }), modelId });
+    }
+
+    if (provider === "mistral") {
+      const apiKey = await resolveApiKey("Mistral");
+      const modelId = await resolveModel(
+        model?.modelId,
+        "mistral-small-latest",
+      );
+
+      return build({ model: mistral({ apiKey }), modelId });
+    }
+
+    throw new Error(
+      `Unknown provider "${provider}". Use --model <provider>/<model> with ` +
+        "one of: anthropic, openai, google, mistral, ollama.",
+    );
+  } catch (error) {
+    await closeMcpConnections(mcpConnections);
+    throw error;
   }
-
-  if (provider === "anthropic") {
-    const apiKey = await resolveApiKey("Anthropic");
-    const modelId = await resolveModel(model?.modelId, "claude-haiku-4-5");
-
-    return build({ model: anthropic({ apiKey }), modelId });
-  }
-
-  if (provider === "openai") {
-    const apiKey = await resolveApiKey("OpenAI");
-    const modelId = await resolveModel(model?.modelId, "gpt-4o-mini");
-
-    return build({ model: openai({ apiKey }), modelId });
-  }
-
-  if (provider === "ollama") {
-    const host = options.host ??
-      await question("Ollama host:", { default: "http://localhost:11434" });
-    const apiKey = ollamaApiKey();
-    const modelId = await resolveModel(model?.modelId, "glm-5.2:cloud");
-
-    return build({ model: ollama({ host, apiKey }), modelId });
-  }
-
-  if (provider === "google") {
-    const apiKey = await resolveApiKey("Google");
-    const modelId = await resolveModel(model?.modelId, "gemini-2.5-flash");
-
-    return build({ model: google({ apiKey }), modelId });
-  }
-
-  if (provider === "mistral") {
-    const apiKey = await resolveApiKey("Mistral");
-    const modelId = await resolveModel(model?.modelId, "mistral-small-latest");
-
-    return build({ model: mistral({ apiKey }), modelId });
-  }
-
-  throw new Error(
-    `Unknown provider "${provider}". Use --model <provider>/<model> with ` +
-      "one of: anthropic, openai, google, mistral, ollama.",
-  );
 }
 
 /** Model id from the --model flag, otherwise an interactive prompt. */
@@ -246,105 +306,104 @@ export function buildManagedAgent<T extends string>(
  *
  * `config.callbackSecret` is never read here — T3's callback reporter is the
  * sole consumer. */
-// `async` matches the `setup()` signature and the spec's `Promise<Assistant>`
-// return type; the body is synchronous today but stays async so future awaits
-// (e.g. async tool resolution) can be added without breaking the contract.
-// deno-lint-ignore require-await
+// `async` — the body awaits `resolveMcpServers` for MCP tool resolution.
 export async function managedSetup(
   config: ManagedConfig,
-): Promise<Assistant> {
+): Promise<SetupResult> {
   // Enter the workspace before tool setup so the default `.agents/skills`
   // and any relative `--skills-path` resolve inside it (PLAN, "Related
   // upstream work"). The caller (T5) is responsible for having already read
   // `--history` via `loadManagedInput` before this chdir.
   Deno.chdir(config.cwd);
 
+  // Resolve MCP servers BEFORE resolveAgentTools, same as the local `setup`.
+  const mcpSelected = config.tools.some((tool) => tool.toLowerCase() === "mcp");
+  const mcpServerConfigs = mcpSelected
+    ? await resolveMcpConfig(config.mcpConfig, config.mcpServers ?? [])
+    : [];
+  const { connections: mcpConnections, tools: mcpTools } =
+    await resolveMcpServers(mcpServerConfigs);
+
   // Resolve tools and the always-on skills baseline first so a bad tool name
   // or config fails before any provider credential is read. Same fail-early
-  // invariant as the local `setup`.
-  const { tools, subagentNames, skillsBaseline } = resolveAgentTools(config);
-  const resolvedSystemPrompt = config.systemPrompt ?? SYSTEM_PROMPT;
+  // invariant as the local `setup`. If tool resolution throws, close the
+  // already-open MCP connections so they don't leak.
+  try {
+    const { tools, subagentNames, skillsBaseline } = resolveAgentTools(
+      config,
+      mcpTools,
+    );
+    const resolvedSystemPrompt = config.systemPrompt ?? SYSTEM_PROMPT;
 
-  const provider = config.model.provider;
-  // Hosted-provider endpoints are fixed in code; only ollama reads --host.
-  // `resolveManagedConfig` already enforced this, but the defensive check
-  // keeps `managedSetup` honest if it is ever called without the resolver.
-  if (config.host !== undefined && provider !== "ollama") {
-    throw new Error("--host is only supported for the ollama provider.");
-  }
-
-  if (provider === "anthropic") {
-    const apiKey = requiredManagedApiKey(provider);
-    return buildManagedAgent(
-      { model: anthropic({ apiKey }), modelId: config.model.modelId },
-      {
+    // Shared build tail for every provider branch — wraps the managed agent
+    // and the MCP connections in a {@link SetupResult} so the caller can clean
+    // up connections after the turn.
+    const buildManaged = <T extends string>(
+      ctx: SubagentContext<T>,
+    ): SetupResult => ({
+      assistant: buildManagedAgent(ctx, {
         tools,
         skillsBaseline,
         subagentNames,
         systemPrompt: resolvedSystemPrompt,
-      },
-    );
-  }
+      }),
+      mcpConnections,
+    });
 
-  if (provider === "openai") {
-    const apiKey = requiredManagedApiKey(provider);
-    return buildManagedAgent(
-      { model: openai({ apiKey }), modelId: config.model.modelId },
-      {
-        tools,
-        skillsBaseline,
-        subagentNames,
-        systemPrompt: resolvedSystemPrompt,
-      },
-    );
-  }
+    const provider = config.model.provider;
+    // Hosted-provider endpoints are fixed in code; only ollama reads --host.
+    // `resolveManagedConfig` already enforced this, but the defensive check
+    // keeps `managedSetup` honest if it is ever called without the resolver.
+    if (config.host !== undefined && provider !== "ollama") {
+      throw new Error("--host is only supported for the ollama provider.");
+    }
 
-  if (provider === "ollama") {
-    // `resolveManagedConfig` enforced `--host` for ollama; `config.host` is
-    // always present here. The API key is optional for unauthenticated hosts.
-    const host = config.host!;
-    const apiKey = ollamaApiKey();
-    return buildManagedAgent(
-      { model: ollama({ host, apiKey }), modelId: config.model.modelId },
-      {
-        tools,
-        skillsBaseline,
-        subagentNames,
-        systemPrompt: resolvedSystemPrompt,
-      },
-    );
-  }
+    if (provider === "anthropic") {
+      const apiKey = requiredManagedApiKey(provider);
+      return buildManaged(
+        { model: anthropic({ apiKey }), modelId: config.model.modelId },
+      );
+    }
 
-  if (provider === "google") {
-    const apiKey = requiredManagedApiKey(provider);
-    return buildManagedAgent(
-      { model: google({ apiKey }), modelId: config.model.modelId },
-      {
-        tools,
-        skillsBaseline,
-        subagentNames,
-        systemPrompt: resolvedSystemPrompt,
-      },
-    );
-  }
+    if (provider === "openai") {
+      const apiKey = requiredManagedApiKey(provider);
+      return buildManaged(
+        { model: openai({ apiKey }), modelId: config.model.modelId },
+      );
+    }
 
-  if (provider === "mistral") {
-    const apiKey = requiredManagedApiKey(provider);
-    return buildManagedAgent(
-      { model: mistral({ apiKey }), modelId: config.model.modelId },
-      {
-        tools,
-        skillsBaseline,
-        subagentNames,
-        systemPrompt: resolvedSystemPrompt,
-      },
-    );
-  }
+    if (provider === "ollama") {
+      // `resolveManagedConfig` enforced `--host` for ollama; `config.host` is
+      // always present here. The API key is optional for unauthenticated hosts.
+      const host = config.host!;
+      const apiKey = ollamaApiKey();
+      return buildManaged(
+        { model: ollama({ host, apiKey }), modelId: config.model.modelId },
+      );
+    }
 
-  throw new Error(
-    `Unknown provider "${provider}". Use --model <provider>/<model> with ` +
-      "one of: anthropic, openai, google, mistral, ollama.",
-  );
+    if (provider === "google") {
+      const apiKey = requiredManagedApiKey(provider);
+      return buildManaged(
+        { model: google({ apiKey }), modelId: config.model.modelId },
+      );
+    }
+
+    if (provider === "mistral") {
+      const apiKey = requiredManagedApiKey(provider);
+      return buildManaged(
+        { model: mistral({ apiKey }), modelId: config.model.modelId },
+      );
+    }
+
+    throw new Error(
+      `Unknown provider "${provider}". Use --model <provider>/<model> with ` +
+        "one of: anthropic, openai, google, mistral, ollama.",
+    );
+  } catch (error) {
+    await closeMcpConnections(mcpConnections);
+    throw error;
+  }
 }
 
 /** Reads `HUUMA_AGENT_API_KEY` for a hosted provider in managed turn mode and

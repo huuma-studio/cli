@@ -1,6 +1,7 @@
 import type { Message, ToolResultContent } from "@huuma/ai/agent";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import type { Assistant } from "../chat.ts";
+import type { SetupResult } from "../setup.ts";
 import type { CallbackDeps, ResponseLike } from "./callback.ts";
 import type { ManagedConfig } from "./config.ts";
 import { runManagedTurn } from "./runner.ts";
@@ -97,7 +98,7 @@ function finish(outcome: "completion" | "question"): Message {
 function fakeAssistant(
   emissions: Message[],
   opts: { throwAfter?: Error } = {},
-): { factory: () => Promise<Assistant>; runs: () => number } {
+): { factory: () => Promise<SetupResult>; runs: () => number } {
   let runCount = 0;
   return {
     runs: () => runCount,
@@ -112,7 +113,7 @@ function fakeAssistant(
         if (opts.throwAfter) throw opts.throwAfter;
         return all;
       };
-      return Promise.resolve({ run });
+      return Promise.resolve({ assistant: { run }, mcpConnections: [] });
     },
   };
 }
@@ -151,6 +152,8 @@ async function config(
       skillsPath: undefined,
       specsPermissions: [],
       specsApiUrl: undefined,
+      mcpConfig: undefined,
+      mcpServers: [],
     },
     cleanup: async () => {
       if (!opts.missingHistory) await Deno.remove(historyPath);
@@ -321,7 +324,7 @@ Deno.test("managed integration reports setup and input initialization failures",
     const setupExit = await withExitCode(() =>
       runManagedTurn(setupConfig.value, {
         agentFactory: async () =>
-          await Promise.reject(new Error("setup failed")),
+          Promise.reject(new Error("setup failed")),
         callbackDeps: setup.deps,
       })
     );

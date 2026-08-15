@@ -189,3 +189,31 @@ Deno.test("chat flags a failed one-shot with a non-zero exit code", async () => 
     Deno.exitCode = priorExitCode;
   }
 });
+
+Deno.test("chat closes MCP connections after a one-shot", async () => {
+  let closed = false;
+  const assistant: Assistant = {
+    run: () => Promise.resolve([modelReply("hi")]),
+  };
+  const fakeConn = { close: () => { closed = true; return Promise.resolve(); } };
+
+  await quiet(() => chat(assistant, "hello", [fakeConn as never]));
+
+  assertEquals(closed, true);
+});
+
+Deno.test("chat closes MCP connections even when run throws", async () => {
+  const priorExitCode = Deno.exitCode;
+  let closed = false;
+  const assistant: Assistant = {
+    run: () => Promise.reject(new Error("boom")),
+  };
+  const fakeConn = { close: () => { closed = true; return Promise.resolve(); } };
+
+  try {
+    await quiet(() => chat(assistant, "hello", [fakeConn as never]));
+    assertEquals(closed, true);
+  } finally {
+    Deno.exitCode = priorExitCode;
+  }
+});

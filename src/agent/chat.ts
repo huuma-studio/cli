@@ -1,6 +1,8 @@
 import type { agent, Message, TextContent } from "@huuma/ai/agent";
+import type { McpConnection } from "@huuma/ai/tools";
 import { multiline } from "../input.ts";
 import { CLEAR_LINE, dim, green, red, write } from "../terminal.ts";
+import { closeMcpConnections } from "./mcp.ts";
 
 /** The slice of the @huuma/ai agent the REPL drives. Derived from `agent`
  * with `Pick` so the `run` signature tracks @huuma/ai automatically, while
@@ -8,10 +10,27 @@ import { CLEAR_LINE, dim, green, red, write } from "../terminal.ts";
 export type Assistant = Pick<ReturnType<typeof agent>, "run">;
 
 /** Drives the agent: a single answer when `prompt` is non-empty (one-shot),
- * otherwise an interactive REPL until "exit"/"quit" or stdin closes. */
+ * otherwise an interactive REPL until "exit"/"quit" or stdin closes. After
+ * the REPL exits (normal exit, stdin close, or error), all open MCP
+ * connections are closed via `closeMcpConnections` (best-effort — individual
+ * `close()` failures are logged but never throw). */
 export async function chat(
   assistant: Assistant,
   prompt = "",
+  mcpConnections: McpConnection[] = [],
+): Promise<string> {
+  try {
+    return await chatInner(assistant, prompt);
+  } finally {
+    await closeMcpConnections(mcpConnections);
+  }
+}
+
+/** The actual REPL/one-shot logic, separated so {@link chat} can wrap it in
+ * a `try/finally` for MCP connection cleanup. */
+async function chatInner(
+  assistant: Assistant,
+  prompt: string,
 ): Promise<string> {
   const oneShot = prompt.trim();
   if (oneShot) {

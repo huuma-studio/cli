@@ -253,6 +253,7 @@ empty value is rejected. The flag must come before the prompt, like `--tools`.
 | `fetch_website`    | Fetch a URL and return it as Markdown                        |
 | `search`           | Search the web                                               |
 | `specs`            | Live read/write access to a Project's Specs and Tasks        |
+| `mcp`              | Tools from connected MCP (Model Context Protocol) servers   |
 | `skills`           | `list_skills` + `retrieve_skill`; always enabled (see Tools) |
 
 A few tools need extra configuration, supplied through flags; only the search
@@ -265,6 +266,8 @@ API keys are environment variables:
 | `--skills-path <dir>`                  | `skills` | Directory the always-on skills tools scan (default `.agents/skills`)  |
 | `--specs-permissions <list>`           | `specs`  | Comma-separated `entity:operation` permissions to expose             |
 | `--specs-api-url <url>`               | `specs`  | Studio internal API base URL the specs tool calls                     |
+| `--mcp-config <path>`                  | `mcp`    | Path to an MCP server config file (JSON; defaults to `.huuma/mcp.json`) |
+| `--mcp-server <name=spec>`             | `mcp`    | Inline MCP server spec, repeatable (stdio: `name=command:cmd args`; http: `name=url:url`) |
 | `HUUMA_SPECS_API_TOKEN`                | `specs`  | Host-scoped token placed in the `Authorization` header                |
 | `BRAVE_API_KEY` / `PERPLEXITY_API_KEY` | `search` | API key for the chosen search engine                                  |
 
@@ -309,6 +312,51 @@ intended.
 
 Without `HUUMA_SPECS_API_TOKEN` the runner registers no specs functions, so
 the tool is inert outside a Studio-managed sandbox.
+
+#### MCP servers
+
+The `mcp` tool connects to external [Model Context Protocol](https://modelcontextprotocol.io)
+servers and exposes their tools to the agent alongside the built-in ones. Servers
+are configured via a config file or inline flags (both are cumulative; an inline
+spec overrides a file entry with the same name).
+
+**Config file** (`--mcp-config <path>`, defaults to `.huuma/mcp.json` when present):
+a JSON object mapping server names to transport configs.
+
+```json
+{
+  "filesystem": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+  },
+  "remote-api": {
+    "type": "http",
+    "url": "https://mcp.example.com/sse"
+  },
+  "flaky-server": {
+    "type": "http",
+    "url": "https://mcp.example.com/flaky",
+    "optional": true
+  }
+}
+```
+
+**Inline specs** (`--mcp-server <name=spec>`, repeatable):
+
+```bash
+huuma agent --mcp-server fs=command:npx -y @modelcontextprotocol/server-filesystem /tmp \
+  --mcp-server api=url:https://mcp.example.com/sse \
+  --tools mcp "Use the connected MCP tools"
+```
+
+The `optional` field controls failure behavior: by default a connection failure
+is fatal (the agent does not start). Setting `"optional": true` logs a warning
+and skips the server so the run continues with the remaining servers.
+
+Required permissions:
+- **stdio** transport: the agent process must be allowed to spawn subprocesses (`--allow-run`).
+- **http** transport: the agent process must be allowed network access to the server URL (`--allow-net`).
 
 ### Sub-agents
 

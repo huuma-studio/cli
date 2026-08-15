@@ -22,6 +22,8 @@ function parsed(overrides: Partial<LocalAgentArgs> = {}): LocalAgentArgs {
     skillsPath: undefined,
     specsPermissions: [],
     specsApiUrl: undefined,
+    mcpConfig: undefined,
+    mcpServers: [],
     prompt: "",
     help: false,
     ...overrides,
@@ -45,6 +47,8 @@ function managed(
     skillsPath: undefined,
     specsPermissions: [],
     specsApiUrl: undefined,
+    mcpConfig: undefined,
+    mcpServers: [],
     prompt: "",
     help: false,
     history: "/workspace/history.json",
@@ -704,4 +708,92 @@ Deno.test("parseAgentArgs mentions the managed flags in the unknown-flag error",
       flag,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// MCP flags: --mcp-config and --mcp-server
+// ---------------------------------------------------------------------------
+
+Deno.test("parseAgentArgs reads --mcp-config in both forms, last wins", () => {
+  assertEquals(
+    parseAgentArgs(["--mcp-config", ".huuma/mcp.json", "go"]),
+    parsed({ mcpConfig: ".huuma/mcp.json", prompt: "go" }),
+  );
+  assertEquals(
+    parseAgentArgs(["--mcp-config=.huuma/a.json", "--mcp-config=.huuma/b.json"]),
+    parsed({ mcpConfig: ".huuma/b.json" }),
+  );
+});
+
+Deno.test("parseAgentArgs rejects --mcp-config without a value", () => {
+  assertThrows(
+    () => parseAgentArgs(["--mcp-config"]),
+    Error,
+    "Missing value for --mcp-config",
+  );
+  assertThrows(
+    () => parseAgentArgs(["--mcp-config="]),
+    Error,
+    "Missing value for --mcp-config",
+  );
+  assertThrows(
+    () => parseAgentArgs(["--mcp-config", "  "]),
+    Error,
+    "Missing value for --mcp-config",
+  );
+});
+
+Deno.test("parseAgentArgs reads --mcp-server (repeatable, accumulates)", () => {
+  assertEquals(
+    parseAgentArgs([
+      "--mcp-server", "a=command:npx -y foo",
+      "--mcp-server=b=url:http://mcp.example.com",
+      "go",
+    ]),
+    parsed({
+      mcpServers: ["a=command:npx -y foo", "b=url:http://mcp.example.com"],
+      prompt: "go",
+    }),
+  );
+});
+
+Deno.test("parseAgentArgs rejects --mcp-server without a value", () => {
+  assertThrows(
+    () => parseAgentArgs(["--mcp-server"]),
+    Error,
+    "Missing value for --mcp-server",
+  );
+  assertThrows(
+    () => parseAgentArgs(["--mcp-server="]),
+    Error,
+    "Missing value for --mcp-server",
+  );
+});
+
+Deno.test("parseAgentArgs mentions --mcp-config and --mcp-server in the unknown-flag error", () => {
+  assertThrows(() => parseAgentArgs(["--bogus"]), Error, "--mcp-config");
+  assertThrows(() => parseAgentArgs(["--bogus"]), Error, "--mcp-server");
+});
+
+Deno.test("parseAgentArgs threads --mcp-config and --mcp-server into managed mode", () => {
+  assertEquals(
+    parseAgentArgs([
+      "--callback-url", "https://x.invalid/cb",
+      "--history", "/h.json",
+      "--cwd", "/workspace",
+      "--run-id", "11111111-1111-1111-1111-111111111111",
+      "--turn-id", "22222222-2222-2222-2222-222222222222",
+      "--turn-deadline", "2099-01-01T00:00:00Z",
+      "--model", "anthropic/x",
+      "--mcp-config", ".huuma/mcp.json",
+      "--mcp-server", "a=command:npx foo",
+    ]),
+    managed({
+      mcpConfig: ".huuma/mcp.json",
+      mcpServers: ["a=command:npx foo"],
+      model: { provider: "anthropic", modelId: "x" },
+      history: "/h.json",
+      callbackUrl: "https://x.invalid/cb",
+    }),
+  );
 });

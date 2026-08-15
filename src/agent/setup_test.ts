@@ -14,6 +14,13 @@ import {
 import type { ManagedConfig } from "./managed/config.ts";
 import { quiet, withEnv } from "./testing.ts";
 
+const MCP_ECHO_SERVER = join(
+  import.meta.dirname!,
+  "..",
+  "testdata",
+  "mcp_echo_server.ts",
+);
+
 Deno.test("resolveAgentTools includes the skills baseline by default", () => {
   // Skills are on for every run (ADR 0009): with no --tools the skills pair is
   // the only thing on the agent.
@@ -91,6 +98,33 @@ Deno.test("setup rejects an unknown --model provider", async () => {
   );
 });
 
+Deno.test("setup ignores MCP configuration when the mcp tool is not selected", async () => {
+  await withEnv({ HUUMA_AGENT_API_KEY: "key" }, async () => {
+    const { assistant, mcpConnections } = await setup({
+      model: { provider: "openai", modelId: "gpt-4o-mini" },
+      mcpConfig: "/missing/mcp.json",
+      mcpServers: ["unused=url:http://127.0.0.1:1"],
+    });
+    assertEquals(typeof assistant.run, "function");
+    assertEquals(mcpConnections, []);
+  });
+});
+
+Deno.test("setup closes MCP connections when provider validation fails", async () => {
+  await assertRejects(
+    () =>
+      setup({
+        tools: ["mcp"],
+        mcpServers: [
+          `echo=command:deno run -A ${MCP_ECHO_SERVER}`,
+        ],
+        model: { provider: "unknown", modelId: "model" },
+      }),
+    Error,
+    'Unknown provider "unknown"',
+  );
+});
+
 Deno.test("setup builds an assistant for the google and mistral providers", async () => {
   await withEnv({ HUUMA_AGENT_API_KEY: "key" }, async () => {
     for (
@@ -99,7 +133,7 @@ Deno.test("setup builds an assistant for the google and mistral providers", asyn
         ["mistral", "mistral-small-latest"],
       ]
     ) {
-      const assistant = await setup({ model: { provider, modelId } });
+      const { assistant } = await setup({ model: { provider, modelId } });
       assertEquals(typeof assistant.run, "function");
     }
   });
@@ -208,6 +242,8 @@ function managedConfig(
     skillsPath: overrides.skillsPath,
     specsPermissions: [],
     specsApiUrl: undefined,
+    mcpConfig: undefined,
+    mcpServers: [],
     callbackSecret: "secret",
   };
 }
@@ -225,7 +261,7 @@ Deno.test("managedSetup builds an assistant for every hosted provider", async ()
       const originalCwd = Deno.cwd();
       const dir = await Deno.makeTempDir();
       try {
-        const assistant = await managedSetup(
+        const { assistant } = await managedSetup(
           managedConfig({ model: { provider, modelId }, cwd: dir }),
         );
         assertEquals(typeof assistant.run, "function");
@@ -242,7 +278,7 @@ Deno.test("managedSetup builds an assistant for ollama with --host and no API ke
     const originalCwd = Deno.cwd();
     const dir = await Deno.makeTempDir();
     try {
-      const assistant = await managedSetup(
+      const { assistant } = await managedSetup(
         managedConfig({
           model: { provider: "ollama", modelId: "glm-5.2:cloud" },
           host: "http://localhost:11434",
@@ -322,6 +358,27 @@ Deno.test("managedSetup rejects an unknown provider", async () => {
   }
 });
 
+Deno.test("managedSetup ignores MCP configuration when the mcp tool is not selected", async () => {
+  await withEnv({ HUUMA_AGENT_API_KEY: "key" }, async () => {
+    const originalCwd = Deno.cwd();
+    const dir = await Deno.makeTempDir();
+    try {
+      const config = managedConfig({
+        model: { provider: "openai", modelId: "gpt-4o-mini" },
+        cwd: dir,
+      });
+      config.mcpConfig = "/missing/mcp.json";
+      config.mcpServers = ["unused=url:http://127.0.0.1:1"];
+      const { assistant, mcpConnections } = await managedSetup(config);
+      assertEquals(typeof assistant.run, "function");
+      assertEquals(mcpConnections, []);
+    } finally {
+      Deno.chdir(originalCwd);
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    }
+  });
+});
+
 Deno.test("managedSetup rejects a missing HUUMA_AGENT_API_KEY for hosted providers", async () => {
   // `resolveManagedConfig` would have caught this first; the defensive check
   // in `managedSetup` fails fast with the same clean message if the resolver
@@ -373,7 +430,7 @@ Deno.test("managedSetup never reads stdin (completes without hanging when stdin 
     const originalCwd = Deno.cwd();
     const dir = await Deno.makeTempDir();
     try {
-      const assistant = await managedSetup(managedConfig({ cwd: dir }));
+      const { assistant } = await managedSetup(managedConfig({ cwd: dir }));
       assertEquals(typeof assistant.run, "function");
     } finally {
       Deno.chdir(originalCwd);
@@ -440,11 +497,11 @@ Deno.test("managedSetup uses config.systemPrompt when supplied, falls back to SY
     const originalCwd = Deno.cwd();
     const dir = await Deno.makeTempDir();
     try {
-      const a1 = await managedSetup(
+      const { assistant: a1 } = await managedSetup(
         managedConfig({ systemPrompt: "custom", cwd: dir }),
       );
       assertEquals(typeof a1.run, "function");
-      const a2 = await managedSetup(managedConfig({ cwd: dir }));
+      const { assistant: a2 } = await managedSetup(managedConfig({ cwd: dir }));
       assertEquals(typeof a2.run, "function");
     } finally {
       Deno.chdir(originalCwd);

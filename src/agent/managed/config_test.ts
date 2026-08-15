@@ -26,6 +26,8 @@ function validArgs(
     skillsPath: undefined,
     specsPermissions: [],
     specsApiUrl: undefined,
+    mcpConfig: undefined,
+    mcpServers: [],
     prompt: "",
     help: false,
     history: "/workspace/history.json",
