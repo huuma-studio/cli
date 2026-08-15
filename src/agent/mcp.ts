@@ -116,7 +116,9 @@ function parseServerEntry(
   const optional = obj.optional === true;
 
   // stdio transport
-  if (obj.type === "stdio" || (obj.command !== undefined && obj.url === undefined)) {
+  if (
+    obj.type === "stdio" || (obj.command !== undefined && obj.url === undefined)
+  ) {
     const command = obj.command;
     if (typeof command !== "string" || command.trim() === "") {
       throw new Error(
@@ -177,8 +179,8 @@ export function parseInlineMcpServer(value: string): McpServerConfig {
   if (eq === -1) {
     throw new Error(
       `Invalid --mcp-server value "${value}". Expected name=spec, e.g. ` +
-        'myserver=command:npx -y @some/mcp-server or ' +
-        'myserver=url:http://localhost:3000',
+        "myserver=command:npx -y @some/mcp-server or " +
+        "myserver=url:http://localhost:3000",
     );
   }
   const name = value.slice(0, eq);
@@ -346,18 +348,30 @@ export function mergeMcpServers(
 }
 
 /** Resolves MCP config from both a file and inline specs, returning a single
- * merged {@link McpServerConfig}[]. When `configPath` is absent, only inline
- * servers are used. When both are absent, returns an empty array. */
+ * merged {@link McpServerConfig}[]. When `configPath` is absent, the default
+ * config is read when present. A missing default is ignored; an explicit path
+ * remains strict. */
 export async function resolveMcpConfig(
   configPath: string | undefined,
   inlineSpecs: string[],
 ): Promise<McpServerConfig[]> {
   const fileServers: McpServerConfig[] = [];
-  if (configPath) {
-    fileServers.push(...await parseMcpConfig(configPath));
+  const resolvedPath = configPath ?? DEFAULT_MCP_CONFIG_PATH;
+  if (configPath || await pathExists(resolvedPath)) {
+    fileServers.push(...await parseMcpConfig(resolvedPath));
   }
   const inlineServers = inlineSpecs.map((spec) => parseInlineMcpServer(spec));
   return mergeMcpServers(fileServers, inlineServers);
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return false;
+    throw error;
+  }
 }
 
 /** Connects to all configured MCP servers, collects {@link McpConnection}

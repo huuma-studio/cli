@@ -1,4 +1,9 @@
-import { assertEquals, assertRejects, assertStringIncludes, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { join } from "@std/path";
 import {
   closeMcpConnections,
@@ -120,7 +125,11 @@ Deno.test("parseInlineMcpServer parses a stdio spec", () => {
     parseInlineMcpServer("myserver=command:npx -y @some/mcp-server"),
     {
       name: "myserver",
-      transport: { type: "stdio", command: "npx", args: ["-y", "@some/mcp-server"] },
+      transport: {
+        type: "stdio",
+        command: "npx",
+        args: ["-y", "@some/mcp-server"],
+      },
     },
   );
 });
@@ -137,7 +146,9 @@ Deno.test("parseInlineMcpServer parses an http spec", () => {
 
 Deno.test("parseInlineMcpServer parses a stdio spec with quoted args", () => {
   assertEquals(
-    parseInlineMcpServer("fs=command:npx -y '@modelcontextprotocol/server-filesystem' /tmp"),
+    parseInlineMcpServer(
+      "fs=command:npx -y '@modelcontextprotocol/server-filesystem' /tmp",
+    ),
     {
       name: "fs",
       transport: {
@@ -218,7 +229,10 @@ async function writeConfig(
   const dir = await Deno.makeTempDir();
   const path = join(dir, "mcp.json");
   await Deno.writeTextFile(path, content);
-  return { path, cleanup: async () => await Deno.remove(dir, { recursive: true }) };
+  return {
+    path,
+    cleanup: async () => await Deno.remove(dir, { recursive: true }),
+  };
 }
 
 Deno.test("parseMcpConfig parses a valid config file with stdio and http servers", async () => {
@@ -238,7 +252,11 @@ Deno.test("parseMcpConfig parses a valid config file with stdio and http servers
     assertEquals(servers.length, 2);
     assertEquals(servers[0], {
       name: "my-server",
-      transport: { type: "stdio", command: "npx", args: ["-y", "@some/mcp-server"] },
+      transport: {
+        type: "stdio",
+        command: "npx",
+        args: ["-y", "@some/mcp-server"],
+      },
       optional: false,
     });
     assertEquals(servers[1], {
@@ -474,6 +492,24 @@ Deno.test("resolveMcpConfig returns empty when no config or inline specs", async
   assertEquals(await resolveMcpConfig(undefined, []), []);
 });
 
+Deno.test("resolveMcpConfig reads the default config when present", async () => {
+  const originalCwd = Deno.cwd();
+  const root = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(join(root, ".huuma"));
+    await Deno.writeTextFile(
+      join(root, ".huuma", "mcp.json"),
+      JSON.stringify({ srv: { type: "http", url: "https://mcp.example.com" } }),
+    );
+    Deno.chdir(root);
+    const servers = await resolveMcpConfig(undefined, []);
+    assertEquals(servers.map((server) => server.name), ["srv"]);
+  } finally {
+    Deno.chdir(originalCwd);
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("resolveMcpConfig reads a config file only", async () => {
   const { path, cleanup } = await writeConfig(JSON.stringify({
     "srv": { type: "http", url: "https://mcp.example.com" },
@@ -522,12 +558,21 @@ Deno.test("resolveMcpConfig merges file and inline, inline wins on conflict", as
 // ---------------------------------------------------------------------------
 
 /** Path to the minimal MCP echo server fixture. */
-const ECHO_SERVER = join(import.meta.dirname!, "..", "testdata", "mcp_echo_server.ts");
+const ECHO_SERVER = join(
+  import.meta.dirname!,
+  "..",
+  "testdata",
+  "mcp_echo_server.ts",
+);
 
 Deno.test("resolveMcpServers connects to a stdio MCP server and lists tools", async () => {
   const servers: McpServerConfig[] = [{
     name: "echo-server",
-    transport: { type: "stdio", command: "deno", args: ["run", "-A", ECHO_SERVER] },
+    transport: {
+      type: "stdio",
+      command: "deno",
+      args: ["run", "-A", ECHO_SERVER],
+    },
   }];
   const { connections, tools } = await resolveMcpServers(servers);
   try {
@@ -562,7 +607,11 @@ Deno.test("resolveMcpServers skips optional servers on connection failure", asyn
   const servers: McpServerConfig[] = [
     {
       name: "bad-optional",
-      transport: { type: "stdio", command: "nonexistent-command-xyz", args: [] },
+      transport: {
+        type: "stdio",
+        command: "nonexistent-command-xyz",
+        args: [],
+      },
       optional: true,
     },
   ];
@@ -577,11 +626,19 @@ Deno.test("resolveMcpServers closes already-open connections on fail-fast", asyn
   const servers: McpServerConfig[] = [
     {
       name: "good",
-      transport: { type: "stdio", command: "deno", args: ["run", "-A", ECHO_SERVER] },
+      transport: {
+        type: "stdio",
+        command: "deno",
+        args: ["run", "-A", ECHO_SERVER],
+      },
     },
     {
       name: "bad",
-      transport: { type: "stdio", command: "nonexistent-command-xyz", args: [] },
+      transport: {
+        type: "stdio",
+        command: "nonexistent-command-xyz",
+        args: [],
+      },
     },
   ];
   await assertRejects(
@@ -605,8 +662,18 @@ Deno.test("closeMcpConnections is a no-op for an empty array", async () => {
 Deno.test("closeMcpConnections closes all connections", async () => {
   let closedCount = 0;
   const fakeConnections = [
-    { close: () => { closedCount++; return Promise.resolve(); } },
-    { close: () => { closedCount++; return Promise.resolve(); } },
+    {
+      close: () => {
+        closedCount++;
+        return Promise.resolve();
+      },
+    },
+    {
+      close: () => {
+        closedCount++;
+        return Promise.resolve();
+      },
+    },
   ];
   await closeMcpConnections(fakeConnections as never);
   assertEquals(closedCount, 2);

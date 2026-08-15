@@ -41,7 +41,13 @@ export function resolveAgentTools(
   options: SetupOptions,
   mcpTools?: ReturnType<typeof resolveTools>["tools"],
 ): ResolvedAgentTools {
-  const { cliCommands, searchEngine, skillsPath, specsPermissions, specsApiUrl } = options;
+  const {
+    cliCommands,
+    searchEngine,
+    skillsPath,
+    specsPermissions,
+    specsApiUrl,
+  } = options;
   const { tools, subagentNames } = resolveTools(options.tools ?? [], {
     cliCommands,
     searchEngine,
@@ -94,15 +100,16 @@ export interface SetupResult {
 
 export async function setup(options: SetupOptions = {}): Promise<SetupResult> {
   const { model } = options;
+  const mcpSelected =
+    options.tools?.some((tool) => tool.toLowerCase() === "mcp") ?? false;
 
   // Resolve MCP servers BEFORE resolveAgentTools so the `mcp` tool factory
   // (which needs pre-connected tools) has them available. MCP connections are
   // async, so they happen in this dedicated step before the synchronous
   // tool-resolution and build closure.
-  const mcpServerConfigs = await resolveMcpConfig(
-    options.mcpConfig,
-    options.mcpServers ?? [],
-  );
+  const mcpServerConfigs = mcpSelected
+    ? await resolveMcpConfig(options.mcpConfig, options.mcpServers ?? [])
+    : [];
   const { connections: mcpConnections, tools: mcpTools } =
     await resolveMcpServers(mcpServerConfigs);
 
@@ -112,24 +119,20 @@ export async function setup(options: SetupOptions = {}): Promise<SetupResult> {
   // through `ToolConfig` so the `mcp` factory returns them synchronously.
   // If tool resolution throws (bad tool name, missing config), close the
   // already-open MCP connections so they don't leak.
-  let resolved: ResolvedAgentTools;
   try {
-    resolved = resolveAgentTools(options, mcpTools);
-  } catch (error) {
-    await closeMcpConnections(mcpConnections);
-    throw error;
-  }
-  const { tools, subagentNames, skillsBaseline } = resolved;
+    const { tools, subagentNames, skillsBaseline } = resolveAgentTools(
+      options,
+      mcpTools,
+    );
 
-  // A supplied system prompt replaces the built-in for this run; absent falls
-  // back to SYSTEM_PROMPT. See ADR 0006.
-  const resolvedSystemPrompt = options.systemPrompt ?? SYSTEM_PROMPT;
+    // A supplied system prompt replaces the built-in for this run; absent falls
+    // back to SYSTEM_PROMPT. See ADR 0006.
+    const resolvedSystemPrompt = options.systemPrompt ?? SYSTEM_PROMPT;
 
-  // Shared tail of every provider branch: the sub-agent presets run on the
-  // same model the parent agent is built with (ADR 0005). Skills go first so a
-  // model that lists tools sees discovery before actions.
-  const build = <T extends string>(ctx: SubagentContext<T>): SetupResult =>
-    ({
+    // Shared tail of every provider branch: the sub-agent presets run on the
+    // same model the parent agent is built with (ADR 0005). Skills go first so a
+    // model that lists tools sees discovery before actions.
+    const build = <T extends string>(ctx: SubagentContext<T>): SetupResult => ({
       assistant: agent({
         model: ctx.model,
         modelId: ctx.modelId,
@@ -143,73 +146,83 @@ export async function setup(options: SetupOptions = {}): Promise<SetupResult> {
       mcpConnections,
     });
 
-  // The provider and model come from the --model flag (argv is the one
-  // channel a tooled agent cannot mutate mid-run — same argument as the
-  // system prompt, ADR 0006), otherwise from interactive prompts. There is
-  // deliberately no env var for either (ADR 0007).
-  const provider = model?.provider ??
-    await choose(
-      [
-        { label: "anthropic", description: "Anthropic API" },
-        { label: "openai", description: "OpenAI or any OpenAI-compatible API" },
-        {
-          label: "ollama",
-          description: "Local or cloud models running via Ollama",
-        },
-        { label: "google", description: "Google Gemini API" },
-        { label: "mistral", description: "Mistral API" },
-      ],
-      "Select a model provider:",
+    // The provider and model come from the --model flag (argv is the one
+    // channel a tooled agent cannot mutate mid-run — same argument as the
+    // system prompt, ADR 0006), otherwise from interactive prompts. There is
+    // deliberately no env var for either (ADR 0007).
+    const provider = model?.provider ??
+      await choose(
+        [
+          { label: "anthropic", description: "Anthropic API" },
+          {
+            label: "openai",
+            description: "OpenAI or any OpenAI-compatible API",
+          },
+          {
+            label: "ollama",
+            description: "Local or cloud models running via Ollama",
+          },
+          { label: "google", description: "Google Gemini API" },
+          { label: "mistral", description: "Mistral API" },
+        ],
+        "Select a model provider:",
+      );
+
+    // Hosted-provider endpoints are fixed in code; only the ollama branch
+    // reads --host. A supplied flag elsewhere is a mistake, and failing loud
+    // beats silently ignoring it (ADR 0008).
+    if (options.host !== undefined && provider !== "ollama") {
+      throw new Error("--host is only supported for the ollama provider.");
+    }
+
+    if (provider === "anthropic") {
+      const apiKey = await resolveApiKey("Anthropic");
+      const modelId = await resolveModel(model?.modelId, "claude-haiku-4-5");
+
+      return build({ model: anthropic({ apiKey }), modelId });
+    }
+
+    if (provider === "openai") {
+      const apiKey = await resolveApiKey("OpenAI");
+      const modelId = await resolveModel(model?.modelId, "gpt-4o-mini");
+
+      return build({ model: openai({ apiKey }), modelId });
+    }
+
+    if (provider === "ollama") {
+      const host = options.host ??
+        await question("Ollama host:", { default: "http://localhost:11434" });
+      const apiKey = ollamaApiKey();
+      const modelId = await resolveModel(model?.modelId, "glm-5.2:cloud");
+
+      return build({ model: ollama({ host, apiKey }), modelId });
+    }
+
+    if (provider === "google") {
+      const apiKey = await resolveApiKey("Google");
+      const modelId = await resolveModel(model?.modelId, "gemini-2.5-flash");
+
+      return build({ model: google({ apiKey }), modelId });
+    }
+
+    if (provider === "mistral") {
+      const apiKey = await resolveApiKey("Mistral");
+      const modelId = await resolveModel(
+        model?.modelId,
+        "mistral-small-latest",
+      );
+
+      return build({ model: mistral({ apiKey }), modelId });
+    }
+
+    throw new Error(
+      `Unknown provider "${provider}". Use --model <provider>/<model> with ` +
+        "one of: anthropic, openai, google, mistral, ollama.",
     );
-
-  // Hosted-provider endpoints are fixed in code; only the ollama branch
-  // reads --host. A supplied flag elsewhere is a mistake, and failing loud
-  // beats silently ignoring it (ADR 0008).
-  if (options.host !== undefined && provider !== "ollama") {
-    throw new Error("--host is only supported for the ollama provider.");
+  } catch (error) {
+    await closeMcpConnections(mcpConnections);
+    throw error;
   }
-
-  if (provider === "anthropic") {
-    const apiKey = await resolveApiKey("Anthropic");
-    const modelId = await resolveModel(model?.modelId, "claude-haiku-4-5");
-
-    return build({ model: anthropic({ apiKey }), modelId });
-  }
-
-  if (provider === "openai") {
-    const apiKey = await resolveApiKey("OpenAI");
-    const modelId = await resolveModel(model?.modelId, "gpt-4o-mini");
-
-    return build({ model: openai({ apiKey }), modelId });
-  }
-
-  if (provider === "ollama") {
-    const host = options.host ??
-      await question("Ollama host:", { default: "http://localhost:11434" });
-    const apiKey = ollamaApiKey();
-    const modelId = await resolveModel(model?.modelId, "glm-5.2:cloud");
-
-    return build({ model: ollama({ host, apiKey }), modelId });
-  }
-
-  if (provider === "google") {
-    const apiKey = await resolveApiKey("Google");
-    const modelId = await resolveModel(model?.modelId, "gemini-2.5-flash");
-
-    return build({ model: google({ apiKey }), modelId });
-  }
-
-  if (provider === "mistral") {
-    const apiKey = await resolveApiKey("Mistral");
-    const modelId = await resolveModel(model?.modelId, "mistral-small-latest");
-
-    return build({ model: mistral({ apiKey }), modelId });
-  }
-
-  throw new Error(
-    `Unknown provider "${provider}". Use --model <provider>/<model> with ` +
-      "one of: anthropic, openai, google, mistral, ollama.",
-  );
 }
 
 /** Model id from the --model flag, otherwise an interactive prompt. */
@@ -304,10 +317,10 @@ export async function managedSetup(
   Deno.chdir(config.cwd);
 
   // Resolve MCP servers BEFORE resolveAgentTools, same as the local `setup`.
-  const mcpServerConfigs = await resolveMcpConfig(
-    config.mcpConfig,
-    config.mcpServers ?? [],
-  );
+  const mcpSelected = config.tools.some((tool) => tool.toLowerCase() === "mcp");
+  const mcpServerConfigs = mcpSelected
+    ? await resolveMcpConfig(config.mcpConfig, config.mcpServers ?? [])
+    : [];
   const { connections: mcpConnections, tools: mcpTools } =
     await resolveMcpServers(mcpServerConfigs);
 
@@ -315,21 +328,19 @@ export async function managedSetup(
   // or config fails before any provider credential is read. Same fail-early
   // invariant as the local `setup`. If tool resolution throws, close the
   // already-open MCP connections so they don't leak.
-  let resolved: ResolvedAgentTools;
   try {
-    resolved = resolveAgentTools(config, mcpTools);
-  } catch (error) {
-    await closeMcpConnections(mcpConnections);
-    throw error;
-  }
-  const { tools, subagentNames, skillsBaseline } = resolved;
-  const resolvedSystemPrompt = config.systemPrompt ?? SYSTEM_PROMPT;
+    const { tools, subagentNames, skillsBaseline } = resolveAgentTools(
+      config,
+      mcpTools,
+    );
+    const resolvedSystemPrompt = config.systemPrompt ?? SYSTEM_PROMPT;
 
-  // Shared build tail for every provider branch — wraps the managed agent
-  // and the MCP connections in a {@link SetupResult} so the caller can clean
-  // up connections after the turn.
-  const buildManaged = <T extends string>(ctx: SubagentContext<T>): SetupResult =>
-    ({
+    // Shared build tail for every provider branch — wraps the managed agent
+    // and the MCP connections in a {@link SetupResult} so the caller can clean
+    // up connections after the turn.
+    const buildManaged = <T extends string>(
+      ctx: SubagentContext<T>,
+    ): SetupResult => ({
       assistant: buildManagedAgent(ctx, {
         tools,
         skillsBaseline,
@@ -339,56 +350,60 @@ export async function managedSetup(
       mcpConnections,
     });
 
-  const provider = config.model.provider;
-  // Hosted-provider endpoints are fixed in code; only ollama reads --host.
-  // `resolveManagedConfig` already enforced this, but the defensive check
-  // keeps `managedSetup` honest if it is ever called without the resolver.
-  if (config.host !== undefined && provider !== "ollama") {
-    throw new Error("--host is only supported for the ollama provider.");
-  }
+    const provider = config.model.provider;
+    // Hosted-provider endpoints are fixed in code; only ollama reads --host.
+    // `resolveManagedConfig` already enforced this, but the defensive check
+    // keeps `managedSetup` honest if it is ever called without the resolver.
+    if (config.host !== undefined && provider !== "ollama") {
+      throw new Error("--host is only supported for the ollama provider.");
+    }
 
-  if (provider === "anthropic") {
-    const apiKey = requiredManagedApiKey(provider);
-    return buildManaged(
-      { model: anthropic({ apiKey }), modelId: config.model.modelId },
+    if (provider === "anthropic") {
+      const apiKey = requiredManagedApiKey(provider);
+      return buildManaged(
+        { model: anthropic({ apiKey }), modelId: config.model.modelId },
+      );
+    }
+
+    if (provider === "openai") {
+      const apiKey = requiredManagedApiKey(provider);
+      return buildManaged(
+        { model: openai({ apiKey }), modelId: config.model.modelId },
+      );
+    }
+
+    if (provider === "ollama") {
+      // `resolveManagedConfig` enforced `--host` for ollama; `config.host` is
+      // always present here. The API key is optional for unauthenticated hosts.
+      const host = config.host!;
+      const apiKey = ollamaApiKey();
+      return buildManaged(
+        { model: ollama({ host, apiKey }), modelId: config.model.modelId },
+      );
+    }
+
+    if (provider === "google") {
+      const apiKey = requiredManagedApiKey(provider);
+      return buildManaged(
+        { model: google({ apiKey }), modelId: config.model.modelId },
+      );
+    }
+
+    if (provider === "mistral") {
+      const apiKey = requiredManagedApiKey(provider);
+      return buildManaged(
+        { model: mistral({ apiKey }), modelId: config.model.modelId },
+      );
+    }
+
+    throw new Error(
+      `Unknown provider "${provider}". Use --model <provider>/<model> with ` +
+        "one of: anthropic, openai, google, mistral, ollama.",
     );
+  } catch (error) {
+    await closeMcpConnections(mcpConnections);
+    throw error;
   }
-
-  if (provider === "openai") {
-    const apiKey = requiredManagedApiKey(provider);
-    return buildManaged(
-      { model: openai({ apiKey }), modelId: config.model.modelId },
-    );
-  }
-
-  if (provider === "ollama") {
-    // `resolveManagedConfig` enforced `--host` for ollama; `config.host` is
-    // always present here. The API key is optional for unauthenticated hosts.
-    const host = config.host!;
-    const apiKey = ollamaApiKey();
-    return buildManaged(
-      { model: ollama({ host, apiKey }), modelId: config.model.modelId },
-    );
-  }
-
-  if (provider === "google") {
-    const apiKey = requiredManagedApiKey(provider);
-    return buildManaged(
-      { model: google({ apiKey }), modelId: config.model.modelId },
-    );
-  }
-
-  if (provider === "mistral") {
-    const apiKey = requiredManagedApiKey(provider);
-    return buildManaged(
-      { model: mistral({ apiKey }), modelId: config.model.modelId },
-    );
-  }
-
-  throw new Error(
-    `Unknown provider "${provider}". Use --model <provider>/<model> with ` +
-      "one of: anthropic, openai, google, mistral, ollama.",
-  );
 }
 
 /** Reads `HUUMA_AGENT_API_KEY` for a hosted provider in managed turn mode and

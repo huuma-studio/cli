@@ -14,6 +14,13 @@ import {
 import type { ManagedConfig } from "./managed/config.ts";
 import { quiet, withEnv } from "./testing.ts";
 
+const MCP_ECHO_SERVER = join(
+  import.meta.dirname!,
+  "..",
+  "testdata",
+  "mcp_echo_server.ts",
+);
+
 Deno.test("resolveAgentTools includes the skills baseline by default", () => {
   // Skills are on for every run (ADR 0009): with no --tools the skills pair is
   // the only thing on the agent.
@@ -88,6 +95,33 @@ Deno.test("setup rejects an unknown --model provider", async () => {
     () => setup({ model: { provider: "gemini", modelId: "gemini-pro" } }),
     Error,
     'Unknown provider "gemini"',
+  );
+});
+
+Deno.test("setup ignores MCP configuration when the mcp tool is not selected", async () => {
+  await withEnv({ HUUMA_AGENT_API_KEY: "key" }, async () => {
+    const { assistant, mcpConnections } = await setup({
+      model: { provider: "openai", modelId: "gpt-4o-mini" },
+      mcpConfig: "/missing/mcp.json",
+      mcpServers: ["unused=url:http://127.0.0.1:1"],
+    });
+    assertEquals(typeof assistant.run, "function");
+    assertEquals(mcpConnections, []);
+  });
+});
+
+Deno.test("setup closes MCP connections when provider validation fails", async () => {
+  await assertRejects(
+    () =>
+      setup({
+        tools: ["mcp"],
+        mcpServers: [
+          `echo=command:deno run -A ${MCP_ECHO_SERVER}`,
+        ],
+        model: { provider: "unknown", modelId: "model" },
+      }),
+    Error,
+    'Unknown provider "unknown"',
   );
 });
 
@@ -322,6 +356,27 @@ Deno.test("managedSetup rejects an unknown provider", async () => {
     Deno.chdir(originalCwd);
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
+});
+
+Deno.test("managedSetup ignores MCP configuration when the mcp tool is not selected", async () => {
+  await withEnv({ HUUMA_AGENT_API_KEY: "key" }, async () => {
+    const originalCwd = Deno.cwd();
+    const dir = await Deno.makeTempDir();
+    try {
+      const config = managedConfig({
+        model: { provider: "openai", modelId: "gpt-4o-mini" },
+        cwd: dir,
+      });
+      config.mcpConfig = "/missing/mcp.json";
+      config.mcpServers = ["unused=url:http://127.0.0.1:1"];
+      const { assistant, mcpConnections } = await managedSetup(config);
+      assertEquals(typeof assistant.run, "function");
+      assertEquals(mcpConnections, []);
+    } finally {
+      Deno.chdir(originalCwd);
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    }
+  });
 });
 
 Deno.test("managedSetup rejects a missing HUUMA_AGENT_API_KEY for hosted providers", async () => {
