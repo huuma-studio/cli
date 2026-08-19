@@ -1,5 +1,5 @@
 /**
- * Compile-only type-level fixture for the exact `@huuma/ai@0.0.15` managed-turn
+ * Compile-only type-level fixture for the exact `@huuma/ai@0.2.2` managed-turn
  * contract (T1).
  *
  * The file is intentionally never executed. It exists so `deno task check`
@@ -100,7 +100,7 @@ function decodeFinishTurnOutcome(
 }
 
 // Compile-only exports: nothing is exercised at runtime. The function bodies
-// exist purely to anchor the type contract to the public `@huuma/ai@0.0.15`
+// exist purely to anchor the type contract to the public `@huuma/ai@0.2.2`
 // surface.
 export const __typeCheck = {
   buildManagedAgent,
