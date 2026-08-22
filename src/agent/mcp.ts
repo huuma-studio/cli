@@ -137,9 +137,21 @@ function parseServerEntry(
         `MCP server "${name}" in "${path}" has non-string elements in "args".`,
       );
     }
+    const existingArgs = (args as string[]) ?? [];
+    // A command string containing spaces (e.g. "npx -y @some/mcp-server")
+    // was likely entered as a single value in the "command" field rather than
+    // being split into command + args. Tokenize it so the executable is
+    // resolved correctly instead of producing a misleading ENOENT.
+    const [resolvedCommand, ...tokenizedArgs] = command.includes(" ")
+      ? tokenizeStdioCommand(command)
+      : [command];
     return {
       name,
-      transport: { type: "stdio", command, args: (args as string[]) ?? [] },
+      transport: {
+        type: "stdio",
+        command: resolvedCommand!,
+        args: [...tokenizedArgs, ...existingArgs],
+      },
       optional,
     };
   }

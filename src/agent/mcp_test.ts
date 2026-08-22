@@ -430,6 +430,68 @@ Deno.test("parseMcpConfig rejects an http server with a missing url", async () =
   }
 });
 
+Deno.test("parseMcpConfig tokenizes a command string containing spaces into command + args", async () => {
+  const { path, cleanup } = await writeConfig(JSON.stringify({
+    "my-server": {
+      type: "stdio",
+      command: "npx -y @some/mcp-server",
+    },
+  }));
+  try {
+    const servers = await parseMcpConfig(path);
+    assertEquals(servers[0], {
+      name: "my-server",
+      transport: {
+        type: "stdio",
+        command: "npx",
+        args: ["-y", "@some/mcp-server"],
+      },
+      optional: false,
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("parseMcpConfig merges tokenized command args with explicit args", async () => {
+  const { path, cleanup } = await writeConfig(JSON.stringify({
+    "my-server": {
+      type: "stdio",
+      command: "npx -y @some/mcp-server",
+      args: ["--port", "3000"],
+    },
+  }));
+  try {
+    const servers = await parseMcpConfig(path);
+    assertEquals(servers[0]!.transport, {
+      type: "stdio",
+      command: "npx",
+      args: ["-y", "@some/mcp-server", "--port", "3000"],
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("parseMcpConfig tokenizes a command with quoted args", async () => {
+  const { path, cleanup } = await writeConfig(JSON.stringify({
+    "fs": {
+      type: "stdio",
+      command: "npx -y '@modelcontextprotocol/server-filesystem' /tmp",
+    },
+  }));
+  try {
+    const servers = await parseMcpConfig(path);
+    assertEquals(servers[0]!.transport, {
+      type: "stdio",
+      command: "npx",
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
 Deno.test("parseMcpConfig returns empty array for an empty object", async () => {
   const { path, cleanup } = await writeConfig("{}");
   try {
