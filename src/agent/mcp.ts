@@ -142,7 +142,13 @@ function parseServerEntry(
     // was likely entered as a single value in the "command" field rather than
     // being split into command + args. Tokenize it so the executable is
     // resolved correctly instead of producing a misleading ENOENT.
-    const [resolvedCommand, ...tokenizedArgs] = command.includes(" ")
+    //
+    // Skip tokenization when the portion before the first space contains a
+    // path separator — it's likely an executable path that contains spaces
+    // (e.g. "/path with spaces/npx"), and splitting would break it.
+    const needsTokenization = command.includes(" ") &&
+      !command.slice(0, command.indexOf(" ")).match(/[/\\]/);
+    const [resolvedCommand, ...tokenizedArgs] = needsTokenization
       ? tokenizeStdioCommand(command)
       : [command];
     return {

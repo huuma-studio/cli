@@ -473,6 +473,26 @@ Deno.test("parseMcpConfig merges tokenized command args with explicit args", asy
   }
 });
 
+Deno.test("parseMcpConfig preserves a command that is an executable path with spaces", async () => {
+  const { path, cleanup } = await writeConfig(JSON.stringify({
+    "my-server": {
+      type: "stdio",
+      command: "/path with spaces/npx",
+      args: ["-y", "@some/mcp-server"],
+    },
+  }));
+  try {
+    const servers = await parseMcpConfig(path);
+    assertEquals(servers[0]!.transport, {
+      type: "stdio",
+      command: "/path with spaces/npx",
+      args: ["-y", "@some/mcp-server"],
+    });
+  } finally {
+    await cleanup();
+  }
+});
+
 Deno.test("parseMcpConfig tokenizes a command with quoted args", async () => {
   const { path, cleanup } = await writeConfig(JSON.stringify({
     "fs": {
