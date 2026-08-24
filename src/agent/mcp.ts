@@ -138,16 +138,13 @@ function parseServerEntry(
       );
     }
     const existingArgs = (args as string[]) ?? [];
-    // A command string containing spaces (e.g. "npx -y @some/mcp-server")
-    // was likely entered as a single value in the "command" field rather than
-    // being split into command + args. Tokenize it so the executable is
-    // resolved correctly instead of producing a misleading ENOENT.
-    //
-    // Skip tokenization when the portion before the first space contains a
-    // path separator — it's likely an executable path that contains spaces
-    // (e.g. "/path with spaces/npx"), and splitting would break it.
-    const needsTokenization = command.includes(" ") &&
-      !command.slice(0, command.indexOf(" ")).match(/[/\\]/);
+    // A command containing whitespace (e.g. "npx -y @some/mcp-server") was
+    // likely entered as a single value instead of being split into command +
+    // args. Preserve it only when the complete value identifies a real file,
+    // which disambiguates executable paths containing spaces from commands
+    // such as "/usr/bin/npx -y @some/mcp-server".
+    const needsTokenization = hasWhitespace(command) &&
+      !isExistingFile(command);
     const [resolvedCommand, ...tokenizedArgs] = needsTokenization
       ? tokenizeStdioCommand(command)
       : [command];
@@ -338,6 +335,21 @@ export function tokenizeStdioCommand(input: string): string[] {
 
 function isWhitespace(ch: string): boolean {
   return ch === " " || ch === "\t" || ch === "\n" || ch === "\r";
+}
+
+function hasWhitespace(value: string): boolean {
+  for (const ch of value) {
+    if (isWhitespace(ch)) return true;
+  }
+  return false;
+}
+
+function isExistingFile(path: string): boolean {
+  try {
+    return Deno.statSync(path).isFile;
+  } catch {
+    return false;
+  }
 }
 
 /** Merges servers from a config file with inline `--mcp-server` specs.

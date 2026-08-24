@@ -473,25 +473,75 @@ Deno.test("parseMcpConfig merges tokenized command args with explicit args", asy
   }
 });
 
-Deno.test("parseMcpConfig preserves a command that is an executable path with spaces", async () => {
+Deno.test("parseMcpConfig preserves an existing executable path with spaces", async () => {
+  const executableDir = await Deno.makeTempDir({ suffix: " path with spaces" });
+  const executable = join(executableDir, "mcp-server");
+  await Deno.writeTextFile(executable, "");
   const { path, cleanup } = await writeConfig(JSON.stringify({
     "my-server": {
       type: "stdio",
-      command: "/path with spaces/npx",
-      args: ["-y", "@some/mcp-server"],
+      command: executable,
+      args: ["--port", "3000"],
     },
   }));
   try {
     const servers = await parseMcpConfig(path);
     assertEquals(servers[0]!.transport, {
       type: "stdio",
-      command: "/path with spaces/npx",
+      command: executable,
+      args: ["--port", "3000"],
+    });
+  } finally {
+    await cleanup();
+    await Deno.remove(executableDir, { recursive: true });
+  }
+});
+
+Deno.test("parseMcpConfig tokenizes a path-qualified command with args", async () => {
+  const { path, cleanup } = await writeConfig(JSON.stringify({
+    "my-server": {
+      type: "stdio",
+      command: "/usr/bin/npx -y @some/mcp-server",
+    },
+  }));
+  try {
+    const servers = await parseMcpConfig(path);
+    assertEquals(servers[0]!.transport, {
+      type: "stdio",
+      command: "/usr/bin/npx",
       args: ["-y", "@some/mcp-server"],
     });
   } finally {
     await cleanup();
   }
 });
+
+for (
+  const [name, separator] of [
+    ["tab", "\t"],
+    ["newline", "\n"],
+    ["carriage return", "\r"],
+  ] as const
+) {
+  Deno.test(`parseMcpConfig tokenizes command fields separated by ${name}`, async () => {
+    const { path, cleanup } = await writeConfig(JSON.stringify({
+      "my-server": {
+        type: "stdio",
+        command: `npx${separator}-y${separator}@some/mcp-server`,
+      },
+    }));
+    try {
+      const servers = await parseMcpConfig(path);
+      assertEquals(servers[0]!.transport, {
+        type: "stdio",
+        command: "npx",
+        args: ["-y", "@some/mcp-server"],
+      });
+    } finally {
+      await cleanup();
+    }
+  });
+}
 
 Deno.test("parseMcpConfig tokenizes a command with quoted args", async () => {
   const { path, cleanup } = await writeConfig(JSON.stringify({
