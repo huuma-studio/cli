@@ -137,9 +137,24 @@ function parseServerEntry(
         `MCP server "${name}" in "${path}" has non-string elements in "args".`,
       );
     }
+    const existingArgs = (args as string[]) ?? [];
+    // A command containing whitespace (e.g. "npx -y @some/mcp-server") was
+    // likely entered as a single value instead of being split into command +
+    // args. Preserve it only when the complete value identifies a real file,
+    // which disambiguates executable paths containing spaces from commands
+    // such as "/usr/bin/npx -y @some/mcp-server".
+    const needsTokenization = hasWhitespace(command) &&
+      !isExistingFile(command);
+    const [resolvedCommand, ...tokenizedArgs] = needsTokenization
+      ? tokenizeStdioCommand(command)
+      : [command];
     return {
       name,
-      transport: { type: "stdio", command, args: (args as string[]) ?? [] },
+      transport: {
+        type: "stdio",
+        command: resolvedCommand!,
+        args: [...tokenizedArgs, ...existingArgs],
+      },
       optional,
     };
   }
@@ -320,6 +335,21 @@ export function tokenizeStdioCommand(input: string): string[] {
 
 function isWhitespace(ch: string): boolean {
   return ch === " " || ch === "\t" || ch === "\n" || ch === "\r";
+}
+
+function hasWhitespace(value: string): boolean {
+  for (const ch of value) {
+    if (isWhitespace(ch)) return true;
+  }
+  return false;
+}
+
+function isExistingFile(path: string): boolean {
+  try {
+    return Deno.statSync(path).isFile;
+  } catch {
+    return false;
+  }
 }
 
 /** Merges servers from a config file with inline `--mcp-server` specs.
