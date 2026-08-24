@@ -834,10 +834,12 @@ Deno.test("agent.run throws non-callback error → turn.failed with sanitized er
       throwError: new Error("provider exploded"),
     });
     const { config, cleanup } = await makeConfig();
+    const errors: string[] = [];
     try {
       await runManagedTurn(config, {
         agentFactory: agent.factory,
         callbackDeps: cb.deps,
+        logError: (message) => errors.push(message),
       });
       assertEquals(Deno.exitCode, 1);
       assertEquals(eventKinds(cb.fetchCalls), [
@@ -849,6 +851,7 @@ Deno.test("agent.run throws non-callback error → turn.failed with sanitized er
         error: string;
       };
       assertNotEquals(failed.error.indexOf("provider exploded"), -1);
+      assertEquals(errors, ["[managed:agent.run] provider exploded"]);
     } finally {
       await cleanup();
     }
@@ -1179,10 +1182,12 @@ Deno.test("agentFactory throws (setup failure) → turn.failed, no turn.running"
     const failingFactory = (_config: ManagedConfig): Promise<SetupResult> =>
       Promise.reject(new Error("managedSetup blew up"));
     const { config, cleanup } = await makeConfig();
+    const errors: string[] = [];
     try {
       await runManagedTurn(config, {
         agentFactory: failingFactory,
         callbackDeps: cb.deps,
+        logError: (message) => errors.push(message),
       });
       assertEquals(Deno.exitCode, 1);
       // Input loaded but agentFactory failed: only turn.failed attempted.
@@ -1192,6 +1197,7 @@ Deno.test("agentFactory throws (setup failure) → turn.failed, no turn.running"
         error: string;
       };
       assertNotEquals(failed.error.indexOf("managedSetup blew up"), -1);
+      assertEquals(errors, ["[managed:setup] managedSetup blew up"]);
     } finally {
       await cleanup();
     }
@@ -1358,7 +1364,10 @@ Deno.test("MCP connections are closed after a successful managed turn", async ()
     const cb = makeCallbackDeps();
     let closed = false;
     const fakeConn = {
-      close: () => { closed = true; return Promise.resolve(); },
+      close: () => {
+        closed = true;
+        return Promise.resolve();
+      },
     };
     const agent = makeFakeAgentFactory({
       extraEmissions: [finishTurnMessage("completion")],
@@ -1386,7 +1395,10 @@ Deno.test("MCP connections are closed when agent.run throws", async () => {
     const cb = makeCallbackDeps();
     let closed = false;
     const fakeConn = {
-      close: () => { closed = true; return Promise.resolve(); },
+      close: () => {
+        closed = true;
+        return Promise.resolve();
+      },
     };
     const agent = makeFakeAgentFactory({
       extraEmissions: [modelMessage("partial")],

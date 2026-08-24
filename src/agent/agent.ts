@@ -1,6 +1,7 @@
 import { red } from "../terminal.ts";
 import { parseAgentArgs } from "./args.ts";
 import { chat } from "./chat.ts";
+import { reportAgentError } from "./diagnostics.ts";
 import type { CallbackDeps, ResponseLike } from "./managed/callback.ts";
 import { resolveManagedConfig } from "./managed/config.ts";
 import { runManagedTurn } from "./managed/runner.ts";
@@ -27,6 +28,8 @@ const productionCallbackDeps: CallbackDeps = {
 };
 
 export default async (args: string[] = []): Promise<string> => {
+  let diagnosticScope: "agent" | "managed" = "agent";
+  let diagnosticStage = "arguments";
   try {
     // A bad flag (--tools, --model, --cli-commands, ...) is rendered like a
     // turn error, not a crash. --help short-circuits before mode dispatch.
@@ -34,14 +37,18 @@ export default async (args: string[] = []): Promise<string> => {
     if (parsed.help) return agentHelp();
 
     if (parsed.mode === "managed") {
+      diagnosticScope = "managed";
+      diagnosticStage = "config";
       // Managed turn mode: validate the atomic flag group, run one non-
       // interactive turn, and return. Never reads stdin, never falls through
       // to local chat. `resolveManagedConfig` throws on validation errors
       // (naming only the flag/env var, never a secret); `runManagedTurn` sets
       // `Deno.exitCode` (0 after turn.finished was acknowledged, 1 otherwise)
       // and never calls `Deno.exit()`. Errors from either propagate to the
-      // outer catch, which prints the message and sets a non-zero exit code.
+      // outer catch, which logs a sanitized, stage-labelled diagnostic and
+      // sets a non-zero exit code.
       const config = resolveManagedConfig(parsed);
+      diagnosticStage = "runner";
       await runManagedTurn(config, {
         agentFactory: managedSetup,
         callbackDeps: productionCallbackDeps,
@@ -54,11 +61,17 @@ export default async (args: string[] = []): Promise<string> => {
     // `SetupOptions`. `setup` returns a `SetupResult` containing the
     // `Assistant` and any open MCP connections; `chat` closes the connections
     // after the REPL exits.
+    diagnosticStage = "setup";
     const { assistant, mcpConnections } = await setup(parsed);
+    diagnosticStage = "chat";
     return await chat(assistant, parsed.prompt, mcpConnections);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`${red("✖")} ${red(message)}\n`);
+    reportAgentError(
+      diagnosticScope,
+      diagnosticStage,
+      error,
+      (message) => console.error(`${red("✖")} ${red(message)}\n`),
+    );
     Deno.exitCode = 1;
     return "";
   }
