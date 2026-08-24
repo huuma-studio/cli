@@ -2,6 +2,19 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import agentCommand from "./agent.ts";
 import { quiet, withEnv } from "./testing.ts";
 
+async function captureConsoleErrors<T>(
+  fn: () => Promise<T>,
+): Promise<{ result: T; errors: string[] }> {
+  const original = console.error;
+  const errors: string[] = [];
+  console.error = (...args: unknown[]) => errors.push(args.join(" "));
+  try {
+    return { result: await fn(), errors };
+  } finally {
+    console.error = original;
+  }
+}
+
 Deno.test("the agent command renders a setup failure instead of crashing", async () => {
   const priorExitCode = Deno.exitCode;
   try {
@@ -23,6 +36,37 @@ Deno.test("the agent command renders an unknown --tools value as an error", asyn
     );
     assertEquals(result, ""); // handled cleanly, not thrown
     assertEquals(Deno.exitCode, 1);
+  } finally {
+    Deno.exitCode = priorExitCode;
+  }
+});
+
+Deno.test("the agent command labels argument errors", async () => {
+  const priorExitCode = Deno.exitCode;
+  try {
+    const { result, errors } = await captureConsoleErrors(() =>
+      agentCommand(["--unknown-option"])
+    );
+    assertEquals(result, "");
+    assertEquals(Deno.exitCode, 1);
+    assertStringIncludes(errors.join("\n"), "[agent:arguments]");
+  } finally {
+    Deno.exitCode = priorExitCode;
+  }
+});
+
+Deno.test("the agent command labels managed configuration errors", async () => {
+  const priorExitCode = Deno.exitCode;
+  try {
+    const { result, errors } = await captureConsoleErrors(() =>
+      agentCommand([
+        "--callback-url",
+        "https://callback.example.test/turns",
+      ])
+    );
+    assertEquals(result, "");
+    assertEquals(Deno.exitCode, 1);
+    assertStringIncludes(errors.join("\n"), "[managed:config]");
   } finally {
     Deno.exitCode = priorExitCode;
   }
