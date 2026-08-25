@@ -1,5 +1,7 @@
-import { assertEquals, assertStringIncludes } from "@std/assert";
-import {
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
+import { create as createDir } from "../directory.ts";
+import website, {
   type BundleFn,
   denoConfigContent,
   devTsContent,
@@ -107,3 +109,116 @@ Deno.test("installBundleForWebsite swallows bundle errors, sets exit 1, and mark
     Deno.exitCode = 0;
   }
 });
+
+// Non-interactive scaffolding tests. These exercise the WebsiteOptions path
+// where all booleans are set, skipping all confirm prompts. They use temp
+// directories and clean up after. `denoConfigContent` calls `latest()` which
+// needs network, so these require --allow-net.
+
+Deno.test("website with all options set scaffolds without prompts", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const originalCwd = Deno.cwd();
+  try {
+    Deno.chdir(tmpDir);
+    await createDir("test-app");
+    await website("test-app", {
+      zed: true,
+      vscode: false,
+      tailwind: true,
+      skills: false,
+    });
+    assert(await fileExists(join(tmpDir, "test-app", "deno.json")));
+    assert(await fileExists(join(tmpDir, "test-app", "app.ts")));
+    assert(await fileExists(join(tmpDir, "test-app", "app", "root.tsx")));
+  } finally {
+    Deno.chdir(originalCwd);
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("tailwind: true produces src/styles.css and static/styles.css", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const originalCwd = Deno.cwd();
+  try {
+    Deno.chdir(tmpDir);
+    await createDir("tw-app");
+    await website("tw-app", { tailwind: true, skills: false });
+    assert(await fileExists(join(tmpDir, "tw-app", "src", "styles.css")));
+    assert(await fileExists(join(tmpDir, "tw-app", "static", "styles.css")));
+  } finally {
+    Deno.chdir(originalCwd);
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("tailwind: false does not produce Tailwind files", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const originalCwd = Deno.cwd();
+  try {
+    Deno.chdir(tmpDir);
+    await createDir("no-tw-app");
+    await website("no-tw-app", { tailwind: false, skills: false });
+    assert(!await fileExists(join(tmpDir, "no-tw-app", "src", "styles.css")));
+    assert(
+      !await fileExists(join(tmpDir, "no-tw-app", "static", "styles.css")),
+    );
+  } finally {
+    Deno.chdir(originalCwd);
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("zed: true produces .zed/settings.json; zed: false does not", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const originalCwd = Deno.cwd();
+  try {
+    Deno.chdir(tmpDir);
+    await createDir("zed-true");
+    await website("zed-true", { zed: true, skills: false });
+    assert(await fileExists(join(tmpDir, "zed-true", ".zed", "settings.json")));
+
+    await createDir("zed-false");
+    await website("zed-false", { zed: false, skills: false });
+    assert(!await dirExists(join(tmpDir, "zed-false", ".zed")));
+  } finally {
+    Deno.chdir(originalCwd);
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("skills: false does not attempt a bundle install", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const originalCwd = Deno.cwd();
+  const originalExitCode = Deno.exitCode;
+  try {
+    Deno.chdir(tmpDir);
+    Deno.exitCode = 0;
+    await createDir("no-skills-app");
+    await website("no-skills-app", { zed: false, vscode: false, tailwind: false, skills: false });
+    // No bundle install attempted: exit code stays 0, no .agents dir created
+    assertEquals(Deno.exitCode, 0);
+    assert(!await dirExists(join(tmpDir, "no-skills-app", ".agents")));
+  } finally {
+    Deno.chdir(originalCwd);
+    Deno.exitCode = originalExitCode;
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    const info = await Deno.stat(path);
+    return info.isFile;
+  } catch {
+    return false;
+  }
+}
+
+async function dirExists(path: string): Promise<boolean> {
+  try {
+    await Deno.stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}

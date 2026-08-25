@@ -20,9 +20,22 @@ export default async (args: string[] = []) => {
   try {
     parsed = parseArgs(args, {
       string: ["type"],
-      boolean: ["zed", "vscode", "tailwind", "skills"],
+      boolean: [
+        "zed",
+        "vscode",
+        "tailwind",
+        "skills",
+        "no-zed",
+        "no-vscode",
+        "no-tailwind",
+        "no-skills",
+      ],
       unknown: (arg: string) => {
-        throw new Error(`Unknown option: ${arg}`);
+        // Allow positional arguments (project name); only reject unknown
+        // options (anything starting with `-`).
+        if (arg.startsWith("-")) {
+          throw new Error(`Unknown option: ${arg}`);
+        }
       },
     });
   } catch (cause) {
@@ -59,8 +72,7 @@ export default async (args: string[] = []) => {
   }
 
   await createDir(name);
-  await type(name, parsed.type, parsed);
-  return "";
+  return await type(name, parsed.type, parsed);
 };
 
 /** Usage text shown for `huuma project --help`. Types are derived from the
@@ -131,14 +143,19 @@ async function type(
 
   const cmd = registry.find(typeName)!;
 
-  // Build WebsiteOptions from parsed boolean flags. Only pass through flags
-  // that were explicitly set (boolean, not undefined) so the type command
-  // knows whether to use the value or fall back to its own prompt.
+  // Build WebsiteOptions from parsed boolean flags. Map both the positive
+  // (`--zed` → true) and negative (`--no-zed` → false) variants. Only pass
+  // through flags that were explicitly set so the type command knows whether
+  // to use the value or fall back to its own prompt.
   const options: WebsiteOptions = {};
-  if (typeof parsed.zed === "boolean") options.zed = parsed.zed;
-  if (typeof parsed.vscode === "boolean") options.vscode = parsed.vscode;
-  if (typeof parsed.tailwind === "boolean") options.tailwind = parsed.tailwind;
-  if (typeof parsed.skills === "boolean") options.skills = parsed.skills;
+  if (parsed["no-zed"]) options.zed = false;
+  else if (parsed.zed) options.zed = true;
+  if (parsed["no-vscode"]) options.vscode = false;
+  else if (parsed.vscode) options.vscode = true;
+  if (parsed["no-tailwind"]) options.tailwind = false;
+  else if (parsed.tailwind) options.tailwind = true;
+  if (parsed["no-skills"]) options.skills = false;
+  else if (parsed.skills) options.skills = true;
 
-  await cmd.command(projectName, options);
+  return await cmd.command(projectName, options);
 }
