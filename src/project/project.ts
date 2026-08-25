@@ -13,6 +13,15 @@ registry.add({
   command: website,
 });
 
+// Boolean flag pairs: positive → negative. Used for contradictory-flag
+// detection and WebsiteOptions resolution.
+const flagPairs = [
+  ["zed", "no-zed"],
+  ["vscode", "no-vscode"],
+  ["tailwind", "no-tailwind"],
+  ["skills", "no-skills"],
+] as const;
+
 export default async (args: string[] = []) => {
   if (args.some(isHelpFlag)) return projectHelp();
 
@@ -20,16 +29,7 @@ export default async (args: string[] = []) => {
   try {
     parsed = parseArgs(args, {
       string: ["type"],
-      boolean: [
-        "zed",
-        "vscode",
-        "tailwind",
-        "skills",
-        "no-zed",
-        "no-vscode",
-        "no-tailwind",
-        "no-skills",
-      ],
+      boolean: flagPairs.flat(),
       unknown: (arg: string) => {
         // Allow positional arguments (project name); only reject unknown
         // options (anything starting with `-`).
@@ -47,6 +47,17 @@ export default async (args: string[] = []) => {
 
   const [projectName] = parsed._.map(String);
 
+  // Reject contradictory flag pairs (e.g. --zed --no-zed).
+  for (const [pos, neg] of flagPairs) {
+    if (parsed[pos] && parsed[neg]) {
+      console.error(
+        red(`✖ Contradictory flags: --${pos} and --${neg}`),
+      );
+      Deno.exitCode = 1;
+      return "";
+    }
+  }
+
   // Non-terminal context: required options must be supplied via flags.
   if (!Deno.stdin.isTerminal()) {
     if (!projectName) {
@@ -58,6 +69,20 @@ export default async (args: string[] = []) => {
     if (!parsed.type) {
       console.error(red("✖ Missing required option: --type <type>"));
       console.error(projectHelp());
+      Deno.exitCode = 1;
+      return "";
+    }
+  }
+
+  // Validate --type before creating any directories, so an invalid type
+  // doesn't leave an empty project directory on disk.
+  if (parsed.type) {
+    const cmd = registry.find(parsed.type);
+    if (!cmd) {
+      const validTypes = registry.all().map((c) => c.names[0]).join(", ");
+      console.error(
+        red(`✖ Invalid type '${parsed.type}'. Valid types: ${validTypes}`),
+      );
       Deno.exitCode = 1;
       return "";
     }
@@ -116,19 +141,8 @@ async function type(
   let typeName: string;
 
   if (typeFlag) {
-    const cmd = registry.find(typeFlag);
-    if (!cmd) {
-      const validTypes = registry.all().map((c) => c.names[0]).join(", ");
-      const message =
-        `Invalid type '${typeFlag}'. Valid types: ${validTypes}`;
-      if (!Deno.stdin.isTerminal()) {
-        console.error(red(`✖ ${message}`));
-        Deno.exitCode = 1;
-        return "";
-      }
-      throw new Error(message);
-    }
-    typeName = cmd.names[0];
+    // Already validated before directory creation — safe to trust.
+    typeName = registry.find(typeFlag)!.names[0];
   } else {
     // Fall back to interactive selection.
     const input = await choose(
@@ -148,14 +162,10 @@ async function type(
   // through flags that were explicitly set so the type command knows whether
   // to use the value or fall back to its own prompt.
   const options: WebsiteOptions = {};
-  if (parsed["no-zed"]) options.zed = false;
-  else if (parsed.zed) options.zed = true;
-  if (parsed["no-vscode"]) options.vscode = false;
-  else if (parsed.vscode) options.vscode = true;
-  if (parsed["no-tailwind"]) options.tailwind = false;
-  else if (parsed.tailwind) options.tailwind = true;
-  if (parsed["no-skills"]) options.skills = false;
-  else if (parsed.skills) options.skills = true;
+  for (const [pos, neg] of flagPairs) {
+    if (parsed[neg]) (options as Record<string, boolean>)[pos] = false;
+    else if (parsed[pos]) (options as Record<string, boolean>)[pos] = true;
+  }
 
   return await cmd.command(projectName, options);
 }

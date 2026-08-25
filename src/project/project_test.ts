@@ -54,16 +54,42 @@ Deno.test("missing --type in non-terminal context returns error", async () => {
 });
 
 Deno.test("invalid --type value returns error listing valid types", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const originalCwd = Deno.cwd();
   const errors: string[] = [];
   const originalError = console.error;
   console.error = (msg: string) => errors.push(String(msg));
   Deno.exitCode = 0;
   try {
+    Deno.chdir(tmpDir);
     const result = await project(["my-app", "--type=invalid"]);
     assertEquals(result, "");
     assert(Deno.exitCode === 1);
     assertStringIncludes(errors.join("\n"), "Invalid type");
     assertStringIncludes(errors.join("\n"), "website");
+
+    // No project directory should be left on disk after an invalid type.
+    assert(!await dirExists(join(tmpDir, "my-app")));
+  } finally {
+    console.error = originalError;
+    Deno.exitCode = 0;
+    Deno.chdir(originalCwd);
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("contradictory flags produce an error", async () => {
+  const errors: string[] = [];
+  const originalError = console.error;
+  console.error = (msg: string) => errors.push(String(msg));
+  Deno.exitCode = 0;
+  try {
+    const result = await project(["my-app", "--type=website", "--zed", "--no-zed"]);
+    assertEquals(result, "");
+    assert(Deno.exitCode === 1);
+    assertStringIncludes(errors.join("\n"), "Contradictory flags");
+    assertStringIncludes(errors.join("\n"), "--zed");
+    assertStringIncludes(errors.join("\n"), "--no-zed");
   } finally {
     console.error = originalError;
     Deno.exitCode = 0;
