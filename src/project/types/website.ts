@@ -56,12 +56,38 @@ export async function denoConfigContent(tailwind: boolean): Promise<string> {
 }`;
 }
 
-export default async (projectName: string) => {
-  const addZedSettings = await confirm("Add .zed/settings.json for Deno?");
-  const addVscodeSettings = await confirm(
+export interface WebsiteOptions {
+  zed?: boolean;
+  vscode?: boolean;
+  tailwind?: boolean;
+  skills?: boolean;
+}
+
+/** Resolves a boolean option: if explicitly set, use it directly; if
+ * undefined, fall back to the interactive `confirm` prompt in a terminal,
+ * or `false` when stdin is not a terminal (non-interactive/agent context). */
+async function resolveOption(
+  value: boolean | undefined,
+  prompt: string,
+): Promise<boolean> {
+  if (typeof value === "boolean") return value;
+  if (!Deno.stdin.isTerminal()) return false;
+  return await confirm(prompt);
+}
+
+export default async (projectName: string, options?: WebsiteOptions) => {
+  const addZedSettings = await resolveOption(
+    options?.zed,
+    "Add .zed/settings.json for Deno?",
+  );
+  const addVscodeSettings = await resolveOption(
+    options?.vscode,
     "Add .vscode/settings.json for Deno?",
   );
-  const addTailwind = await confirm("Add Tailwind CSS?");
+  const addTailwind = await resolveOption(
+    options?.tailwind,
+    "Add Tailwind CSS?",
+  );
 
   await createDir(join(projectName, "src"));
   await createDir(join(projectName, "static"));
@@ -83,7 +109,10 @@ export default async (projectName: string) => {
     await vscodeSettings(projectName);
   }
 
-  const addSkillsBundle = await confirm("Add skills bundle from @huuma/ui?");
+  const addSkillsBundle = await resolveOption(
+    options?.skills,
+    "Add skills bundle from @huuma/ui?",
+  );
   if (addSkillsBundle) {
     const outcome = await installBundleForWebsite(projectName);
     // Skip the empty/installed messaging when the bundle failed — the helper
