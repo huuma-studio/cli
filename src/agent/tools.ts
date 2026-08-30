@@ -157,14 +157,14 @@ export function skillsTool(path: string | undefined): AgentTools {
 }
 
 /** The `search` tool. The engine is required via `--search-engine` so the
- * choice is explicit; the provider reads its key from $BRAVE_API_KEY or
- * $PERPLEXITY_API_KEY when the tool runs. */
+ * choice is explicit; the provider reads its key from $BRAVE_API_KEY,
+ * $PERPLEXITY_API_KEY, or $OLLAMA_SEARCH_API_KEY when the tool runs. */
 function searchTool(selectedEngine: string | undefined): AgentTools[number] {
   const engine = selectedEngine?.toLowerCase();
-  if (engine !== "brave" && engine !== "perplexity") {
+  if (engine !== "brave" && engine !== "perplexity" && engine !== "ollama") {
     throw new Error(
-      "The search tool needs an engine. Pass --search-engine brave or " +
-        "--search-engine perplexity.",
+      "The search tool needs an engine. Pass --search-engine brave, " +
+        "--search-engine perplexity, or --search-engine ollama.",
     );
   }
   return search({ engine });

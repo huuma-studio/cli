@@ -139,13 +139,13 @@ HUUMA_AGENT_API_KEY=sk-... \
   huuma agent --model anthropic/claude-haiku-4-5 "Summarize what git is in one line"
 ```
 
-Supported providers are `anthropic`, `openai`, `google`, `mistral`, and
+Supported providers are `anthropic`, `openai`, `google`, `mistral`, `zai`, and
 `ollama`; the model id is whatever the provider accepts
 (`anthropic/claude-haiku-4-5`, `openai/gpt-4o-mini`, `google/gemini-2.5-flash`,
-`mistral/mistral-small-latest`, `ollama/llama3.2`). For Ollama, `--host` sets
-the endpoint (default `http://localhost:11434`); the flag is rejected for other
-providers, whose endpoints are fixed. Only the credentials stay environment
-variables:
+`mistral/mistral-small-latest`, `zai/glm-5.3`, `ollama/llama3.2`). For Ollama,
+`--host` sets the endpoint (default `http://localhost:11434`); the flag is
+rejected for other providers, whose endpoints are fixed. Z.AI targets the GLM
+Coding Plan endpoint. Only the credentials stay environment variables:
 
 | Variable              | Description                                        |
 | --------------------- | -------------------------------------------------- |
@@ -262,14 +262,15 @@ API keys are environment variables:
 | Flag / variable                        | Tool     | Description                                                           |
 | -------------------------------------- | -------- | --------------------------------------------------------------------- |
 | `--cli-commands <list>`                | `cli`    | Comma-separated allow-list of commands the agent may run (`deno,git`) |
-| `--search-engine <engine>`             | `search` | `brave` or `perplexity`                                               |
+| `--search-engine <engine>`             | `search` | `brave`, `perplexity`, or `ollama`                                    |
 | `--skills-path <dir>`                  | `skills` | Directory the always-on skills tools scan (default `.agents/skills`)  |
 | `--specs-permissions <list>`           | `specs`  | Comma-separated `entity:operation` permissions to expose             |
 | `--specs-api-url <url>`               | `specs`  | Studio internal API base URL the specs tool calls                     |
 | `--mcp-config <path>`                  | `mcp`    | Path to an MCP server config file (JSON; defaults to `.huuma/mcp.json`) |
 | `--mcp-server <name=spec>`             | `mcp`    | Inline MCP server spec, repeatable (stdio: `name=command:cmd args`; http: `name=url:url`) |
 | `HUUMA_SPECS_API_TOKEN`                | `specs`  | Host-scoped token placed in the `Authorization` header                |
-| `BRAVE_API_KEY` / `PERPLEXITY_API_KEY` | `search` | API key for the chosen search engine                                  |
+| `BRAVE_API_KEY` / `PERPLEXITY_API_KEY` | `search` | Search API key (brave / perplexity)                                   |
+| `OLLAMA_SEARCH_API_KEY`                | `search` | Search API key (ollama)                                               |
 
 ```bash
 # A read-only research agent

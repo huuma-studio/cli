@@ -92,13 +92,13 @@ OPTIONS
   --model <provider/model>  Provider and model for this run, e.g.
                             anthropic/claude-haiku-4-5 (without the flag the
                             agent asks; providers: anthropic, openai, google,
-                            mistral, ollama)
+                            mistral, zai, ollama)
   --host <url>              Ollama host (default http://localhost:11434);
                             only valid with the ollama provider
   --tools <list>            Comma-separated action tools to enable (default: none;
                             the skills tools are always on — see below)
   --cli-commands <list>     Allow-list for the cli tool, e.g. deno,git
-  --search-engine <engine>  Engine for the search tool: brave | perplexity
+  --search-engine <engine>  Engine for the search tool: brave | perplexity | ollama
   --skills-path <dir>       Directory the skills tools scan (default:
                             .agents/skills); skills are always enabled
   --specs-permissions <list> Granted specs-tool permissions (comma-separated
@@ -132,7 +132,8 @@ ${
 
 ENVIRONMENT (secrets only — everything else is a flag)
   HUUMA_AGENT_API_KEY                 provider API key (omit for a local Ollama)
-  BRAVE_API_KEY / PERPLEXITY_API_KEY  API key for the chosen search engine
+  BRAVE_API_KEY / PERPLEXITY_API_KEY  search API key (brave / perplexity)
+  OLLAMA_SEARCH_API_KEY               search API key (ollama)
   HUUMA_SPECS_API_TOKEN              host-scoped specs-tool token (managed mode;
                                       never a flag, never logged)
   HUUMA_AGENT_CALLBACK_SECRET         per-turn callback secret (managed mode
@@ -212,8 +213,9 @@ MANAGED TURN MODE
   Credentials:
     HUUMA_AGENT_CALLBACK_SECRET  required, non-empty (env var only — never a
                                 flag, never echoed)
-    HUUMA_AGENT_API_KEY          required for anthropic, openai, google, and
-                                mistral; optional for unauthenticated ollama
+    HUUMA_AGENT_API_KEY          required for anthropic, openai, google,
+                                mistral, and zai; optional for unauthenticated
+                                ollama
     --host                       required for ollama (hosted providers ignore
                                 it and reject it)
 

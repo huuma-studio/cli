@@ -4,6 +4,7 @@ import { ollama } from "@huuma/ai/models/ollama";
 import { openai } from "@huuma/ai/models/openai";
 import { google } from "@huuma/ai/models/google";
 import { mistral } from "@huuma/ai/models/mistral";
+import { zai } from "@huuma/ai/models/zai";
 import { choose, question } from "../input.ts";
 import type { ModelSelection } from "./args.ts";
 import type { Assistant } from "./chat.ts";
@@ -164,6 +165,10 @@ export async function setup(options: SetupOptions = {}): Promise<SetupResult> {
           },
           { label: "google", description: "Google Gemini API" },
           { label: "mistral", description: "Mistral API" },
+          {
+            label: "zai",
+            description: "Z.AI (GLM Coding Plan) API",
+          },
         ],
         "Select a model provider:",
       );
@@ -215,9 +220,16 @@ export async function setup(options: SetupOptions = {}): Promise<SetupResult> {
       return build({ model: mistral({ apiKey }), modelId });
     }
 
+    if (provider === "zai") {
+      const apiKey = await resolveApiKey("Z.AI");
+      const modelId = await resolveModel(model?.modelId, "glm-5.3");
+
+      return build({ model: zai({ apiKey }), modelId });
+    }
+
     throw new Error(
       `Unknown provider "${provider}". Use --model <provider>/<model> with ` +
-        "one of: anthropic, openai, google, mistral, ollama.",
+        "one of: anthropic, openai, google, mistral, zai, ollama.",
     );
   } catch (error) {
     await closeMcpConnections(mcpConnections);
@@ -396,9 +408,16 @@ export async function managedSetup(
       );
     }
 
+    if (provider === "zai") {
+      const apiKey = requiredManagedApiKey(provider);
+      return buildManaged(
+        { model: zai({ apiKey }), modelId: config.model.modelId },
+      );
+    }
+
     throw new Error(
       `Unknown provider "${provider}". Use --model <provider>/<model> with ` +
-        "one of: anthropic, openai, google, mistral, ollama.",
+        "one of: anthropic, openai, google, mistral, zai, ollama.",
     );
   } catch (error) {
     await closeMcpConnections(mcpConnections);

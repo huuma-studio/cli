@@ -127,6 +127,12 @@ Deno.test("resolveTools builds search from --search-engine, case-insensitively",
     ),
     ["search"],
   );
+  assertEquals(
+    resolveTools(["search"], { searchEngine: "Ollama" }).tools.map((t) =>
+      t.name
+    ),
+    ["search"],
+  );
 });
 
 Deno.test("resolveTools requires an engine for the search tool", () => {

@@ -10,7 +10,13 @@ export const MIN_DEADLINE_REMAINING_MS = 15_000;
  * `HUUMA_AGENT_API_KEY` in managed turn mode. Ollama is excluded: it runs
  * locally and only requires an explicit `--host`; the API key is optional for
  * unauthenticated hosts. */
-const HOSTED_PROVIDERS = new Set(["anthropic", "openai", "google", "mistral"]);
+const HOSTED_PROVIDERS = new Set([
+  "anthropic",
+  "openai",
+  "google",
+  "mistral",
+  "zai",
+]);
 
 /** The validated, atomic configuration for one managed turn. Built from a
  * {@link ManagedAgentArgs} by {@link resolveManagedConfig}; nothing here is
@@ -180,7 +186,7 @@ export function resolveManagedConfig(parsed: ManagedAgentArgs): ManagedConfig {
   } else {
     throw new Error(
       `Unknown provider "${provider}". Managed turn mode requires --model ` +
-        "with one of: anthropic, openai, google, mistral, ollama.",
+        "with one of: anthropic, openai, google, mistral, zai, ollama.",
     );
   }
 

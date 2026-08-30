@@ -125,12 +125,13 @@ Deno.test("setup closes MCP connections when provider validation fails", async (
   );
 });
 
-Deno.test("setup builds an assistant for the google and mistral providers", async () => {
+Deno.test("setup builds an assistant for the google, mistral, and zai providers", async () => {
   await withEnv({ HUUMA_AGENT_API_KEY: "key" }, async () => {
     for (
       const [provider, modelId] of [
         ["google", "gemini-2.5-flash"],
         ["mistral", "mistral-small-latest"],
+        ["zai", "glm-5.3"],
       ]
     ) {
       const { assistant } = await setup({ model: { provider, modelId } });
@@ -140,7 +141,7 @@ Deno.test("setup builds an assistant for the google and mistral providers", asyn
 });
 
 Deno.test("setup rejects --host for non-ollama providers", async () => {
-  for (const provider of ["anthropic", "openai", "google", "mistral"]) {
+  for (const provider of ["anthropic", "openai", "google", "mistral", "zai"]) {
     await assertRejects(
       () =>
         setup({
@@ -256,6 +257,7 @@ Deno.test("managedSetup builds an assistant for every hosted provider", async ()
         ["openai", "gpt-4o-mini"],
         ["google", "gemini-2.5-flash"],
         ["mistral", "mistral-small-latest"],
+        ["zai", "glm-5.3"],
       ] as const
     ) {
       const originalCwd = Deno.cwd();
@@ -313,7 +315,7 @@ Deno.test("managedSetup sets finishTurn: true (the built-in finish_turn tool is 
 
 Deno.test("managedSetup rejects --host for non-ollama providers", async () => {
   await withEnv({ HUUMA_AGENT_API_KEY: "key" }, async () => {
-    for (const provider of ["anthropic", "openai", "google", "mistral"]) {
+    for (const provider of ["anthropic", "openai", "google", "mistral", "zai"]) {
       const originalCwd = Deno.cwd();
       const dir = await Deno.makeTempDir();
       try {
