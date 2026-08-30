@@ -296,7 +296,7 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
       throw new Error(
         `Unknown flag "${arg}". The agent accepts --model <provider/model>, ` +
           "--tools <list>, --system-prompt <text>, --cli-commands <list>, " +
-          "--host <url>, --search-engine <brave|perplexity>, " +
+          "--host <url>, --search-engine <brave|perplexity|ollama>, " +
           "--skills-path <dir>, --specs-permissions <list>, " +
           "--specs-api-url <url>, --mcp-config <path>, " +
           "--mcp-server <name=spec>, and the managed-turn flags " +

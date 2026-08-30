@@ -404,7 +404,7 @@ Deno.test("resolveManagedConfig never echoes HUUMA_AGENT_API_KEY in error messag
 // ---------------------------------------------------------------------------
 
 Deno.test("resolveManagedConfig requires HUUMA_AGENT_API_KEY for hosted providers", async () => {
-  for (const provider of ["anthropic", "openai", "google", "mistral"]) {
+  for (const provider of ["anthropic", "openai", "google", "mistral", "zai"]) {
     await withEnv(
       {
         HUUMA_AGENT_CALLBACK_SECRET: "s",
@@ -428,7 +428,7 @@ Deno.test("resolveManagedConfig requires HUUMA_AGENT_API_KEY for hosted provider
 
 Deno.test("resolveManagedConfig accepts a hosted provider with HUUMA_AGENT_API_KEY set", async () => {
   await withEnv(REQUIRED_ENV, () => {
-    for (const provider of ["anthropic", "openai", "google", "mistral"]) {
+    for (const provider of ["anthropic", "openai", "google", "mistral", "zai"]) {
       const config = resolveManagedConfig(
         validArgs({ model: { provider, modelId: "m" } }),
       );
