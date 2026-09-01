@@ -148,6 +148,10 @@ interface FakeAgentOptions {
   throwError?: Error;
   /** If true, throws `throwError` after emitting all messages. */
   throwAfterAll?: boolean;
+  /** If set, the first N `run()` invocations throw `throwError` before
+   * emitting anything — the transient model-failure shape the runner's
+   * retry loop (ADR 0010) recovers from. */
+  failFirstRuns?: number;
 }
 
 /** Builds a fake `agentFactory` that returns an `Assistant` whose `run`
@@ -169,6 +173,11 @@ function makeFakeAgentFactory(opts: FakeAgentOptions = {}) {
       runCallCount += 1;
       receivedPrompt = prompt;
       receivedHistory = history;
+      if (
+        opts.failFirstRuns !== undefined && runCallCount <= opts.failFirstRuns
+      ) {
+        throw opts.throwError ?? new Error("fake agent error");
+      }
       const first: Message = opts.firstMessageOverride ??
         {
           role: "user",
@@ -257,6 +266,9 @@ interface MakeConfigOptions {
   runId?: string;
   turnId?: string;
   callbackSecret?: string;
+  /** Additional model-call attempts (ADR 0010). Existing tests default to 0,
+   * pinning today's no-retry paths; retry tests pass an explicit value. */
+  retries?: number;
 }
 
 /** Builds a valid {@link ManagedConfig}. When `historyPath` is unset and
@@ -293,6 +305,9 @@ async function makeConfig(
     specsApiUrl: undefined,
     mcpConfig: undefined,
     mcpServers: [],
+    // Existing tests default to 0, pinning today's no-retry paths; retry
+    // tests pass an explicit value (ADR 0010).
+    retries: opts.retries ?? 0,
     callbackSecret: opts.callbackSecret ?? CALLBACK_SECRET,
   };
   return {
@@ -1529,6 +1544,213 @@ Deno.test("turn.running budget exhausted → turn.failed attempted within termin
       // No turn.running fetch (budget exhausted before the request); exactly
       // one terminal delivery (turn.failed) within the terminal window.
       assertEquals(eventKinds(cb.fetchCalls), ["turn.failed"]);
+      assertEquals(terminalKeyCount(cb.fetchCalls), 1);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Model-call retry (ADR 0010): transient agent.run failures are retried in
+// place while the callback contract — single terminal, monotonic sequences,
+// echo suppression — is preserved on every attempt.
+// ---------------------------------------------------------------------------
+
+Deno.test("managed retry: transient agent.run failure is retried and the turn finishes", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    // Attempt 1 throws before emitting anything; attempt 2 completes.
+    const agent = makeFakeAgentFactory({
+      failFirstRuns: 1,
+      throwError: new Error("429 Too Many Requests"),
+      extraEmissions: [
+        modelMessage("recovered"),
+        finishTurnMessage("completion"),
+      ],
+    });
+    const { config, cleanup } = await makeConfig({ retries: 2 });
+    try {
+      await runManagedTurn(config, {
+        agentFactory: agent.factory,
+        callbackDeps: cb.deps,
+      });
+      assertEquals(Deno.exitCode, 0);
+      assertEquals(agent.runCallCount(), 2);
+      // One backoff sleep for the one retry; delivery itself never retried.
+      assertEquals(cb.sleepCalls.length, 1);
+      assertEquals(eventKinds(cb.fetchCalls), [
+        "turn.running",
+        "message.appended",
+        "message.appended",
+        "turn.finished",
+      ]);
+      assertEquals(terminalKeyCount(cb.fetchCalls), 1);
+      assertEquals(idempotencyKeys(cb.fetchCalls), [
+        `${TURN_ID}:turn.running`,
+        `${TURN_ID}:message.appended:1`,
+        `${TURN_ID}:message.appended:2`,
+        `${TURN_ID}:terminal`,
+      ]);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+Deno.test("managed retry: delivered prefix keeps its sequences and the echo is re-suppressed after a mid-loop transient failure", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    // Attempt 1 emits the triggering user message (suppressed), one model
+    // message (delivered as sequence 1), then fails transiently mid-loop.
+    // Attempt 2 re-emits the user message (re-suppressed) and completes.
+    let runs = 0;
+    const run: Assistant["run"] = async (prompt, _history, options) => {
+      runs += 1;
+      const emissions: Message[] = [
+        { role: "user", contents: prompt as string },
+      ];
+      if (runs === 1) {
+        emissions.push(modelMessage("working"));
+      } else {
+        emissions.push(
+          modelMessage("second try"),
+          finishTurnMessage("completion"),
+        );
+      }
+      const messages: Message[] = [];
+      for (const emission of emissions) {
+        await options?.onMessage?.(emission);
+        messages.push(emission);
+      }
+      if (runs === 1) throw new Error("503 Service Unavailable");
+      return messages;
+    };
+    const factory = async (_config: ManagedConfig): Promise<SetupResult> => ({
+      assistant: { run },
+      mcpConnections: [],
+    });
+    const { config, cleanup } = await makeConfig({ retries: 2 });
+    try {
+      await runManagedTurn(config, {
+        agentFactory: factory,
+        callbackDeps: cb.deps,
+      });
+      assertEquals(Deno.exitCode, 0);
+      assertEquals(runs, 2);
+      // Sequences continue monotonically from the delivered prefix: the
+      // attempt-1 model message stays sequence 1; attempt 2's messages are 2
+      // and 3. The re-emitted triggering user message is never delivered.
+      const seqs = cb.fetchCalls
+        .map((c) =>
+          (decodeBody(c.body) as { turn_sequence?: number }).turn_sequence
+        )
+        .filter((v) => v !== undefined);
+      assertEquals(seqs, [1, 2, 3]);
+      assertEquals(eventKinds(cb.fetchCalls), [
+        "turn.running",
+        "message.appended",
+        "message.appended",
+        "message.appended",
+        "turn.finished",
+      ]);
+      assertEquals(terminalKeyCount(cb.fetchCalls), 1);
+      assertEquals(cb.sleepCalls.length, 1);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+Deno.test("managed retry: exhausted transient failures produce exactly one turn.failed and exit 1", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    const agent = makeFakeAgentFactory({
+      failFirstRuns: 99,
+      throwError: new Error("503 Service Unavailable"),
+    });
+    const { config, cleanup } = await makeConfig({ retries: 2 });
+    const errors: string[] = [];
+    try {
+      await runManagedTurn(config, {
+        agentFactory: agent.factory,
+        callbackDeps: cb.deps,
+        logError: (message) => errors.push(message),
+      });
+      assertEquals(Deno.exitCode, 1);
+      // Initial attempt + 2 retries, then the existing failure path.
+      assertEquals(agent.runCallCount(), 3);
+      assertEquals(cb.sleepCalls.length, 2);
+      assertEquals(eventKinds(cb.fetchCalls), [
+        "turn.running",
+        "turn.failed",
+      ]);
+      assertEquals(terminalKeyCount(cb.fetchCalls), 1);
+      // The last error is reported unchanged.
+      assertEquals(errors, ["[managed:agent.run] 503 Service Unavailable"]);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+Deno.test("managed retry: a permanent model failure fails immediately without retrying", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    const agent = makeFakeAgentFactory({
+      failFirstRuns: 99,
+      throwError: new Error("401 invalid api key"),
+    });
+    const { config, cleanup } = await makeConfig({ retries: 2 });
+    try {
+      await runManagedTurn(config, {
+        agentFactory: agent.factory,
+        callbackDeps: cb.deps,
+      });
+      assertEquals(Deno.exitCode, 1);
+      assertEquals(agent.runCallCount(), 1);
+      assertEquals(cb.sleepCalls.length, 0);
+      assertEquals(eventKinds(cb.fetchCalls), [
+        "turn.running",
+        "turn.failed",
+      ]);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+Deno.test("managed retry: no attempt starts once the terminal reserve is reached", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    const agent = makeFakeAgentFactory({
+      failFirstRuns: 99,
+      throwError: new Error("overloaded"),
+    });
+    // Deadline 30_000 ms → retry cutoff 15_000 ms. With random() = 0 the
+    // backoffs are 125, 250, 500, 1000, then 2500 each (the 5 s cap): the
+    // 10th attempt starts at 13_875 ms, and the sleep after its failure
+    // crosses the cutoff — so the loop stops there, keeping the final 15 s
+    // reserved for terminal delivery.
+    const { config, cleanup } = await makeConfig({
+      retries: 99,
+      turnDeadlineMs: 30_000,
+    });
+    try {
+      await runManagedTurn(config, {
+        agentFactory: agent.factory,
+        callbackDeps: cb.deps,
+      });
+      assertEquals(Deno.exitCode, 1);
+      assertEquals(agent.runCallCount(), 10);
+      assertEquals(cb.sleepCalls, [
+        125, 250, 500, 1000, 2000, 2500, 2500, 2500, 2500, 2500,
+      ]);
+      assertEquals(cb.clock(), 16_375);
+      assertEquals(eventKinds(cb.fetchCalls), [
+        "turn.running",
+        "turn.failed",
+      ]);
       assertEquals(terminalKeyCount(cb.fetchCalls), 1);
     } finally {
       await cleanup();
