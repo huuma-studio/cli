@@ -23,6 +23,7 @@ function validArgs(
     model: { provider: "anthropic", modelId: "claude-haiku-4-5" },
     host: undefined,
     searchEngine: undefined,
+    retries: 2,
     skillsPath: undefined,
     specsPermissions: [],
     specsApiUrl: undefined,
@@ -84,6 +85,7 @@ Deno.test("resolveManagedConfig threads shared agent options through", async () 
         systemPrompt: "Be a SQL expert.",
         searchEngine: "brave",
         skillsPath: "./skills",
+        retries: 4,
       }),
     );
     assertEquals(config.tools, ["grep", "read_file"]);
@@ -91,6 +93,7 @@ Deno.test("resolveManagedConfig threads shared agent options through", async () 
     assertEquals(config.systemPrompt, "Be a SQL expert.");
     assertEquals(config.searchEngine, "brave");
     assertEquals(config.skillsPath, "./skills");
+    assertEquals(config.retries, 4);
   });
 });
 
