@@ -1731,9 +1731,10 @@ Deno.test("managed retry: no attempt starts once the terminal reserve is reached
     // backoffs are 125, 250, 500, 1000, then 2500 each (the 5 s cap): the
     // 10th attempt starts at 13_875 ms, and the sleep after its failure
     // crosses the cutoff — so the loop stops there, keeping the final 15 s
-    // reserved for terminal delivery.
+    // reserved for terminal delivery. retries uses the parser's maximum of
+    // 10 (the cutoff would bind before the 11th attempt anyway).
     const { config, cleanup } = await makeConfig({
-      retries: 99,
+      retries: 10,
       turnDeadlineMs: 30_000,
     });
     try {

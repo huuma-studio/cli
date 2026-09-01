@@ -73,12 +73,16 @@ mid-run; an env var for retry behavior could be persisted by the agent itself
 and silently change every future run.
 
 `--retries <n>` is the number of **additional attempts after the initial
-call**. Default **2**; `--retries 0` disables retrying. It is validated as a
-non-negative integer at parse time, accepted in both space and `=` forms like
-every value flag, valid in both local and managed mode (a shared option, like
-`--model`), and documented in `huuma agent --help`. Setup failures (bad
-flags, missing credentials) stay fail-fast — retrying never masks a
-configuration error.
+call**. Default **2**; `--retries 0` disables retrying; values above **10**
+are rejected at parse time. The cap exists because local retries have no
+deadline — a huge count would be a practically unbounded retry budget, while
+10 retries × the 5 s backoff cap keeps the worst-case wait bounded (managed
+mode is already bounded by `--turn-deadline`). The value is validated as a
+non-negative integer of at most 10 at parse time, accepted in both space and
+`=` forms like every value flag, valid in both local and managed mode (a
+shared option, like `--model`), and documented in `huuma agent --help`.
+Setup failures (bad flags, missing credentials) stay fail-fast — retrying
+never masks a configuration error.
 
 ### Local chat (`respond()`)
 

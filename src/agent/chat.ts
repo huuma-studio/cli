@@ -20,7 +20,7 @@ export type Assistant = Pick<ReturnType<typeof agent>, "run">;
 export interface ChatOptions {
   /** Additional model-call attempts after the initial one when it fails
    * transiently (rate limit, 5xx, network blip — ADR 0010). `0` disables
-   * retrying. From `--retries`; defaults to 2. */
+   * retrying. From `--retries` (which caps the value at 10); defaults to 2. */
   retries?: number;
   /** Injectable timing sources for the retry loop. Defaults to
    * {@link productionRetryDeps}; tests inject recorders. */

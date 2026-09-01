@@ -103,8 +103,8 @@ OPTIONS
   --search-engine <engine>  Engine for the search tool: brave | perplexity | ollama
   --retries <n>             Additional model-call attempts after the initial
                             one when it fails transiently (rate limits, 5xx,
-                            network blips); default 2, --retries 0 disables.
-                            Available in local and managed turn mode
+                            network blips); default 2, max 10, --retries 0
+                            disables. Available in local and managed turn mode
   --skills-path <dir>       Directory the skills tools scan (default:
                             .agents/skills); skills are always enabled
   --specs-permissions <list> Granted specs-tool permissions (comma-separated

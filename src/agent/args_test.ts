@@ -847,20 +847,25 @@ Deno.test("parseAgentArgs rejects a --retries value that is not a non-negative i
   );
 });
 
-Deno.test("parseAgentArgs rejects a --retries value beyond the safe integer range", () => {
-  // Number() maps very long digit strings to Infinity, which would make the
-  // retry bound unreachable (the loop would never exhaust).
-  for (const value of ["9".repeat(400), "9007199254740992"]) {
+Deno.test("parseAgentArgs rejects a --retries value above the maximum of 10", () => {
+  // Local retries have no deadline, so the count is capped: huge values
+  // (safe-integer or not — Number() maps very long digit strings to
+  // Infinity) are rejected rather than accepted as a practically unbounded
+  // retry budget.
+  for (const value of ["11", "100", "9007199254740992", "9".repeat(400)]) {
     assertThrows(
       () => parseAgentArgs(["--retries", value]),
       Error,
       `Invalid --retries value "${value}"`,
     );
   }
-  // The largest safe integer itself is accepted.
-  assertEquals(
-    parseAgentArgs(["--retries", "9007199254740991"]),
-    parsed({ retries: 9007199254740991 }),
+  // Boundary: the maximum itself is accepted.
+  assertEquals(parseAgentArgs(["--retries", "10"]), parsed({ retries: 10 }));
+  assertThrows(
+    () => parseAgentArgs(["--retries=11"]),
+    Error,
+    'Invalid --retries value "11". Expected a non-negative integer of at ' +
+      "most 10",
   );
 });
 
