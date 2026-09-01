@@ -3,16 +3,17 @@ import { array, enums, object, string, uuid } from "@huuma/validate";
 import { envValue } from "./env.ts";
 import type { AgentTools } from "./tools.ts";
 
-/** The eight permissions the `specs` tool kind can expose. Each maps to one
- * tool function the model may call. The Studio grants a subset per Turn and
- * passes it on the `--specs-permissions` flag; the runner exposes only those
- * functions (the Studio API re-checks each one server-side). See
+/** The nine permissions the `specs` tool kind can expose. Each maps to one or
+ * two tool functions the model may call. The Studio grants a subset per Turn
+ * and passes it on the `--specs-permissions` flag; the runner exposes only
+ * those functions (the Studio API re-checks each one server-side). See
  * `docs/specs/agent-specs-tool/RUNNER-CONTRACT.md`. */
 export type SpecsPermission =
   | "spec:list"
   | "spec:read"
   | "spec:update"
   | "spec:create"
+  | "spec:associate"
   | "task:list"
   | "task:read"
   | "task:update"
@@ -26,6 +27,7 @@ export const SPECS_PERMISSIONS: readonly SpecsPermission[] = [
   "spec:read",
   "spec:update",
   "spec:create",
+  "spec:associate",
   "task:list",
   "task:read",
   "task:update",
@@ -63,8 +65,8 @@ export interface SpecsToolOptions {
   specsApiUrl?: string;
 }
 
-/** Builds the `specs` tool set: the six Specs/Tasks functions the model can
- * call, restricted to the permissions granted on `--specs-permissions`.
+/** Builds the `specs` tool set: the eleven Specs/Tasks functions the model
+ * can call, restricted to the permissions granted on `--specs-permissions`.
  *
  * Registration order (RUNNER-CONTRACT, "Sandbox secret" and "Error Handling"):
  * 1. No granted permissions → register nothing (the Studio granted none).
@@ -118,17 +120,25 @@ export function specsTools(options: SpecsToolOptions = {}): AgentTools {
   const granted = new Set(permissions);
   const tools: AgentTools = [];
 
+  // Registration order is contract-documented (RUNNER-CONTRACT §4.2): the
+  // relative order of the original eight functions is unchanged; each new
+  // function registers with its permission's existing block.
   if (granted.has("spec:list")) {
     tools.push(listSpecsTool(base, token));
   }
   if (granted.has("spec:read")) {
     tools.push(readSpecTool(base, token));
+    tools.push(listSpecRunsTool(base, token));
   }
   if (granted.has("spec:update")) {
     tools.push(updateSpecTool(base, token));
   }
   if (granted.has("spec:create")) {
     tools.push(createSpecTool(base, token));
+  }
+  if (granted.has("spec:associate")) {
+    tools.push(associateSpecTool(base, token));
+    tools.push(disassociateSpecTool(base, token));
   }
   if (granted.has("task:list")) {
     tools.push(listTasksTool(base, token));
@@ -167,6 +177,19 @@ function readSpecTool(base: string, token: string): Tool<ReturnType<typeof specI
       "their acceptance criteria, priority, and status.",
     input: specIdInput(),
     fn: ({ spec_id }) => specsRequest("GET", `${base}/specs/${spec_id}`, token),
+  });
+}
+
+/** `list_spec_runs` — Runs associated with a Spec (summaries, newest first). */
+function listSpecRunsTool(base: string, token: string): Tool<ReturnType<typeof specIdInput>, unknown> {
+  return tool({
+    name: "list_spec_runs",
+    description:
+      "List the Runs associated with a Spec. Returns an array of run " +
+      "summaries with id, status, and association created_at, newest first.",
+    input: specIdInput(),
+    fn: ({ spec_id }) =>
+      specsRequest("GET", `${base}/specs/${spec_id}/runs`, token),
   });
 }
 
@@ -210,6 +233,39 @@ function createSpecTool(base: string, token: string): Tool<ReturnType<typeof cre
       ]);
       return specsRequest("POST", `${base}/specs`, token, body);
     },
+  });
+}
+
+/** `associate_spec` — associate the current Run with a Spec. Idempotent: an
+ * existing pair returns the existing association. The request body is the
+ * empty JSON object; the association target Run is identified by the JWT
+ * `run_id` claim, never by tool input (RUNNER-CONTRACT §4.1). */
+function associateSpecTool(base: string, token: string): Tool<ReturnType<typeof specIdInput>, unknown> {
+  return tool({
+    name: "associate_spec",
+    description:
+      "Associate the current Run with a Spec. The Run is identified by the " +
+      "runner's own credentials — no run id is passed. Idempotent: " +
+      "associating an already-associated pair returns the existing " +
+      "association with spec_id, run_id, and created_at.",
+    input: specIdInput(),
+    fn: ({ spec_id }) =>
+      specsRequest("POST", `${base}/specs/${spec_id}/runs`, token, {}),
+  });
+}
+
+/** `disassociate_spec` — remove the current Run's association with a Spec.
+ * Idempotent: an absent association is a no-op success (`removed: false`). */
+function disassociateSpecTool(base: string, token: string): Tool<ReturnType<typeof specIdInput>, unknown> {
+  return tool({
+    name: "disassociate_spec",
+    description:
+      "Remove the current Run's association with a Spec. Idempotent: " +
+      "removing an absent association is a no-op that returns " +
+      "{ removed: false }; removing an existing one returns { removed: true }.",
+    input: specIdInput(),
+    fn: ({ spec_id }) =>
+      specsRequest("DELETE", `${base}/specs/${spec_id}/runs`, token),
   });
 }
 
@@ -297,10 +353,12 @@ function emptyObject() {
   return object({});
 }
 
-/** `{ spec_id: uuid }` — shared by `read_spec`, `update_spec`, `list_tasks`.
- * The UUID constraint rejects malformed identifiers before they reach the API
- * and, critically, blocks path separators (`/`) that would otherwise alter
- * the declared request path (e.g. `specs/<id>/tasks`). */
+/** `{ spec_id: uuid }` — shared by `read_spec`, `update_spec`, `list_tasks`,
+ * and the three association tools (`list_spec_runs`, `associate_spec`,
+ * `disassociate_spec`). The UUID constraint rejects malformed identifiers
+ * before they reach the API and, critically, blocks path separators (`/`)
+ * that would otherwise alter the declared request path (e.g.
+ * `specs/<id>/tasks`). */
 function specIdInput() {
   return object({ spec_id: uuid() });
 }

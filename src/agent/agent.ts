@@ -103,8 +103,8 @@ OPTIONS
                             .agents/skills); skills are always enabled
   --specs-permissions <list> Granted specs-tool permissions (comma-separated
                             entity:operation: spec:list,spec:read,spec:update,
-                            spec:create,task:list,task:read,task:update,
-                            task:create)
+                            spec:create,spec:associate,task:list,task:read,
+                            task:update,task:create)
   --specs-api-url <url>     Studio internal API base URL for the specs tool
   --mcp-config <path>       Path to an MCP server config file (JSON mapping
                             server names to transport configs; defaults to
