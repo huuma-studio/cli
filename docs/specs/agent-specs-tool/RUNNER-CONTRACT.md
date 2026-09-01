@@ -9,9 +9,10 @@ Reference ADR: `docs/adr/0011-specs-tool-per-turn-jwt-access.md`
 ## 1. Overview
 
 The `specs` tool gives an Agent live access to the Specs and Tasks in its
-Project. The runner exposes eight tool functions to the model. Each function
-makes an HTTP call to the Studio's internal API. Authentication is handled by
-a host-scoped sandbox secret — the runner never sees the real credential.
+Project, and lets the calling Run associate itself with a Spec. The runner
+exposes eleven tool functions to the model. Each function makes an HTTP call
+to the Studio's internal API. Authentication is handled by a host-scoped
+sandbox secret — the runner never sees the real credential.
 
 ## 2. CLI Arguments
 
@@ -19,7 +20,7 @@ When the `specs` tool is enabled (i.e., `specs` is in the `--tools` list), the
 runner receives two additional CLI args:
 
 ```
---specs-permissions spec:list,spec:read,spec:update,spec:create,task:list,task:read,task:update,task:create
+--specs-permissions spec:list,spec:read,spec:update,spec:create,spec:associate,task:list,task:read,task:update,task:create
 --specs-api-url https://studio.huuma.app/api/internal
 ```
 
@@ -53,24 +54,42 @@ parse it.
 
 ## 4. Permission Model
 
-Eight permissions control which tool functions are exposed:
+Nine permissions control which tool functions are exposed:
 
-| Permission     | Tool function  | HTTP call                              |
-|----------------|----------------|---------------------------------------|
-| `spec:list`    | `list_specs`   | `GET /specs`                          |
-| `spec:read`    | `read_spec`    | `GET /specs/:specId`                  |
-| `spec:update`  | `update_spec`  | `PATCH /specs/:specId`                |
-| `spec:create`  | `create_spec`  | `POST /specs`                         |
-| `task:list`    | `list_tasks`   | `GET /specs/:specId/tasks`            |
-| `task:read`    | `read_task`    | `GET /tasks/:taskId`                  |
-| `task:update`  | `update_task`  | `PATCH /tasks/:taskId`               |
-| `task:create`  | `create_task`  | `POST /specs/:specId/tasks`          |
+| Permission        | Tool function                        | HTTP call                                  |
+|-------------------|--------------------------------------|--------------------------------------------|
+| `spec:list`       | `list_specs`                         | `GET /specs`                               |
+| `spec:read`       | `read_spec`, `list_spec_runs`        | `GET /specs/:specId`, `GET /specs/:specId/runs` |
+| `spec:update`     | `update_spec`                        | `PATCH /specs/:specId`                     |
+| `spec:create`     | `create_spec`                        | `POST /specs`                              |
+| `spec:associate`  | `associate_spec`, `disassociate_spec`| `POST /specs/:specId/runs`, `DELETE /specs/:specId/runs` |
+| `task:list`       | `list_tasks`                         | `GET /specs/:specId/tasks`                 |
+| `task:read`       | `read_task`                          | `GET /tasks/:taskId`                       |
+| `task:update`     | `update_task`                        | `PATCH /tasks/:taskId`                     |
+| `task:create`     | `create_task`                        | `POST /specs/:specId/tasks`                |
 
 The runner exposes only the functions whose permission appears in
 `--specs-permissions`. The Studio API also enforces permissions server-side
 as a second line of defense (returns 403 if the permission is missing from the
 JWT), so even if the runner mistakenly exposes a function, the API call will
 fail.
+
+### 4.1 Association security property
+
+The association target Run is always identified by the JWT `run_id` claim —
+the identity the Studio minted for the calling Run. The model never supplies a
+run identifier: no association tool input schema contains one, and any run id
+in a request body is ignored by the API. A Run can therefore only associate
+itself, never another Run.
+
+### 4.2 Registration order
+
+Tool registration order is deterministic and follows the permission checks:
+`list_specs`, `read_spec`, `list_spec_runs`, `update_spec`, `create_spec`,
+`associate_spec`, `disassociate_spec`, `list_tasks`, `read_task`,
+`update_task`, `create_task`. The relative order of the original eight
+functions is unchanged; `list_spec_runs` is registered with its
+`spec:read` sibling and the association pair with `spec:associate`.
 
 ## 5. Tool Function Specifications
 
@@ -294,6 +313,82 @@ is in the URL path).
 `project_id` is injected server-side from the JWT claims; the model does not
 provide it.
 
+### 5.9 list_spec_runs
+
+**Permission**: `spec:read`
+
+**Parameters**:
+- `spec_id` (string, required) — the spec UUID
+
+**HTTP**: `GET ${specsApiUrl}/specs/${spec_id}/runs`
+
+**Response 200** — JSON array of associated Run summaries, newest first:
+
+```json
+[
+  {
+    "id": "uuid",
+    "status": "in_progress",
+    "created_at": "2026-09-01T12:00:00.000Z"
+  }
+]
+```
+
+**Fields**:
+- `id` (string, UUID) — run identifier
+- `status` (string) — the Run's lifecycle status
+- `created_at` (string) — association creation timestamp
+
+**Return to model**: the JSON array as-is (empty when the Spec has no
+associated Runs).
+
+### 5.10 associate_spec
+
+**Permission**: `spec:associate`
+
+**Parameters**:
+- `spec_id` (string, required) — the spec UUID
+
+**HTTP**: `POST ${specsApiUrl}/specs/${spec_id}/runs`
+
+**Request body**: the empty JSON object `{}` (with `Content-Type:
+application/json`). The association target Run is identified by the JWT
+`run_id` claim (§4.1); the model does not provide a run identifier.
+
+**Response 200** — the association row (existing pair returns the existing
+association — idempotent, never an error):
+
+```json
+{
+  "spec_id": "uuid",
+  "run_id": "uuid",
+  "created_at": "2026-09-01T12:00:00.000Z"
+}
+```
+
+### 5.11 disassociate_spec
+
+**Permission**: `spec:associate`
+
+**Parameters**:
+- `spec_id` (string, required) — the spec UUID
+
+**HTTP**: `DELETE ${specsApiUrl}/specs/${spec_id}/runs`
+
+**Request body**: none.
+
+**Response 200** — a small JSON status:
+
+```json
+{
+  "removed": true
+}
+```
+
+**Idempotency**: removing an absent association is a no-op success returning
+`{ "removed": false }`; removing an existing one returns
+`{ "removed": true }`. Both are success responses, never errors.
+
 ## 6. Error Handling
 
 The API returns standard HTTP status codes:
@@ -325,6 +420,8 @@ expose any specs tool functions (treat as if `--specs-permissions` was empty).
   etc.
 - For PATCH requests, send the JSON body as the request body. Only include
   fields the model specified — do not send null or undefined fields.
+  `associate_spec` sends the empty JSON object `{}` as its POST body (§5.10);
+  `disassociate_spec` sends no body.
 - Descriptions in responses are Markdown strings. Descriptions in update
   requests are also Markdown strings. The Studio handles TipTap conversion
   internally — the runner does not need to know about TipTap.
@@ -356,17 +453,27 @@ what each function does. Suggested descriptions:
 - `create_task`: "Create a new Task belonging to a Spec. Requires a spec_id,
   title, description (Markdown), priority, and status. Acceptance criteria are
   optional. Returns the created task."
+- `list_spec_runs`: "List the Runs associated with a Spec. Returns an array of
+  run summaries with id, status, and association created_at, newest first."
+- `associate_spec`: "Associate the current Run with a Spec. The Run is
+  identified by the runner's own credentials — no run id is passed.
+  Idempotent: associating an already-associated pair returns the existing
+  association with spec_id, run_id, and created_at."
+- `disassociate_spec`: "Remove the current Run's association with a Spec.
+  Idempotent: removing an absent association is a no-op that returns
+  { removed: false }; removing an existing one returns { removed: true }."
 
 ## 9. Acceptance Criteria
 
 1. Runner recognizes `specs` in `--tools` and parses `--specs-permissions`
    and `--specs-api-url`.
-2. Eight tool functions are registered when their corresponding permission is
-   present in `--specs-permissions`.
+2. Eleven tool functions are registered when their corresponding permission is
+   present in `--specs-permissions`, in the documented order (§4.2).
 3. Each function makes an authenticated HTTP call to the Studio API using the
    `HUUMA_SPECS_API_TOKEN` env var in the `Authorization` header.
 4. Only functions with a matching permission are exposed to the model.
-5. PATCH and POST request bodies contain only the fields the model specified.
+5. PATCH and POST request bodies contain only the fields the model specified;
+   `associate_spec` always sends the empty JSON object `{}`.
 6. Error responses (401, 403, 404, 5xx) are surfaced to the model with the
    error message from the response body.
 7. If `HUUMA_SPECS_API_TOKEN` is not set, no specs tool functions are
@@ -375,3 +482,11 @@ what each function does. Suggested descriptions:
    the changes are persisted.
 9. End-to-end: agent can create a new spec and create a task under an existing
    spec, and the changes are persisted.
+10. Association: `associate_spec` and `disassociate_spec` require
+    `spec:associate`, `list_spec_runs` requires `spec:read`, and each calls
+    `${specsApiUrl}/specs/:specId/runs` with the documented method.
+11. No tool input or request carries a run identifier; the association target
+    Run comes from the JWT `run_id` claim (§4.1).
+12. Idempotent association outcomes are returned to the model as success
+    responses: an existing pair returns the existing association, and an
+    absent disassociation returns `{ removed: false }`.
