@@ -247,6 +247,11 @@ export async function runManagedTurn(
     // sequence 0 on every attempt. `turnSequence` is deliberately NOT reset —
     // already-delivered `message.appended` events keep their numbers and new
     // messages continue monotonically from the delivered prefix (ADR 0010).
+    // Deliberately NOT a transcript resume (unlike local chat): the same
+    // prompt must be re-supplied so the echo protocol above holds, which
+    // means tool work executed before a transient failure may execute again
+    // on the next attempt — the same re-execution semantics as Studio's
+    // whole-Turn awaiting_retry re-run, bounded by --retries.
     const runAttempt = (): Promise<Message[]> => {
       firstEmission = true;
       return assistant.run(input.prompt, input.history, {

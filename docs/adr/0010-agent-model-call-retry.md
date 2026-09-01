@@ -108,6 +108,18 @@ attempt —
 - **Echo suppression**: `firstEmission` is re-armed at the start of each
   attempt, so the re-emitted triggering user message is re-suppressed and
   Studio keeps owning sequence 0 — no duplicate echo is delivered.
+- **Same-prompt re-supply, not transcript resume**: unlike local chat, a
+  managed retry re-invokes `agent.run` with the *original* prompt and
+  history. This is required by the echo-suppression protocol (the
+  triggering user message must be re-emitted as the first emission to be
+  re-suppressed) and mirrors the semantics of Studio's whole-Turn
+  `awaiting_retry` re-run (spec #27), which also replays the same history.
+  The trade-off is explicit: **tool work executed before the transient
+  failure may execute again on the next attempt**, and its messages appear
+  in the Turn's event stream under new, monotonic sequence numbers. This is
+  bounded by `--retries`; local chat (an interactive session) keeps the
+  resume behavior above precisely because the operator is not present to
+  judge whether re-execution is safe.
 - **Never re-drive callbacks**: `CallbackError` delivery failures and the
   first-emission protocol failure are classified permanent by
   `classifyModelError` and follow their existing paths (auth-stop, conflict,

@@ -415,7 +415,10 @@ function parseModelValue(value: string): ModelSelection {
 }
 
 /** Parses a `--retries` value: a non-negative integer counting the additional
- * model-call attempts after the initial one (`--retries 0` disables). */
+ * model-call attempts after the initial one (`--retries 0` disables). Values
+ * beyond JavaScript's safe integer range are rejected — `Number` maps very
+ * long digit strings to `Infinity`, which would make the retry bound
+ * unreachable. */
 function parseRetriesValue(value: string): number {
   if (!/^\d+$/.test(value)) {
     throw new Error(
@@ -423,7 +426,14 @@ function parseRetriesValue(value: string): number {
         "e.g. --retries 2",
     );
   }
-  return Number(value);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error(
+      `Invalid --retries value "${value}". Expected a non-negative integer, ` +
+        "e.g. --retries 2",
+    );
+  }
+  return parsed;
 }
 
 /** Returns the value of a `--tools=`/`--tool=` token, or undefined otherwise.
