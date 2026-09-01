@@ -4,7 +4,7 @@ import { SPECS_PERMISSIONS, SPECS_TOKEN_ENV, specsTools } from "./specs.ts";
 import { resolveTools } from "./tools.ts";
 import { withEnv } from "./testing.ts";
 
-/** All six permissions, in declaration order. */
+/** All nine permissions, in declaration order. */
 const ALL_PERMISSIONS = [...SPECS_PERMISSIONS];
 
 /** Valid UUID-shaped sentinel IDs so the tool's `uuid()` validation passes and
@@ -17,6 +17,13 @@ const UNAUTH_SPEC = "55555555-5555-5555-5555-555555555555";
 const BOOM_SPEC = "66666666-6666-6666-6666-666666666666";
 const MISSING_TASK = "77777777-7777-7777-7777-777777777777";
 const FORBIDDEN_TASK = "88888888-8888-8888-8888-888888888888";
+const RUN_ID = "99999999-9999-9999-9999-999999999999";
+/** A Spec with no association row — `disassociate_spec` returns
+ * `{ removed: false }` for it (the idempotent absent case). */
+const UNLINKED_SPEC = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+
+/** Association timestamp the runs endpoints return (fixed for assertions). */
+const ASSOCIATED_AT = "2026-09-01T12:00:00.000Z";
 
 /** Starts a local HTTP server implementing the Studio internal specs API and
  * returns its base URL plus a shutdown handle. The handler records every
@@ -30,11 +37,14 @@ async function startServer(): Promise<{
   const requests: RequestLog[] = [];
   const handler = async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
+    const rawBody = await readRawBody(req);
     const log: RequestLog = {
       method: req.method,
       path: url.pathname,
       auth: req.headers.get("Authorization") ?? "",
-      body: await readJsonBody(req),
+      contentType: req.headers.get("Content-Type"),
+      rawBody,
+      body: parseJsonBody(rawBody),
     };
     requests.push(log);
     return route(req, url, log);
@@ -53,20 +63,27 @@ interface RequestLog {
   method: string;
   path: string;
   auth: string;
+  contentType: string | null;
+  rawBody: string | undefined;
   body: unknown;
 }
 
-/** Reads the JSON body of a request, or `undefined` when there is none. */
-async function readJsonBody(req: Request): Promise<unknown> {
+/** Reads the raw body of a request, or `undefined` when there is none. */
+async function readRawBody(req: Request): Promise<string | undefined> {
   if (req.method === "GET" || req.headers.get("Content-Length") === "0") {
     return undefined;
   }
   const text = await req.text();
-  if (!text) return undefined;
+  return text ? text : undefined;
+}
+
+/** Parses a raw request body as JSON, or `undefined` when there is none. */
+function parseJsonBody(raw: string | undefined): unknown {
+  if (raw === undefined) return undefined;
   try {
-    return JSON.parse(text);
+    return JSON.parse(raw);
   } catch {
-    return text;
+    return raw;
   }
 }
 
@@ -94,6 +111,16 @@ function route(
     const [specId, rest] = id.split("/");
     if (rest === "tasks") {
       return json(200, [taskFixture(specId, TASK_ID, 1, "Create toggle", "high", "open")]);
+    }
+    if (rest === "runs") {
+      if (specId === MISSING_SPEC) return json(404, { error: "Spec not found" });
+      if (specId === FORBIDDEN_SPEC) return json(403, { detail: "no access" });
+      if (specId === UNAUTH_SPEC) return json(401, { detail: "bad token" });
+      if (specId === BOOM_SPEC) return json(500, { error: "kaboom" });
+      return json(200, [
+        runSummary("completed"),
+        runSummary("in_progress"),
+      ]);
     }
     if (specId === MISSING_SPEC) return json(404, { error: "Spec not found" });
     if (specId === FORBIDDEN_SPEC) return json(403, { detail: "no access" });
@@ -148,6 +175,29 @@ function route(
         (log.body as { status?: string })?.status ?? "open",
       ));
     }
+    if (rest === "runs") {
+      if (specId === MISSING_SPEC) return json(404, { error: "Spec not found" });
+      if (specId === FORBIDDEN_SPEC) return json(403, { detail: "no access" });
+      if (specId === UNAUTH_SPEC) return json(401, { detail: "bad token" });
+      if (specId === BOOM_SPEC) return json(500, { error: "kaboom" });
+      // Idempotent associate: an existing pair returns the existing row, so
+      // the same association payload comes back for every call.
+      return json(200, associationFixture(specId));
+    }
+    return json(404, { error: `No route for ${log.method} ${path}` });
+  }
+  if (path.startsWith("/specs/") && log.method === "DELETE") {
+    const id = path.slice("/specs/".length);
+    const [specId, rest] = id.split("/");
+    if (rest === "runs") {
+      if (specId === MISSING_SPEC) return json(404, { error: "Spec not found" });
+      if (specId === FORBIDDEN_SPEC) return json(403, { detail: "no access" });
+      if (specId === UNAUTH_SPEC) return json(401, { detail: "bad token" });
+      if (specId === BOOM_SPEC) return json(500, { error: "kaboom" });
+      // Idempotent disassociate: an absent pair is a no-op success.
+      if (specId === UNLINKED_SPEC) return json(200, { removed: false });
+      return json(200, { removed: true });
+    }
     return json(404, { error: `No route for ${log.method} ${path}` });
   }
   if (path.startsWith("/tasks/") && log.method === "GET") {
@@ -183,6 +233,14 @@ function taskFixture(
     status,
     spec_id: specId,
   };
+}
+
+function runSummary(status: string) {
+  return { id: RUN_ID, status, created_at: ASSOCIATED_AT };
+}
+
+function associationFixture(specId: string) {
+  return { spec_id: specId, run_id: RUN_ID, created_at: ASSOCIATED_AT };
 }
 
 /** Builds the tools (with a token) for `permissions` against `base`. */
@@ -273,7 +331,7 @@ Deno.test("specsTools exposes only the permitted functions", async () => {
   });
 });
 
-Deno.test("specsTools exposes all eight functions for full permissions", async () => {
+Deno.test("specsTools exposes all eleven functions for full permissions", async () => {
   await withEnv({ [SPECS_TOKEN_ENV]: "token" }, () => {
     const tools = specsTools({
       specsPermissions: ALL_PERMISSIONS,
@@ -284,8 +342,11 @@ Deno.test("specsTools exposes all eight functions for full permissions", async (
       [
         "list_specs",
         "read_spec",
+        "list_spec_runs",
         "update_spec",
         "create_spec",
+        "associate_spec",
+        "disassociate_spec",
         "list_tasks",
         "read_task",
         "update_task",
@@ -295,13 +356,38 @@ Deno.test("specsTools exposes all eight functions for full permissions", async (
   });
 });
 
+Deno.test("specsTools exposes the association pair only with spec:associate", async () => {
+  await withEnv({ [SPECS_TOKEN_ENV]: "token" }, () => {
+    const tools = specsTools({
+      specsPermissions: ["spec:associate"],
+      specsApiUrl: "https://x/api",
+    });
+    // list_spec_runs is gated by spec:read, not spec:associate — it must not
+    // register alongside the association mutations.
+    assertEquals(tools.map((t) => t.name), [
+      "associate_spec",
+      "disassociate_spec",
+    ]);
+  });
+});
+
+Deno.test("specsTools exposes list_spec_runs only with spec:read", async () => {
+  await withEnv({ [SPECS_TOKEN_ENV]: "token" }, () => {
+    const tools = specsTools({
+      specsPermissions: ["spec:read"],
+      specsApiUrl: "https://x/api",
+    });
+    assertEquals(tools.map((t) => t.name), ["read_spec", "list_spec_runs"]);
+  });
+});
+
 Deno.test("resolveTools builds the specs tools from --tools specs", async () => {
   await withEnv({ [SPECS_TOKEN_ENV]: "token" }, () => {
     const { tools } = resolveTools(["specs"], {
       specsPermissions: ["spec:read"],
       specsApiUrl: "https://x/api",
     });
-    assertEquals(tools.map((t) => t.name), ["read_spec"]);
+    assertEquals(tools.map((t) => t.name), ["read_spec", "list_spec_runs"]);
   });
 });
 
@@ -523,6 +609,193 @@ Deno.test("create_task surfaces a 404 when the spec does not exist", async () =>
           }),
         Error,
         "Spec not found",
+      );
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Association tools (list_spec_runs, associate_spec, disassociate_spec)
+// ---------------------------------------------------------------------------
+
+Deno.test("list_spec_runs returns the associated run summaries", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:read"]);
+      const result = await call(tools, "list_spec_runs", {
+        spec_id: SPEC_ID,
+      }) as Array<{ id: string; status: string; created_at: string }>;
+      assertEquals(result, [
+        { id: RUN_ID, status: "completed", created_at: ASSOCIATED_AT },
+        { id: RUN_ID, status: "in_progress", created_at: ASSOCIATED_AT },
+      ]);
+      assertEquals(server.requests[0].method, "GET");
+      assertEquals(server.requests[0].path, `/specs/${SPEC_ID}/runs`);
+      assertEquals(server.requests[0].auth, "Bearer secret-token");
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("associate_spec POSTs an empty JSON body and surfaces the association", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:associate"]);
+      const result = await call(tools, "associate_spec", {
+        spec_id: SPEC_ID,
+      }) as { spec_id: string; run_id: string; created_at: string };
+      assertEquals(result, associationFixture(SPEC_ID));
+      assertEquals(server.requests[0].method, "POST");
+      assertEquals(server.requests[0].path, `/specs/${SPEC_ID}/runs`);
+      assertEquals(server.requests[0].auth, "Bearer secret-token");
+      // The association target Run comes from the JWT claims; the request
+      // body is exactly the empty JSON object.
+      assertEquals(server.requests[0].contentType, "application/json");
+      assertEquals(server.requests[0].rawBody, "{}");
+      assertEquals(server.requests[0].body, {});
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("associate_spec is idempotent — an existing pair returns the existing association", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:associate"]);
+      const first = await call(tools, "associate_spec", { spec_id: SPEC_ID });
+      const second = await call(tools, "associate_spec", { spec_id: SPEC_ID });
+      // Both calls succeed with the same association payload; the repeat is
+      // a success response, never an error.
+      assertEquals(first, associationFixture(SPEC_ID));
+      assertEquals(second, first);
+      assertEquals(server.requests.length, 2);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("associate_spec never transmits a model-supplied run_id", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:associate"]);
+      // The input schema declares only spec_id; the validator drops the
+      // extra run_id prop, so neither the path nor the body can carry it.
+      const result = await call(tools, "associate_spec", {
+        spec_id: SPEC_ID,
+        run_id: "11111111-2222-3333-4444-555555555555",
+      });
+      assertEquals(result, associationFixture(SPEC_ID));
+      assertEquals(server.requests[0].path, `/specs/${SPEC_ID}/runs`);
+      assertEquals(server.requests[0].body, {});
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("disassociate_spec DELETEs with no body and surfaces the removed status", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:associate"]);
+      const result = await call(tools, "disassociate_spec", {
+        spec_id: SPEC_ID,
+      }) as { removed: boolean };
+      assertEquals(result, { removed: true });
+      assertEquals(server.requests[0].method, "DELETE");
+      assertEquals(server.requests[0].path, `/specs/${SPEC_ID}/runs`);
+      assertEquals(server.requests[0].auth, "Bearer secret-token");
+      // DELETE carries no request body.
+      assertEquals(server.requests[0].rawBody, undefined);
+      assertEquals(server.requests[0].contentType, null);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("disassociate_spec is idempotent for an absent association", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:associate"]);
+      const result = await call(tools, "disassociate_spec", {
+        spec_id: UNLINKED_SPEC,
+      }) as { removed: boolean };
+      // Removing an absent pair is a no-op success, not an error.
+      assertEquals(result, { removed: false });
+      assertEquals(server.requests[0].method, "DELETE");
+      assertEquals(server.requests[0].path, `/specs/${UNLINKED_SPEC}/runs`);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("association tools reject a non-UUID spec_id without a request", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:read", "spec:associate"]);
+      for (const name of [
+        "list_spec_runs",
+        "associate_spec",
+        "disassociate_spec",
+      ]) {
+        await assertRejects(
+          () => call(tools, name, { spec_id: "not-a-uuid" }),
+          Error,
+          "is not a valid",
+        );
+      }
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("association tools surface the runs-endpoint error contract", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:read", "spec:associate"]);
+      // 404 with an `error` body — the body message wins.
+      await assertRejects(
+        () => call(tools, "list_spec_runs", { spec_id: MISSING_SPEC }),
+        Error,
+        "Spec not found",
+      );
+      await assertRejects(
+        () => call(tools, "associate_spec", { spec_id: MISSING_SPEC }),
+        Error,
+        "Spec not found",
+      );
+      // 403/401 without an `error` body — the stable per-status labels apply.
+      await assertRejects(
+        () => call(tools, "disassociate_spec", { spec_id: FORBIDDEN_SPEC }),
+        Error,
+        "Permission denied",
+      );
+      await assertRejects(
+        () => call(tools, "disassociate_spec", { spec_id: UNAUTH_SPEC }),
+        Error,
+        "Authentication failed",
+      );
+      // 5xx with an `error` body.
+      await assertRejects(
+        () => call(tools, "associate_spec", { spec_id: BOOM_SPEC }),
+        Error,
+        "kaboom",
       );
     });
   } finally {
