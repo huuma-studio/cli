@@ -64,7 +64,9 @@ export default async (args: string[] = []): Promise<string> => {
     diagnosticStage = "setup";
     const { assistant, mcpConnections } = await setup(parsed);
     diagnosticStage = "chat";
-    return await chat(assistant, parsed.prompt, mcpConnections);
+    return await chat(assistant, parsed.prompt, mcpConnections, {
+      retries: parsed.retries,
+    });
   } catch (error) {
     reportAgentError(
       diagnosticScope,
@@ -99,6 +101,10 @@ OPTIONS
                             the skills tools are always on — see below)
   --cli-commands <list>     Allow-list for the cli tool, e.g. deno,git
   --search-engine <engine>  Engine for the search tool: brave | perplexity | ollama
+  --retries <n>             Additional model-call attempts after the initial
+                            one when it fails transiently (rate limits, 5xx,
+                            network blips); default 2, max 10, --retries 0
+                            disables. Available in local and managed turn mode
   --skills-path <dir>       Directory the skills tools scan (default:
                             .agents/skills); skills are always enabled
   --specs-permissions <list> Granted specs-tool permissions (comma-separated

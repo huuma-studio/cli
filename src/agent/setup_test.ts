@@ -245,6 +245,8 @@ function managedConfig(
     specsApiUrl: undefined,
     mcpConfig: undefined,
     mcpServers: [],
+    // Not read by managedSetup — a placeholder for the type.
+    retries: 0,
     callbackSecret: "secret",
   };
 }

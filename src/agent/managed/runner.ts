@@ -22,12 +22,15 @@
  *  2. Load managed input.
  *  3. Build the Agent.
  *  4. Deliver `turn.running` and await its acknowledgement.
- *  5. Run `agent.run(prompt, history, { onMessage, onMessageError: "throw" })`
- *     exactly once. `onMessage` verifies and suppresses the first emitted
- *     triggering user message (Studio owns sequence 0), then delivers every
+ *  5. Run `agent.run(prompt, history, { onMessage, onMessageError: "throw" })`,
+ *     retrying transient model failures with bounded backoff (ADR 0010).
+ *     `onMessage` verifies and suppresses the first emitted triggering user
+ *     message (Studio owns sequence 0) on every attempt, then delivers every
  *     subsequent message via `reporter.messageAppended` with monotonically
  *     increasing `turn_sequence` from 1, awaiting each acknowledgement
- *     before returning (backpressure).
+ *     before returning (backpressure). `turnSequence` is preserved across
+ *     retries — already-delivered events keep their numbers — and no retry
+ *     starts inside the 15 s terminal reserve before `--turn-deadline`.
  *  6. Decode the `finish_turn` outcome from the returned
  *     `Message[]` (walk backwards for the last `tool` message containing a
  *     `finish_turn` tool result). When no `finish_turn` was called at all,
@@ -49,6 +52,13 @@
  * `turn.finished` was delivered and acknowledged; 1 on every other path.
  * The function never calls `Deno.exit()` — the caller (T6) owns process
  * termination.
+ *
+ * Retry amendment (ADR 0010): `agent.run` may be re-invoked after a
+ * transient model failure (bounded by `--retries`), but the callback
+ * contract is preserved on every attempt — single terminal event, monotonic
+ * `turn_sequence`, and echo suppression via the re-armed first-emission
+ * check. Callback/delivery errors and the first-emission protocol failure
+ * are never classified as model failures and keep their existing paths.
  */
 import type {
   FileContent,
@@ -65,9 +75,11 @@ import {
   type CallbackDeps,
   CallbackError,
   CallbackReporter,
+  TERMINAL_RESERVE_MS,
 } from "./callback.ts";
 import type { ManagedConfig } from "./config.ts";
 import { loadManagedInput } from "./input.ts";
+import { ProtocolError, runWithRetries, type RetryDeps } from "../retry.ts";
 
 /** Injectable dependencies for {@link runManagedTurn}. */
 export interface ManagedTurnDeps {
@@ -196,12 +208,13 @@ export async function runManagedTurn(
       return;
     }
 
-    // 5. Run the Agent loop exactly once per Turn execution. `onMessage`
-    //    verifies and suppresses the first emission (the triggering user
-    //    message Studio already persisted as sequence 0), then delivers every
-    //    subsequent message with backpressure: each `message.appended` is
-    //    awaited before `onMessage` returns, and `onMessageError: "throw"`
-    //    propagates delivery errors out of `agent.run`.
+    // 5. Run the Agent loop, retrying transient model failures with bounded
+    //    backoff (ADR 0010). `onMessage` verifies and suppresses the first
+    //    emission (the triggering user message Studio already persisted as
+    //    sequence 0), then delivers every subsequent message with
+    //    backpressure: each `message.appended` is awaited before `onMessage`
+    //    returns, and `onMessageError: "throw"` propagates delivery errors
+    //    out of `agent.run`.
     let firstEmission = true;
     let turnSequence = 0;
     const onMessage = async (message: Message): Promise<void> => {
@@ -214,7 +227,9 @@ export async function runManagedTurn(
           message.role !== "user" ||
           !contentsEqual(message.contents, input.prompt)
         ) {
-          throw new Error(
+          // ProtocolError, not a plain Error: the retry core must classify
+          // the mismatch permanent — it is deterministic and would repeat.
+          throw new ProtocolError(
             "protocol failure: the first message emitted by agent.run did " +
               'not match the triggering user message. Expected role "user" ' +
               "with contents equal to the managed-turn prompt; received " +
@@ -227,12 +242,44 @@ export async function runManagedTurn(
       await reporter.messageAppended(turnSequence, message);
     };
 
-    let messages: Message[];
-    try {
-      messages = await assistant.run(input.prompt, input.history, {
+    // Each attempt re-arms the first-emission suppression: `agent.run`
+    // re-emits the triggering user message first, and Studio keeps owning
+    // sequence 0 on every attempt. `turnSequence` is deliberately NOT reset —
+    // already-delivered `message.appended` events keep their numbers and new
+    // messages continue monotonically from the delivered prefix (ADR 0010).
+    // Deliberately NOT a transcript resume (unlike local chat): the same
+    // prompt must be re-supplied so the echo protocol above holds, which
+    // means tool work executed before a transient failure may execute again
+    // on the next attempt — the same re-execution semantics as Studio's
+    // whole-Turn awaiting_retry re-run, bounded by --retries.
+    const runAttempt = (): Promise<Message[]> => {
+      firstEmission = true;
+      return assistant.run(input.prompt, input.history, {
         onMessage,
         onMessageError: "throw",
       });
+    };
+
+    // Retry timing reuses the injected callback deps so tests stay
+    // deterministic; the cutoff mirrors the non-terminal callback delivery
+    // cutoff (`turnDeadline - TERMINAL_RESERVE_MS`), keeping the final 15
+    // seconds reserved for terminal delivery.
+    const retryDeps: RetryDeps = {
+      now: deps.callbackDeps.now,
+      sleep: deps.callbackDeps.sleep,
+      random: deps.callbackDeps.random,
+    };
+
+    let messages: Message[];
+    try {
+      messages = await runWithRetries(
+        runAttempt,
+        {
+          retries: config.retries,
+          cutoffMs: config.turnDeadline.getTime() - TERMINAL_RESERVE_MS,
+        },
+        retryDeps,
+      );
     } catch (error) {
       if (isAuthStop(error)) {
         reportError("callback.message_appended", error);
@@ -241,10 +288,10 @@ export async function runManagedTurn(
         return;
       }
       // CallbackError (conflict | fatal-failable | budget-exhausted) from
-      // `message.appended` delivery, OR a non-callback Error (provider error,
-      // first-emission protocol failure). The already-acknowledged
-      // contiguous message prefix is preserved naturally — those events were
-      // delivered before `onMessage` threw.
+      // `message.appended` delivery, OR a non-callback Error (provider error
+      // after exhausted retries, or the first-emission protocol failure).
+      // The already-acknowledged contiguous message prefix is preserved
+      // naturally — those events were delivered before `onMessage` threw.
       await attemptTurnFailed(
         error instanceof CallbackError
           ? "callback.message_appended"

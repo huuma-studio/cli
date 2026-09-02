@@ -66,6 +66,11 @@ export interface ManagedConfig {
   mcpConfig: string | undefined;
   /** Inline MCP server specs from `--mcp-server` (repeatable). */
   mcpServers: string[];
+  /** Additional model-call attempts after the initial one when `agent.run`
+   * fails transiently (from `--retries`; parser default 2, at most 10,
+   * `0` disables). The runner bounds retries with the shared backoff
+   * constants and never starts one inside the terminal reserve (ADR 0010). */
+  retries: number;
   /** SENSITIVE — per-turn callback secret from `$HUUMA_AGENT_CALLBACK_SECRET`.
    * Never log, print, or echo this value, and never include it in an error
    * message. T3 uses it once to set the `Authorization: Bearer` header;
@@ -208,6 +213,7 @@ export function resolveManagedConfig(parsed: ManagedAgentArgs): ManagedConfig {
     specsApiUrl: parsed.specsApiUrl,
     mcpConfig: parsed.mcpConfig,
     mcpServers: parsed.mcpServers,
+    retries: parsed.retries,
     callbackSecret,
   };
 }

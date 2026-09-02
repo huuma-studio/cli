@@ -3,11 +3,29 @@ import type { McpConnection } from "@huuma/ai/tools";
 import { multiline } from "../input.ts";
 import { CLEAR_LINE, dim, green, red, write } from "../terminal.ts";
 import { closeMcpConnections } from "./mcp.ts";
+import { sanitizeError } from "./managed/callback.ts";
+import {
+  productionRetryDeps,
+  runWithRetries,
+  type RetryDeps,
+} from "./retry.ts";
 
 /** The slice of the @huuma/ai agent the REPL drives. Derived from `agent`
  * with `Pick` so the `run` signature tracks @huuma/ai automatically, while
  * staying a plain object type that is trivial to fake in tests. */
 export type Assistant = Pick<ReturnType<typeof agent>, "run">;
+
+/** Options for {@link chat} and {@link respond} beyond the assistant and
+ * prompt. */
+export interface ChatOptions {
+  /** Additional model-call attempts after the initial one when it fails
+   * transiently (rate limit, 5xx, network blip — ADR 0010). `0` disables
+   * retrying. From `--retries` (which caps the value at 10); defaults to 2. */
+  retries?: number;
+  /** Injectable timing sources for the retry loop. Defaults to
+   * {@link productionRetryDeps}; tests inject recorders. */
+  retryDeps?: RetryDeps;
+}
 
 /** Drives the agent: a single answer when `prompt` is non-empty (one-shot),
  * otherwise an interactive REPL until "exit"/"quit" or stdin closes. After
@@ -18,9 +36,10 @@ export async function chat(
   assistant: Assistant,
   prompt = "",
   mcpConnections: McpConnection[] = [],
+  options: ChatOptions = {},
 ): Promise<string> {
   try {
-    return await chatInner(assistant, prompt);
+    return await chatInner(assistant, prompt, options);
   } finally {
     await closeMcpConnections(mcpConnections);
   }
@@ -31,6 +50,7 @@ export async function chat(
 async function chatInner(
   assistant: Assistant,
   prompt: string,
+  options: ChatOptions,
 ): Promise<string> {
   const oneShot = prompt.trim();
   if (oneShot) {
@@ -38,7 +58,7 @@ async function chatInner(
     // ok flag for the exit code and thread no history forward. If this ever
     // grows into chained prompts, carry the returned messages between turns
     // like the REPL below does.
-    const { ok } = await respond(assistant, oneShot, []);
+    const { ok } = await respond(assistant, oneShot, [], options);
     if (!ok) Deno.exitCode = 1;
     return "";
   }
@@ -60,7 +80,7 @@ async function chatInner(
     }
 
     if (prompt === "exit" || prompt === "quit") break;
-    messages = (await respond(assistant, prompt, messages)).messages;
+    messages = (await respond(assistant, prompt, messages, options)).messages;
   }
 
   return "Bye!";
@@ -78,12 +98,50 @@ export async function respond(
   assistant: Assistant,
   prompt: string,
   history: Message[],
+  options: ChatOptions = {},
 ): Promise<Turn> {
+  const retries = options.retries ?? 2;
+  const retryDeps = options.retryDeps ?? productionRetryDeps;
   write(dim("Thinking..."));
   try {
-    const messages = await assistant.run(prompt, history, {
-      onMessage: showToolCalls,
-    });
+    // Messages emitted during failed attempts, echo-free. A retry resumes
+    // with them appended to the original history, so tool calls that already
+    // executed appear as prior conversation and are not re-run (ADR 0010).
+    const emitted: Message[] = [];
+    const messages = await runWithRetries(
+      async () => {
+        let first = true;
+        return await assistant.run(prompt, [...history, ...emitted], {
+          onMessage: (message) => {
+            showToolCalls(message);
+            // Each attempt re-emits the triggering user message first;
+            // dropping it keeps the retry history free of duplicate user
+            // messages (the re-supplied prompt re-adds it).
+            if (first && message.role === "user") {
+              first = false;
+              return;
+            }
+            first = false;
+            emitted.push(message);
+          },
+        });
+      },
+      {
+        retries,
+        onRetry: ({ attempt, backoffMs, error }) => {
+          write(CLEAR_LINE);
+          console.error(
+            dim(
+              `retry ${attempt}/${retries} in ${Math.round(backoffMs)}ms — ${
+                oneLine(sanitizeError(error))
+              }`,
+            ),
+          );
+          write(dim("Thinking..."));
+        },
+      },
+      retryDeps,
+    );
     write(CLEAR_LINE);
     console.log(`${green("Agent:")} ${modelText(messages)}\n`);
     return { messages, ok: true };
@@ -93,6 +151,11 @@ export async function respond(
     console.error(`${red("✖")} ${red(message)}\n`);
     return { messages: history, ok: false };
   }
+}
+
+/** Flattens a sanitized error into a single line for the retry notice. */
+function oneLine(s: string): string {
+  return s.replace(/\s*\n\s*/g, " ").trim();
 }
 
 /** Prints the name of each tool the model calls, live as the run emits the

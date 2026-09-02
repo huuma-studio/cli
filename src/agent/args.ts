@@ -34,6 +34,10 @@ export interface LocalAgentArgs {
   mcpConfig: string | undefined;
   /** Inline MCP server specs from `--mcp-server` (repeatable). */
   mcpServers: string[];
+  /** Additional model-call attempts after the initial one on a transient
+   * failure, from `--retries` (default 2, at most 10; `--retries 0`
+   * disables). Shared option, like `--model`. ADR 0010. */
+  retries: number;
   prompt: string;
   help: false;
 }
@@ -68,6 +72,10 @@ export interface ManagedAgentArgs {
   mcpConfig: string | undefined;
   /** Inline MCP server specs from `--mcp-server` (repeatable). */
   mcpServers: string[];
+  /** Additional model-call attempts after the initial one on a transient
+   * failure, from `--retries` (default 2, at most 10; `--retries 0`
+   * disables). Shared option, like `--model`. ADR 0010. */
+  retries: number;
   /** Always `""` in managed mode — positional prompts are rejected. */
   prompt: string;
   help: false;
@@ -123,6 +131,10 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
   let specsApiUrl: string | undefined;
   let mcpConfig: string | undefined;
   let mcpServers: string[] = [];
+  // Additional model-call attempts on transient failure (ADR 0010). Default 2,
+  // at most 10; --retries 0 disables. Validated as a non-negative integer at
+  // parse time.
+  let retries = 2;
   let history: string | undefined;
   let cwd: string | undefined;
   let callbackUrl: string | undefined;
@@ -208,6 +220,11 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
     );
     if (skillsPathValue !== undefined) {
       skillsPath = skillsPathValue;
+      continue;
+    }
+    const retriesValue = valueFlag("--retries", "--retries 2");
+    if (retriesValue !== undefined) {
+      retries = parseRetriesValue(retriesValue);
       continue;
     }
     const specsPermissionsValue = valueFlag(
@@ -297,7 +314,7 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
         `Unknown flag "${arg}". The agent accepts --model <provider/model>, ` +
           "--tools <list>, --system-prompt <text>, --cli-commands <list>, " +
           "--host <url>, --search-engine <brave|perplexity|ollama>, " +
-          "--skills-path <dir>, --specs-permissions <list>, " +
+          "--retries <n>, --skills-path <dir>, --specs-permissions <list>, " +
           "--specs-api-url <url>, --mcp-config <path>, " +
           "--mcp-server <name=spec>, and the managed-turn flags " +
           "--history <path>, --cwd <dir>, --callback-url <url>, " +
@@ -335,6 +352,7 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
       model,
       host,
       searchEngine,
+      retries,
       skillsPath,
       specsPermissions,
       specsApiUrl,
@@ -364,6 +382,7 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
     model,
     host,
     searchEngine,
+    retries,
     skillsPath,
     specsPermissions,
     specsApiUrl,
@@ -394,6 +413,28 @@ function parseModelValue(value: string): ModelSelection {
     );
   }
   return { provider: provider.toLowerCase(), modelId };
+}
+
+/** The maximum `--retries` value. Local retries have no deadline, so a huge
+ * count would be a practically unbounded retry budget; 10 retries × the 5 s
+ * backoff cap keeps the worst-case wait bounded. */
+const MAX_RETRIES = 10;
+
+/** Parses a `--retries` value: a non-negative integer of at most
+ * {@link MAX_RETRIES}, counting the additional model-call attempts after the
+ * initial one (`--retries 0` disables). Values beyond JavaScript's safe
+ * integer range are also rejected — `Number` maps very long digit strings to
+ * `Infinity`, which would make the retry bound unreachable. */
+function parseRetriesValue(value: string): number {
+  const invalid = () =>
+    new Error(
+      `Invalid --retries value "${value}". Expected a non-negative integer ` +
+        `of at most ${MAX_RETRIES}, e.g. --retries 2`,
+    );
+  if (!/^\d+$/.test(value)) throw invalid();
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed > MAX_RETRIES) throw invalid();
+  return parsed;
 }
 
 /** Returns the value of a `--tools=`/`--tool=` token, or undefined otherwise.

@@ -19,6 +19,7 @@ function parsed(overrides: Partial<LocalAgentArgs> = {}): LocalAgentArgs {
     model: undefined,
     host: undefined,
     searchEngine: undefined,
+    retries: 2,
     skillsPath: undefined,
     specsPermissions: [],
     specsApiUrl: undefined,
@@ -44,6 +45,7 @@ function managed(
     model: { provider: "anthropic", modelId: "claude-haiku-4-5" },
     host: undefined,
     searchEngine: undefined,
+    retries: 2,
     skillsPath: undefined,
     specsPermissions: [],
     specsApiUrl: undefined,
@@ -791,6 +793,126 @@ Deno.test("parseAgentArgs threads --mcp-config and --mcp-server into managed mod
     managed({
       mcpConfig: ".huuma/mcp.json",
       mcpServers: ["a=command:npx foo"],
+      model: { provider: "anthropic", modelId: "x" },
+      history: "/h.json",
+      callbackUrl: "https://x.invalid/cb",
+    }),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// --retries: additional model-call attempts on transient failure (ADR 0010)
+// ---------------------------------------------------------------------------
+
+Deno.test("parseAgentArgs defaults --retries to 2 in local mode", () => {
+  // The full empty-argv result already pins every default via `parsed()`.
+  assertEquals(parseAgentArgs([]), parsed({ retries: 2 }));
+});
+
+Deno.test("parseAgentArgs reads --retries in space and = forms, last wins", () => {
+  assertEquals(
+    parseAgentArgs(["--retries", "3", "go"]),
+    parsed({ retries: 3, prompt: "go" }),
+  );
+  assertEquals(
+    parseAgentArgs(["--retries=0", "go"]),
+    parsed({ retries: 0, prompt: "go" }),
+  );
+  assertEquals(
+    parseAgentArgs(["--retries", "1", "--retries=5"]),
+    parsed({ retries: 5 }),
+  );
+});
+
+Deno.test("parseAgentArgs accepts --retries 0 (retrying disabled)", () => {
+  assertEquals(
+    parseAgentArgs(["--retries", "0"]),
+    parsed({ retries: 0 }),
+  );
+});
+
+Deno.test("parseAgentArgs rejects a --retries value that is not a non-negative integer", () => {
+  for (const value of ["abc", "-1", "1.5", "1e2", " 2", "2 "]) {
+    assertThrows(
+      () => parseAgentArgs(["--retries", value]),
+      Error,
+      `Invalid --retries value "${value}"`,
+    );
+  }
+  // A bare non-integer via the = form behaves the same.
+  assertThrows(
+    () => parseAgentArgs(["--retries=x"]),
+    Error,
+    'Invalid --retries value "x"',
+  );
+});
+
+Deno.test("parseAgentArgs rejects a --retries value above the maximum of 10", () => {
+  // Local retries have no deadline, so the count is capped: huge values
+  // (safe-integer or not — Number() maps very long digit strings to
+  // Infinity) are rejected rather than accepted as a practically unbounded
+  // retry budget.
+  for (const value of ["11", "100", "9007199254740992", "9".repeat(400)]) {
+    assertThrows(
+      () => parseAgentArgs(["--retries", value]),
+      Error,
+      `Invalid --retries value "${value}"`,
+    );
+  }
+  // Boundary: the maximum itself is accepted.
+  assertEquals(parseAgentArgs(["--retries", "10"]), parsed({ retries: 10 }));
+  assertThrows(
+    () => parseAgentArgs(["--retries=11"]),
+    Error,
+    'Invalid --retries value "11". Expected a non-negative integer of at ' +
+      "most 10",
+  );
+});
+
+Deno.test("parseAgentArgs rejects --retries without a value", () => {
+  assertThrows(
+    () => parseAgentArgs(["--retries"]),
+    Error,
+    "Missing value for --retries",
+  );
+  assertThrows(
+    () => parseAgentArgs(["--retries="]),
+    Error,
+    "Missing value for --retries",
+  );
+  assertThrows(
+    () => parseAgentArgs(["--retries", "  "]),
+    Error,
+    "Missing value for --retries",
+  );
+});
+
+Deno.test("parseAgentArgs mentions --retries in the unknown-flag error", () => {
+  assertThrows(() => parseAgentArgs(["--bogus"]), Error, "--retries");
+});
+
+Deno.test("parseAgentArgs threads --retries into managed mode", () => {
+  assertEquals(
+    parseAgentArgs([
+      "--callback-url",
+      "https://x.invalid/cb",
+      "--history",
+      "/h.json",
+      "--cwd",
+      "/workspace",
+      "--run-id",
+      "11111111-1111-1111-1111-111111111111",
+      "--turn-id",
+      "22222222-2222-2222-2222-222222222222",
+      "--turn-deadline",
+      "2099-01-01T00:00:00Z",
+      "--model",
+      "anthropic/x",
+      "--retries",
+      "4",
+    ]),
+    managed({
+      retries: 4,
       model: { provider: "anthropic", modelId: "x" },
       history: "/h.json",
       callbackUrl: "https://x.invalid/cb",

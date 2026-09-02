@@ -27,6 +27,7 @@ function configWithHistory(historyPath: string): ManagedConfig {
     specsApiUrl: undefined,
     mcpConfig: undefined,
     mcpServers: [],
+    retries: 0,
     callbackSecret: "secret",
   };
 }
