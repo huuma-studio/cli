@@ -13,6 +13,11 @@ import {
   skills,
   writeFile,
 } from "@huuma/ai/tools";
+import {
+  type EditFileTool,
+  lockedEditFile,
+  withEditFileLock,
+} from "./file_lock.ts";
 import { specsTools } from "./specs.ts";
 import { SUBAGENT_FACTORIES, type SubagentContext } from "./subagents/mod.ts";
 
@@ -63,8 +68,14 @@ const TOOL_FACTORIES: Record<string, (config: ToolConfig) => AgentTools> = {
   write_file: () => [writeFile()],
   create_directory: () => [createDirectory()],
   delete_file: () => [deleteFile()],
-  edit_file: () => [editFile()],
-  files: () => files(),
+  // edit_file is a read-modify-write cycle, and the agent runs a message's
+  // tool calls concurrently — so same-file edits race (lost updates, stale
+  // line positions, spec #93). The per-path lock applies them sequentially.
+  edit_file: () => [lockedEditFile()],
+  files: () =>
+    files().map((t) =>
+      t.name === "edit_file" ? withEditFileLock(t as EditFileTool) : t
+    ),
   fetch_website: () => [fetchWebsite()],
   search: (config) => [searchTool(config.searchEngine)],
   skills: (config) => skillsTool(config.skillsPath),
