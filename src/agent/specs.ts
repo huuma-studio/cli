@@ -39,9 +39,15 @@ const SPECS_PERMISSION_SET = new Set<string>(SPECS_PERMISSIONS);
 /** The closed value sets the contract defines for the update fields
  * (RUNNER-CONTRACT §5). Validating them locally rejects unsupported values
  * before they reach the API. Note spec and task `status` differ: a spec may
- * be `draft`, a task may not. */
+ * be `draft` or `review`, a task may not. */
 export const SPEC_TYPES = ["feature", "bug", "story"] as const;
-export const SPEC_STATUSES = ["draft", "open", "in_progress", "done"] as const;
+export const SPEC_STATUSES = [
+  "draft",
+  "open",
+  "in_progress",
+  "review",
+  "done",
+] as const;
 export const TASK_PRIORITIES = ["low", "medium", "high"] as const;
 export const TASK_STATUSES = ["open", "in_progress", "done"] as const;
 
