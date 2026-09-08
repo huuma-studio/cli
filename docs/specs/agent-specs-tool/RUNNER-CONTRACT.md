@@ -124,7 +124,7 @@ existing tools (e.g., `read_file`, `grep`, `search`).
 - `number` (integer) — human-friendly sequential number
 - `title` (string) — spec title
 - `type` (string) — one of `"feature"`, `"bug"`, `"story"`
-- `status` (string) — one of `"draft"`, `"open"`, `"in_progress"`, `"review"`, `"done"`
+- `status` (string) — one of `"draft"`, `"open"`, `"in_progress"`, `"done"`
 
 **Return to model**: the JSON array as-is, or a formatted text summary.
 
@@ -179,7 +179,7 @@ existing tools (e.g., `read_file`, `grep`, `search`).
 - `title` (string) — new title
 - `description_markdown` (string) — new description in Markdown
 - `type` (string) — one of `"feature"`, `"bug"`, `"story"`
-- `status` (string) — one of `"draft"`, `"open"`, `"in_progress"`, `"review"`, `"done"`
+- `status` (string) — one of `"draft"`, `"open"`, `"in_progress"`, `"done"`
 
 **HTTP**: `PATCH ${specsApiUrl}/specs/${spec_id}`
 
@@ -202,7 +202,7 @@ existing tools (e.g., `read_file`, `grep`, `search`).
 - `title` (string) — spec title
 - `description_markdown` (string) — spec description in Markdown
 - `type` (string) — one of `"feature"`, `"bug"`, `"story"`
-- `status` (string) — one of `"draft"`, `"open"`, `"in_progress"`, `"review"`, `"done"`
+- `status` (string) — one of `"draft"`, `"open"`, `"in_progress"`, `"done"`
 
 **HTTP**: `POST ${specsApiUrl}/specs`
 
