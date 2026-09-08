@@ -537,6 +537,33 @@ Deno.test("create_spec sends the required fields and returns the created spec", 
   }
 });
 
+Deno.test("create_spec sends a review status and returns the created spec", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:create"]);
+      const result = await call(tools, "create_spec", {
+        title: "Review feature",
+        description_markdown: "## Overview\n\nReady for review.",
+        type: "feature",
+        status: "review",
+      }) as { id: string; status: string };
+      assertEquals(result.id, SPEC_ID);
+      assertEquals(result.status, "review");
+      assertEquals(server.requests[0].method, "POST");
+      assertEquals(server.requests[0].path, "/specs");
+      assertEquals(server.requests[0].body, {
+        title: "Review feature",
+        description_markdown: "## Overview\n\nReady for review.",
+        type: "feature",
+        status: "review",
+      });
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
 Deno.test("create_task sends the required fields and returns the created task", async () => {
   const server = await startServer();
   try {
@@ -896,6 +923,23 @@ Deno.test("update_spec accepts the spec-only draft status", async () => {
   }
 });
 
+Deno.test("update_spec accepts the spec-only review status", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:update"]);
+      const result = await call(tools, "update_spec", {
+        spec_id: SPEC_ID,
+        status: "review",
+      }) as { status: string };
+      assertEquals(result.status, "review");
+      assertEquals(server.requests[0].body, { status: "review" });
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
 Deno.test("update_task rejects an unsupported priority and an unsupported status", async () => {
   const server = await startServer();
   try {
@@ -906,9 +950,15 @@ Deno.test("update_task rejects an unsupported priority and an unsupported status
         Error,
         "is not one of",
       );
-      // "draft" is a spec status, not a task status — rejected for tasks.
+      // "draft" and "review" are spec statuses, not task statuses — rejected
+      // for tasks.
       await assertRejects(
         () => call(tools, "update_task", { task_id: TASK_ID, status: "draft" }),
+        Error,
+        "is not one of",
+      );
+      await assertRejects(
+        () => call(tools, "update_task", { task_id: TASK_ID, status: "review" }),
         Error,
         "is not one of",
       );
