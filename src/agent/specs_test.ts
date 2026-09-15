@@ -22,6 +22,42 @@ const RUN_ID = "99999999-9999-9999-9999-999999999999";
  * `{ removed: false }` for it (the idempotent absent case). */
 const UNLINKED_SPEC = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 
+/** Labels the `SPEC_ID` fixture carries. Label mutations are computed
+ * against this set so add/remove tests can assert the returned detail. */
+const SPEC_LABELS = ["bug", "ui"];
+
+/** The list fixture: three specs with different label sets so AND filtering
+ * and the distinct-labels enumeration can be exercised. */
+const LIST_SPECS = [
+  {
+    id: SPEC_ID,
+    number: 1,
+    title: "Add dark mode",
+    type: "feature",
+    status: "open",
+    labels: SPEC_LABELS,
+  },
+  {
+    id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    number: 2,
+    title: "Fix nav overflow",
+    type: "bug",
+    status: "in_progress",
+    labels: ["ui"],
+  },
+  {
+    id: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    number: 3,
+    title: "Polish empty states",
+    type: "story",
+    status: "review",
+    labels: ["needs design"],
+  },
+];
+
+/** The Project's distinct labels across `LIST_SPECS`, sorted. */
+const DISTINCT_LABELS = ["bug", "needs design", "ui"];
+
 /** Association timestamp the runs endpoints return (fixed for assertions). */
 const ASSOCIATED_AT = "2026-09-01T12:00:00.000Z";
 
@@ -41,6 +77,7 @@ async function startServer(): Promise<{
     const log: RequestLog = {
       method: req.method,
       path: url.pathname,
+      search: url.search,
       auth: req.headers.get("Authorization") ?? "",
       contentType: req.headers.get("Content-Type"),
       rawBody,
@@ -62,6 +99,7 @@ async function startServer(): Promise<{
 interface RequestLog {
   method: string;
   path: string;
+  search: string;
   auth: string;
   contentType: string | null;
   rawBody: string | undefined;
@@ -102,9 +140,16 @@ function route(
     });
 
   if (path === "/specs" && log.method === "GET") {
-    return json(200, [
-      { id: SPEC_ID, number: 1, title: "Add dark mode", type: "feature", status: "open" },
-    ]);
+    // One repeated `labels` parameter per label; a spec matches only when it
+    // carries every one of them (AND), mirroring the Studio API.
+    const filter = url.searchParams.getAll("labels");
+    const matched = LIST_SPECS.filter((spec) =>
+      filter.every((label) => spec.labels.includes(label))
+    );
+    return json(200, matched);
+  }
+  if (path === "/labels" && log.method === "GET") {
+    return json(200, DISTINCT_LABELS);
   }
   if (path.startsWith("/specs/") && log.method === "GET") {
     const id = path.slice("/specs/".length);
@@ -126,15 +171,7 @@ function route(
     if (specId === FORBIDDEN_SPEC) return json(403, { detail: "no access" });
     if (specId === UNAUTH_SPEC) return json(401, { detail: "bad token" });
     if (specId === BOOM_SPEC) return json(500, { error: "kaboom" });
-    return json(200, {
-      id: specId,
-      number: 1,
-      title: "Add dark mode",
-      description_markdown: "## Overview\n\nImplement a dark mode toggle.",
-      type: "feature",
-      status: "open",
-      tasks: [taskFixture(specId, TASK_ID, 1, "Create toggle", "high", "open")],
-    });
+    return json(200, specFixture(specId, SPEC_LABELS));
   }
   if (path === "/specs" && log.method === "POST") {
     return json(200, {
@@ -144,6 +181,7 @@ function route(
       description_markdown: "## Overview\n\nNew spec.",
       type: (log.body as { type?: string })?.type ?? "feature",
       status: (log.body as { status?: string })?.status ?? "draft",
+      labels: (log.body as { labels?: string[] })?.labels ?? [],
       tasks: [],
     });
   }
@@ -157,6 +195,7 @@ function route(
       description_markdown: "## Updated",
       type: "feature",
       status: (log.body as { status?: string })?.status ?? "open",
+      labels: SPEC_LABELS,
       tasks: [],
     });
   }
@@ -184,11 +223,21 @@ function route(
       // the same association payload comes back for every call.
       return json(200, associationFixture(specId));
     }
+    if (rest === "labels") {
+      if (specId === MISSING_SPEC) return json(404, { error: "Spec not found" });
+      if (specId === FORBIDDEN_SPEC) return json(403, { detail: "no access" });
+      if (specId === UNAUTH_SPEC) return json(401, { detail: "bad token" });
+      if (specId === BOOM_SPEC) return json(500, { error: "kaboom" });
+      // Idempotent add: whether the label was already present or newly
+      // added, the same spec detail comes back.
+      const label = (log.body as { label?: string })?.label ?? "";
+      return json(200, specFixture(specId, [...new Set([...SPEC_LABELS, label])]));
+    }
     return json(404, { error: `No route for ${log.method} ${path}` });
   }
   if (path.startsWith("/specs/") && log.method === "DELETE") {
     const id = path.slice("/specs/".length);
-    const [specId, rest] = id.split("/");
+    const [specId, rest, encodedLabel] = id.split("/");
     if (rest === "runs") {
       if (specId === MISSING_SPEC) return json(404, { error: "Spec not found" });
       if (specId === FORBIDDEN_SPEC) return json(403, { detail: "no access" });
@@ -197,6 +246,18 @@ function route(
       // Idempotent disassociate: an absent pair is a no-op success.
       if (specId === UNLINKED_SPEC) return json(200, { removed: false });
       return json(200, { removed: true });
+    }
+    if (rest === "labels") {
+      if (specId === MISSING_SPEC) return json(404, { error: "Spec not found" });
+      if (specId === FORBIDDEN_SPEC) return json(403, { detail: "no access" });
+      if (specId === UNAUTH_SPEC) return json(401, { detail: "bad token" });
+      if (specId === BOOM_SPEC) return json(500, { error: "kaboom" });
+      // Idempotent remove: an absent label returns the unchanged spec.
+      const label = decodeURIComponent(encodedLabel ?? "");
+      return json(200, specFixture(
+        specId,
+        SPEC_LABELS.filter((existing) => existing !== label),
+      ));
     }
     return json(404, { error: `No route for ${log.method} ${path}` });
   }
@@ -232,6 +293,21 @@ function taskFixture(
     priority,
     status,
     spec_id: specId,
+  };
+}
+
+/** The spec detail payload the read/update/label endpoints return, with the
+ * given label set (label mutations compute their result from `SPEC_LABELS`). */
+function specFixture(specId: string, labels: string[]) {
+  return {
+    id: specId,
+    number: 1,
+    title: "Add dark mode",
+    description_markdown: "## Overview\n\nImplement a dark mode toggle.",
+    type: "feature",
+    status: "open",
+    labels,
+    tasks: [taskFixture(specId, TASK_ID, 1, "Create toggle", "high", "open")],
   };
 }
 
@@ -327,11 +403,15 @@ Deno.test("specsTools exposes only the permitted functions", async () => {
       specsPermissions: ["spec:list", "task:read"] as SpecsPermission[],
       specsApiUrl: "https://x/api",
     });
-    assertEquals(tools.map((t) => t.name), ["list_specs", "read_task"]);
+    assertEquals(tools.map((t) => t.name), [
+      "list_specs",
+      "list_labels",
+      "read_task",
+    ]);
   });
 });
 
-Deno.test("specsTools exposes all eleven functions for full permissions", async () => {
+Deno.test("specsTools exposes all fourteen functions for full permissions", async () => {
   await withEnv({ [SPECS_TOKEN_ENV]: "token" }, () => {
     const tools = specsTools({
       specsPermissions: ALL_PERMISSIONS,
@@ -341,9 +421,12 @@ Deno.test("specsTools exposes all eleven functions for full permissions", async 
       tools.map((t) => t.name),
       [
         "list_specs",
+        "list_labels",
         "read_spec",
         "list_spec_runs",
         "update_spec",
+        "add_spec_label",
+        "remove_spec_label",
         "create_spec",
         "associate_spec",
         "disassociate_spec",
@@ -353,6 +436,30 @@ Deno.test("specsTools exposes all eleven functions for full permissions", async 
         "create_task",
       ],
     );
+  });
+});
+
+Deno.test("specsTools exposes the label enumeration only with spec:list", async () => {
+  await withEnv({ [SPECS_TOKEN_ENV]: "token" }, () => {
+    const tools = specsTools({
+      specsPermissions: ["spec:list"] as SpecsPermission[],
+      specsApiUrl: "https://x/api",
+    });
+    assertEquals(tools.map((t) => t.name), ["list_specs", "list_labels"]);
+  });
+});
+
+Deno.test("specsTools exposes the label mutations only with spec:update", async () => {
+  await withEnv({ [SPECS_TOKEN_ENV]: "token" }, () => {
+    const tools = specsTools({
+      specsPermissions: ["spec:update"] as SpecsPermission[],
+      specsApiUrl: "https://x/api",
+    });
+    assertEquals(tools.map((t) => t.name), [
+      "update_spec",
+      "add_spec_label",
+      "remove_spec_label",
+    ]);
   });
 });
 
@@ -395,38 +502,390 @@ Deno.test("resolveTools builds the specs tools from --tools specs", async () => 
 // HTTP behavior
 // ---------------------------------------------------------------------------
 
-Deno.test("list_specs returns the spec summaries", async () => {
+Deno.test("list_specs returns the spec summaries with their labels", async () => {
   const server = await startServer();
   try {
     await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
       const tools = buildTools(server.base, ["spec:list"]);
       const result = await call(tools, "list_specs", {});
-      assertEquals(result, [
-        { id: SPEC_ID, number: 1, title: "Add dark mode", type: "feature", status: "open" },
-      ]);
+      assertEquals(result, LIST_SPECS);
       // The Authorization header carries the token verbatim after "Bearer ".
       const expectedAuth = ["Bearer", "secret-token"].join(" ");
       assertEquals(server.requests[0].auth, expectedAuth);
       assertEquals(server.requests[0].method, "GET");
       assertEquals(server.requests[0].path, "/specs");
+      assertEquals(server.requests[0].search, "");
     });
   } finally {
     await server.shutdown();
   }
 });
 
-Deno.test("read_spec returns the spec with its tasks", async () => {
+Deno.test("read_spec returns the spec with its tasks and labels", async () => {
   const server = await startServer();
   try {
     await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
       const tools = buildTools(server.base, ["spec:read"]);
       const result = await call(tools, "read_spec", { spec_id: SPEC_ID }) as {
         id: string;
+        labels: string[];
         tasks: unknown[];
       };
       assertEquals(result.id, SPEC_ID);
+      assertEquals(result.labels, SPEC_LABELS);
       assertEquals(result.tasks.length, 1);
       assertEquals(server.requests[0].path, `/specs/${SPEC_ID}`);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Label tools (list_specs filter, list_labels, add_spec_label,
+// remove_spec_label)
+// ---------------------------------------------------------------------------
+
+Deno.test("list_specs sends one URL-encoded labels parameter per label (AND)", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:list"]);
+      const result = await call(tools, "list_specs", {
+        labels: ["bug", "needs design"],
+      }) as unknown[];
+      assertEquals(server.requests[0].method, "GET");
+      assertEquals(server.requests[0].path, "/specs");
+      assertEquals(
+        server.requests[0].search,
+        "?labels=bug&labels=needs%20design",
+      );
+      // AND semantics: only Specs carrying both labels match. No fixture
+      // carries both, so the filtered result is the empty array.
+      assertEquals(result, []);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("list_specs filters with AND semantics", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:list"]);
+      // One label matches two specs; two labels narrow it to the one spec
+      // carrying both.
+      const uiOnly = await call(tools, "list_specs", { labels: ["ui"] });
+      assertEquals(uiOnly, [LIST_SPECS[0], LIST_SPECS[1]]);
+      const both = await call(tools, "list_specs", {
+        labels: ["bug", "ui"],
+      });
+      assertEquals(both, [LIST_SPECS[0]]);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("list_specs with an empty labels array is an unfiltered GET", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:list"]);
+      const result = await call(tools, "list_specs", { labels: [] });
+      assertEquals(result, LIST_SPECS);
+      assertEquals(server.requests[0].search, "");
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("list_specs trims filter labels before sending them", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:list"]);
+      await call(tools, "list_specs", { labels: ["  bug  "] });
+      assertEquals(server.requests[0].search, "?labels=bug");
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("list_specs rejects more than ten filter labels without a request", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:list"]);
+      const labels = Array.from({ length: 11 }, (_, i) => `label-${i}`);
+      await assertRejects(
+        () => call(tools, "list_specs", { labels }),
+        Error,
+        "list_specs accepts at most 10 labels",
+      );
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("list_specs rejects an empty filter label without a request", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:list"]);
+      // An empty string and a whitespace-only label both normalize to
+      // nothing — rejected before any request.
+      await assertRejects(
+        () => call(tools, "list_specs", { labels: ["bug", "  "] }),
+        Error,
+        "list_specs requires a non-empty label",
+      );
+      await assertRejects(
+        () => call(tools, "list_specs", { labels: [""] }),
+        Error,
+        "list_specs requires a non-empty label",
+      );
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("list_specs rejects control characters and over-long labels without a request", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:list"]);
+      await assertRejects(
+        () => call(tools, "list_specs", { labels: ["bug\u0007"] }),
+        Error,
+        "does not match regex",
+      );
+      await assertRejects(
+        () => call(tools, "list_specs", { labels: ["x".repeat(101)] }),
+        Error,
+        "length is greater than 100",
+      );
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("list_labels returns the Project's distinct labels", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:list"]);
+      const result = await call(tools, "list_labels", {});
+      assertEquals(result, DISTINCT_LABELS);
+      assertEquals(server.requests[0].method, "GET");
+      assertEquals(server.requests[0].path, "/labels");
+      assertEquals(server.requests[0].auth, "Bearer secret-token");
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("add_spec_label POSTs the trimmed label and returns the updated spec", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:update"]);
+      const result = await call(tools, "add_spec_label", {
+        spec_id: SPEC_ID,
+        label: "  perf  ",
+      }) as { labels: string[] };
+      assertEquals(result.labels, ["bug", "ui", "perf"]);
+      assertEquals(server.requests[0].method, "POST");
+      assertEquals(server.requests[0].path, `/specs/${SPEC_ID}/labels`);
+      // The label is trimmed before it is sent, mirroring the Studio's
+      // normalization.
+      assertEquals(server.requests[0].body, { label: "perf" });
+      assertEquals(server.requests[0].auth, "Bearer secret-token");
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("add_spec_label is idempotent — an existing label returns the unchanged spec", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:update"]);
+      const first = await call(tools, "add_spec_label", {
+        spec_id: SPEC_ID,
+        label: "ui",
+      });
+      const second = await call(tools, "add_spec_label", {
+        spec_id: SPEC_ID,
+        label: "ui",
+      });
+      // Both calls succeed with the same spec detail; the repeat is a
+      // success response, never an error.
+      assertEquals(first, specFixture(SPEC_ID, SPEC_LABELS));
+      assertEquals(second, first);
+      assertEquals(server.requests.length, 2);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("remove_spec_label DELETEs the URL-encoded label and returns the updated spec", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:update"]);
+      const result = await call(tools, "remove_spec_label", {
+        spec_id: SPEC_ID,
+        label: "bug",
+      }) as { labels: string[] };
+      assertEquals(result.labels, ["ui"]);
+      assertEquals(server.requests[0].method, "DELETE");
+      assertEquals(server.requests[0].path, `/specs/${SPEC_ID}/labels/bug`);
+      // DELETE carries no request body.
+      assertEquals(server.requests[0].rawBody, undefined);
+      assertEquals(server.requests[0].contentType, null);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("remove_spec_label is idempotent for an absent label", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:update"]);
+      const result = await call(tools, "remove_spec_label", {
+        spec_id: SPEC_ID,
+        label: "needs design",
+      }) as { labels: string[] };
+      // Removing a label the Spec does not carry is a no-op success that
+      // returns the unchanged spec — including a multi-word label, whose
+      // space is URL-encoded in the path.
+      assertEquals(result.labels, SPEC_LABELS);
+      assertEquals(
+        server.requests[0].path,
+        `/specs/${SPEC_ID}/labels/needs%20design`,
+      );
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("remove_spec_label encodes path separators in the label (no path injection)", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:update"]);
+      const result = await call(tools, "remove_spec_label", {
+        spec_id: SPEC_ID,
+        label: "../evil",
+      }) as { labels: string[] };
+      // The label stays a single URL-encoded path segment — it cannot alter
+      // the request path, so the idempotent remove returns the unchanged
+      // spec instead of touching another route.
+      assertEquals(
+        server.requests[0].path,
+        `/specs/${SPEC_ID}/labels/..%2Fevil`,
+      );
+      assertEquals(result.labels, SPEC_LABELS);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("label mutations reject a non-UUID spec_id without a request", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:update"]);
+      for (const name of ["add_spec_label", "remove_spec_label"]) {
+        await assertRejects(
+          () => call(tools, name, { spec_id: "not-a-uuid", label: "bug" }),
+          Error,
+          "is not a valid",
+        );
+      }
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("label mutations reject an empty label without a request", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:update"]);
+      await assertRejects(
+        () =>
+          call(tools, "add_spec_label", { spec_id: SPEC_ID, label: "   " }),
+        Error,
+        "add_spec_label requires a non-empty label",
+      );
+      await assertRejects(
+        () =>
+          call(tools, "remove_spec_label", { spec_id: SPEC_ID, label: "" }),
+        Error,
+        "remove_spec_label requires a non-empty label",
+      );
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("label tools surface the API error contract", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:update"]);
+      // 404 with an `error` body — the body message wins.
+      await assertRejects(
+        () =>
+          call(tools, "add_spec_label", { spec_id: MISSING_SPEC, label: "x" }),
+        Error,
+        "Spec not found",
+      );
+      // 403/401 without an `error` body — the stable per-status labels apply.
+      await assertRejects(
+        () =>
+          call(tools, "remove_spec_label", {
+            spec_id: FORBIDDEN_SPEC,
+            label: "x",
+          }),
+        Error,
+        "Permission denied",
+      );
+      await assertRejects(
+        () =>
+          call(tools, "add_spec_label", { spec_id: UNAUTH_SPEC, label: "x" }),
+        Error,
+        "Authentication failed",
+      );
+      // 5xx with an `error` body.
+      await assertRejects(
+        () =>
+          call(tools, "remove_spec_label", { spec_id: BOOM_SPEC, label: "x" }),
+        Error,
+        "kaboom",
+      );
     });
   } finally {
     await server.shutdown();
