@@ -3,8 +3,8 @@ import { array, enums, object, string, uuid } from "@huuma/validate";
 import { envValue } from "./env.ts";
 import type { AgentTools } from "./tools.ts";
 
-/** The nine permissions the `specs` tool kind can expose. Each maps to one or
- * two tool functions the model may call. The Studio grants a subset per Turn
+/** The nine permissions the `specs` tool kind can expose. Each maps to one to
+ * three tool functions the model may call. The Studio grants a subset per Turn
  * and passes it on the `--specs-permissions` flag; the runner exposes only
  * those functions (the Studio API re-checks each one server-side). See
  * `docs/specs/agent-specs-tool/RUNNER-CONTRACT.md`. */
@@ -51,6 +51,16 @@ export const SPEC_STATUSES = [
 export const TASK_PRIORITIES = ["low", "medium", "high"] as const;
 export const TASK_STATUSES = ["open", "in_progress", "done"] as const;
 
+/** Label value rules, mirrored from the Studio domain so invalid values fail
+ * before a request is made (a label is a project-scoped value object): a
+ * label is trimmed, non-empty, at most 100 UTF-16 code units long, and free
+ * of control characters. Comparison is case-sensitive; the Studio also caps a
+ * Spec at 10 labels and re-validates every value server-side. */
+export const SPEC_LABEL_MAX_LENGTH = 100;
+/** The maximum labels one `list_specs` filter accepts. The Studio caps a
+ * Spec at 10 labels, so a larger AND filter could never match a Spec. */
+export const SPEC_LABEL_FILTER_MAX = 10;
+
 /** Sandbox env var the Studio declares as a host-scoped secret. Its value is
  * an opaque placeholder the sandbox egress layer substitutes with the real
  * per-Turn JWT for requests to the Studio host only. The runner passes it
@@ -71,7 +81,7 @@ export interface SpecsToolOptions {
   specsApiUrl?: string;
 }
 
-/** Builds the `specs` tool set: the eleven Specs/Tasks functions the model
+/** Builds the `specs` tool set: the fourteen Specs/Tasks functions the model
  * can call, restricted to the permissions granted on `--specs-permissions`.
  *
  * Registration order (RUNNER-CONTRACT, "Sandbox secret" and "Error Handling"):
@@ -128,9 +138,12 @@ export function specsTools(options: SpecsToolOptions = {}): AgentTools {
 
   // Registration order is contract-documented (RUNNER-CONTRACT §4.2): the
   // relative order of the original eight functions is unchanged; each new
-  // function registers with its permission's existing block.
+  // function registers with its permission's existing block. The label
+  // functions follow the same rule — `list_labels` joins `spec:list`,
+  // `add_spec_label`/`remove_spec_label` join `spec:update`.
   if (granted.has("spec:list")) {
     tools.push(listSpecsTool(base, token));
+    tools.push(listLabelsTool(base, token));
   }
   if (granted.has("spec:read")) {
     tools.push(readSpecTool(base, token));
@@ -138,6 +151,8 @@ export function specsTools(options: SpecsToolOptions = {}): AgentTools {
   }
   if (granted.has("spec:update")) {
     tools.push(updateSpecTool(base, token));
+    tools.push(addSpecLabelTool(base, token));
+    tools.push(removeSpecLabelTool(base, token));
   }
   if (granted.has("spec:create")) {
     tools.push(createSpecTool(base, token));
@@ -161,15 +176,48 @@ export function specsTools(options: SpecsToolOptions = {}): AgentTools {
   return tools;
 }
 
-/** `list_specs` — all Specs in the current Project (summaries). */
-function listSpecsTool(base: string, token: string): Tool<ReturnType<typeof emptyObject>, unknown> {
+/** `list_specs` — all Specs in the current Project (summaries), optionally
+ * filtered to those carrying every given label (AND semantics). */
+function listSpecsTool(
+  base: string,
+  token: string,
+): Tool<ReturnType<typeof listSpecsInput>, unknown> {
   return tool({
     name: "list_specs",
     description:
-      "List all Specs in the current Project. Returns an array of spec " +
-      "summaries with id, number, title, type, and status.",
-    input: object({}),
-    fn: () => specsRequest("GET", `${base}/specs`, token),
+      "List all Specs in the current Project, optionally filtered by " +
+      "labels. Pass labels to return only the Specs carrying every given " +
+      "label (AND). Returns an array of spec summaries with id, number, " +
+      "title, type, status, and labels.",
+    input: listSpecsInput(),
+    fn: (fields) => {
+      const labels = normalizeFilter(fields.labels);
+      // One `labels` query parameter per label, each URL-encoded — the
+      // API's filter form. No labels means an unfiltered GET.
+      const query = labels
+        .map((label) => `labels=${encodeURIComponent(label)}`)
+        .join("&");
+      const url = query === "" ? `${base}/specs` : `${base}/specs?${query}`;
+      return specsRequest("GET", url, token);
+    },
+  });
+}
+
+/** `list_labels` — the Project's distinct labels (discovery for filtering
+ * and adding). */
+function listLabelsTool(
+  base: string,
+  token: string,
+): Tool<ReturnType<typeof emptyObject>, unknown> {
+  return tool({
+    name: "list_labels",
+    description:
+      "List the distinct Spec labels that exist in the current Project, " +
+      "sorted and deduplicated. Use it to discover the labels available for " +
+      "filtering list_specs or for adding to a Spec. Returns a JSON array " +
+      "of label strings.",
+    input: emptyObject(),
+    fn: () => specsRequest("GET", `${base}/labels`, token),
   });
 }
 
@@ -179,8 +227,8 @@ function readSpecTool(base: string, token: string): Tool<ReturnType<typeof specI
     name: "read_spec",
     description:
       "Read a single Spec and all its Tasks. Returns the spec's full details " +
-      "including description (Markdown), type, status, and all tasks with " +
-      "their acceptance criteria, priority, and status.",
+      "including description (Markdown), type, status, labels, and all " +
+      "tasks with their acceptance criteria, priority, and status.",
     input: specIdInput(),
     fn: ({ spec_id }) => specsRequest("GET", `${base}/specs/${spec_id}`, token),
   });
@@ -218,6 +266,52 @@ function updateSpecTool(base: string, token: string): Tool<ReturnType<typeof upd
       requireAtLeastOne(body, "update_spec");
       return specsRequest("PATCH", `${base}/specs/${fields.spec_id}`, token, body);
     },
+  });
+}
+
+/** `add_spec_label` — idempotently add one label to a Spec. */
+function addSpecLabelTool(
+  base: string,
+  token: string,
+): Tool<ReturnType<typeof specLabelInput>, unknown> {
+  return tool({
+    name: "add_spec_label",
+    description:
+      "Add a label to a Spec. Idempotent: adding a label the Spec already " +
+      "carries is a success that returns the unchanged Spec. The label is " +
+      "trimmed, must not be empty, and a Spec carries at most 10 labels. " +
+      "Returns the updated Spec with all its tasks.",
+    input: specLabelInput(),
+    fn: ({ spec_id, label }) =>
+      specsRequest("POST", `${base}/specs/${spec_id}/labels`, token, {
+        label: normalizeLabel(label, "add_spec_label"),
+      }),
+  });
+}
+
+/** `remove_spec_label` — idempotently remove one label from a Spec. The
+ * label is URL-encoded in the request path so it stays a single path
+ * segment — a label containing `/` cannot alter the request path. */
+function removeSpecLabelTool(
+  base: string,
+  token: string,
+): Tool<ReturnType<typeof specLabelInput>, unknown> {
+  return tool({
+    name: "remove_spec_label",
+    description:
+      "Remove a label from a Spec. Idempotent: removing a label the Spec " +
+      "does not carry is a success that returns the unchanged Spec. The " +
+      "label is trimmed, must not be empty, and is URL-encoded in the " +
+      "request path. Returns the updated Spec with all its tasks.",
+    input: specLabelInput(),
+    fn: ({ spec_id, label }) =>
+      specsRequest(
+        "DELETE",
+        `${base}/specs/${spec_id}/labels/${
+          encodeURIComponent(normalizeLabel(label, "remove_spec_label"))
+        }`,
+        token,
+      ),
   });
 }
 
@@ -354,9 +448,30 @@ function createTaskTool(base: string, token: string): Tool<ReturnType<typeof cre
 
 // --- input schemas --------------------------------------------------------
 
-/** Empty object — `list_specs` takes no parameters. */
+/** Empty object — `list_labels` takes no parameters. */
 function emptyObject() {
   return object({});
+}
+
+/** `list_specs` parameters: an optional `labels` filter. A Spec matches only
+ * when it carries every given label (AND). An absent or empty array means no
+ * filter. Each entry is a label value (see {@link labelValueInput}). */
+function listSpecsInput() {
+  return object({ labels: array(labelValueInput()).optional() });
+}
+
+/** One label value. Its value-object constraints run in
+ * {@link normalizeLabel} after surrounding whitespace is removed, mirroring
+ * the Studio's normalize-then-validate order. */
+function labelValueInput() {
+  return string();
+}
+
+/** `{ spec_id, label }` — shared by `add_spec_label` and `remove_spec_label`.
+ * The UUID constraint blocks path separators in the id; the label value is
+ * URL-encoded by the tool function, never interpolated raw. */
+function specLabelInput() {
+  return object({ spec_id: uuid(), label: labelValueInput() });
 }
 
 /** `{ spec_id: uuid }` — shared by `read_spec`, `update_spec`, `list_tasks`,
@@ -497,6 +612,49 @@ function errorLabel(status: number): string {
 }
 
 // --- helpers ---------------------------------------------------------------
+
+/** Trims one label, then validates the normalized value, mirroring the
+ * Studio's normalize-then-validate order. The trimmed value is what gets
+ * sent for adding, removing, and filtering. */
+function normalizeLabel(label: string, toolName: string): string {
+  const trimmed = label.trim();
+  if (trimmed === "") {
+    throw new Error(
+      `${toolName} requires a non-empty label. Surrounding whitespace is ` +
+        "trimmed; the value left after trimming must not be empty.",
+    );
+  }
+  if (trimmed.length > SPEC_LABEL_MAX_LENGTH) {
+    throw new Error(
+      `${toolName} requires a label of at most ${SPEC_LABEL_MAX_LENGTH} ` +
+        "UTF-16 code units after trimming.",
+    );
+  }
+  if (/[\u0000-\u001F\u007F-\u009F]/.test(trimmed)) {
+    throw new Error(
+      `${toolName} requires a label without control characters after ` +
+        "trimming.",
+    );
+  }
+  return trimmed;
+}
+
+/** Normalizes the `list_specs` label filter: an absent or empty filter means
+ * "no constraint" and yields an empty array (an unfiltered GET); otherwise
+ * every label is trimmed and at most {@link SPEC_LABEL_FILTER_MAX} are
+ * accepted — the Studio caps a Spec at 10 labels, so a larger AND filter
+ * could never match. */
+function normalizeFilter(labels: string[] | undefined): string[] {
+  if (labels === undefined || labels.length === 0) return [];
+  if (labels.length > SPEC_LABEL_FILTER_MAX) {
+    throw new Error(
+      `list_specs accepts at most ${SPEC_LABEL_FILTER_MAX} labels to filter ` +
+        "by. A Spec carries at most 10 labels, so a larger AND filter could " +
+        "never match.",
+    );
+  }
+  return labels.map((label) => normalizeLabel(label, "list_specs"));
+}
 
 /** Returns a shallow copy of `fields` containing only the listed keys whose
  * values are not `undefined`, so PATCH bodies never send null/undefined
