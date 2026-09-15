@@ -10,7 +10,7 @@ Reference ADR: `docs/adr/0011-specs-tool-per-turn-jwt-access.md`
 
 The `specs` tool gives an Agent live access to the Specs and Tasks in its
 Project, and lets the calling Run associate itself with a Spec. The runner
-exposes eleven tool functions to the model. Each function makes an HTTP call
+exposes fourteen tool functions to the model. Each function makes an HTTP call
 to the Studio's internal API. Authentication is handled by a host-scoped
 sandbox secret — the runner never sees the real credential.
 
@@ -58,9 +58,9 @@ Nine permissions control which tool functions are exposed:
 
 | Permission        | Tool function                        | HTTP call                                  |
 |-------------------|--------------------------------------|--------------------------------------------|
-| `spec:list`       | `list_specs`                         | `GET /specs`                               |
+| `spec:list`       | `list_specs`, `list_labels`          | `GET /specs`, `GET /labels`                |
 | `spec:read`       | `read_spec`, `list_spec_runs`        | `GET /specs/:specId`, `GET /specs/:specId/runs` |
-| `spec:update`     | `update_spec`                        | `PATCH /specs/:specId`                     |
+| `spec:update`     | `update_spec`, `add_spec_label`, `remove_spec_label` | `PATCH /specs/:specId`, `POST /specs/:specId/labels`, `DELETE /specs/:specId/labels/:label` |
 | `spec:create`     | `create_spec`                        | `POST /specs`                              |
 | `spec:associate`  | `associate_spec`, `disassociate_spec`| `POST /specs/:specId/runs`, `DELETE /specs/:specId/runs` |
 | `task:list`       | `list_tasks`                         | `GET /specs/:specId/tasks`                 |
@@ -85,11 +85,14 @@ itself, never another Run.
 ### 4.2 Registration order
 
 Tool registration order is deterministic and follows the permission checks:
-`list_specs`, `read_spec`, `list_spec_runs`, `update_spec`, `create_spec`,
-`associate_spec`, `disassociate_spec`, `list_tasks`, `read_task`,
-`update_task`, `create_task`. The relative order of the original eight
-functions is unchanged; `list_spec_runs` is registered with its
-`spec:read` sibling and the association pair with `spec:associate`.
+`list_specs`, `list_labels`, `read_spec`, `list_spec_runs`, `update_spec`,
+`add_spec_label`, `remove_spec_label`, `create_spec`, `associate_spec`,
+`disassociate_spec`, `list_tasks`, `read_task`, `update_task`, `create_task`.
+The relative order of the original eight functions is unchanged; `list_spec_runs`
+is registered with its `spec:read` sibling, the association pair with
+`spec:associate`, and each label function with its permission's existing
+block — `list_labels` with `spec:list`, the label mutations with
+`spec:update`.
 
 ## 5. Tool Function Specifications
 
@@ -101,9 +104,16 @@ existing tools (e.g., `read_file`, `grep`, `search`).
 
 **Permission**: `spec:list`
 
-**Parameters**: none
+**Parameters**:
+- `labels` (array of strings, optional, max 10) — filter to the Specs
+  carrying every given label. One repeated `labels` query parameter per
+  label, each URL-encoded. An absent or empty array means no filter.
 
-**HTTP**: `GET ${specsApiUrl}/specs`
+**HTTP**: `GET ${specsApiUrl}/specs` — with a filter:
+`GET ${specsApiUrl}/specs?labels=<label>&labels=<label>`
+
+**Filter semantics**: AND. A Spec matches only when it carries all the
+selected labels (GitHub-style). Filtering is case-sensitive.
 
 **Response 200** — JSON array of spec summaries:
 
@@ -114,7 +124,8 @@ existing tools (e.g., `read_file`, `grep`, `search`).
     "number": 1,
     "title": "Add dark mode",
     "type": "feature",
-    "status": "open"
+    "status": "open",
+    "labels": ["bug", "ui"]
   }
 ]
 ```
@@ -125,6 +136,8 @@ existing tools (e.g., `read_file`, `grep`, `search`).
 - `title` (string) — spec title
 - `type` (string) — one of `"feature"`, `"bug"`, `"story"`
 - `status` (string) — one of `"draft"`, `"open"`, `"in_progress"`, `"review"`, `"done"`
+- `labels` (array of strings) — the Spec's labels (see §5.12 for the label
+  value rules)
 
 **Return to model**: the JSON array as-is, or a formatted text summary.
 
@@ -147,6 +160,7 @@ existing tools (e.g., `read_file`, `grep`, `search`).
   "description_markdown": "## Overview\n\nImplement a dark mode toggle...",
   "type": "feature",
   "status": "open",
+  "labels": ["bug", "ui"],
   "tasks": [
     {
       "id": "uuid",
@@ -164,6 +178,7 @@ existing tools (e.g., `read_file`, `grep`, `search`).
 
 **Fields**:
 - `description_markdown` (string) — spec description rendered as Markdown
+- `labels` (array of strings) — the Spec's labels (see §5.12)
 - `tasks` (array) — all tasks belonging to this spec, each with:
   - `description_markdown` (string) — task description as Markdown
   - `acceptance_criteria` (array of strings)
@@ -389,6 +404,86 @@ association — idempotent, never an error):
 `{ "removed": false }`; removing an existing one returns
 `{ "removed": true }`. Both are success responses, never errors.
 
+### 5.12 list_labels
+
+**Permission**: `spec:list`
+
+**Parameters**: none
+
+**HTTP**: `GET ${specsApiUrl}/labels`
+
+**Response 200** — JSON array of the Project's distinct label strings, sorted
+and deduplicated:
+
+```json
+["bug", "needs design", "ui"]
+```
+
+**Notes**: this is the discovery path an agent uses to pick labels for
+filtering (`list_specs`) and for adding to a Spec. Labels are
+project-scoped value objects (see below) — the same name in two Projects is
+two independent values.
+
+**Label value rules** (the Studio domain defines them; the runner mirrors
+them client-side so invalid values fail before a request):
+
+- A label is a trimmed string: surrounding whitespace is removed first.
+- After trimming it must be non-empty, at most 100 UTF-16 code units long,
+  and contain no control characters (Unicode Cc: C0, DEL, C1).
+- Comparison is case-sensitive ("Bug" and "bug" are distinct labels).
+- A Spec carries at most 10 labels; duplicates within one Spec are rejected
+  by the API. Adding an existing label is an idempotent success (§5.13).
+
+### 5.13 add_spec_label
+
+**Permission**: `spec:update`
+
+**Parameters**:
+- `spec_id` (string, required) — the spec UUID
+- `label` (string, required) — the label value (rules in §5.12)
+
+**HTTP**: `POST ${specsApiUrl}/specs/${spec_id}/labels`
+
+**Request body**: JSON object with the single label:
+
+```json
+{ "label": "needs design" }
+```
+
+**Response 200**: same shape as `read_spec` (the updated Spec with all its
+tasks, including its `labels`).
+
+**Idempotency**: adding a label the Spec already carries is a success that
+returns the unchanged Spec — never an error.
+
+**Runner behavior**: the label is trimmed before it is sent (mirroring the
+Studio's normalization), and an empty result is rejected client-side before
+any request. The API re-validates (400 on an invalid value or when the Spec
+already carries 10 labels).
+
+### 5.14 remove_spec_label
+
+**Permission**: `spec:update`
+
+**Parameters**:
+- `spec_id` (string, required) — the spec UUID
+- `label` (string, required) — the label value (rules in §5.12)
+
+**HTTP**: `DELETE ${specsApiUrl}/specs/${spec_id}/labels/${encodeURIComponent(label)}`
+
+**Request body**: none.
+
+**Response 200**: same shape as `read_spec` (the updated Spec with all its
+tasks, including its `labels`).
+
+**Idempotency**: removing a label the Spec does not carry is a success that
+returns the unchanged Spec — never an error.
+
+**Runner behavior**: the label is trimmed and then URL-encoded in the
+request path so it stays a single path segment — a label containing `/`
+cannot alter the request path. An empty-after-trim label is rejected
+client-side before any request.
+
 ## 6. Error Handling
 
 The API returns standard HTTP status codes:
@@ -396,6 +491,7 @@ The API returns standard HTTP status codes:
 | Status | Meaning                        | Runner behavior                          |
 |--------|-------------------------------|------------------------------------------|
 | 200    | Success                       | Parse JSON, return to model              |
+| 400    | Invalid label value / too many labels | Return the error message from the body |
 | 401    | Missing/invalid/expired token | Return error: "Authentication failed"   |
 | 403    | Permission not granted        | Return error: "Permission denied"       |
 | 404    | Spec/task not found           | Return error: "Not found"                |
@@ -425,17 +521,35 @@ expose any specs tool functions (treat as if `--specs-permissions` was empty).
 - Descriptions in responses are Markdown strings. Descriptions in update
   requests are also Markdown strings. The Studio handles TipTap conversion
   internally — the runner does not need to know about TipTap.
+- Labels are trimmed client-side before they are sent (mirroring the
+  Studio's normalize-then-validate order), and the label value rules of
+  §5.12 are checked locally so invalid values fail before a request: a
+  label must be non-empty after trimming, at most 100 UTF-16 code units,
+  free of control characters, and a `list_specs` filter carries at most 10.
+- `list_specs` sends one repeated `labels` query parameter per label, each
+  URL-encoded with `encodeURIComponent` (never a delimiter list, never
+  `URLSearchParams` — `%20` stays decodable under every parsing style).
+- `remove_spec_label` URL-encodes the label into the request path with
+  `encodeURIComponent` so the label is always exactly one path segment.
+- All label-bearing Spec payloads (list summaries and details) include
+  `labels: string[]`; the runner passes them through as-is.
 
 ## 8. Tool Description for the Model
 
 The runner should provide a clear tool description so the model understands
 what each function does. Suggested descriptions:
 
-- `list_specs`: "List all Specs in the current Project. Returns an array of
-  spec summaries with id, number, title, type, and status."
-- `read_spec`: "Read a single Spec and all its Tasks. Returns the spec's full
-  details including description (Markdown), type, status, and all tasks with
-  their acceptance criteria, priority, and status."
+- `list_specs`: "List all Specs in the current Project, optionally filtered
+  by labels. Pass labels to return only the Specs carrying every given label
+  (AND). Returns an array of spec summaries with id, number, title, type,
+  status, and labels."
+- `list_labels`: "List the distinct Spec labels that exist in the current
+  Project, sorted and deduplicated. Use it to discover the labels available
+  for filtering list_specs or for adding to a Spec. Returns a JSON array of
+  label strings."
+- `read_spec`: "Read a single Spec and all its Tasks. Returns the spec's
+  full details including description (Markdown), type, status, labels, and
+  all tasks with their acceptance criteria, priority, and status."
 - `update_spec`: "Update a Spec's title, description (Markdown), type, or
   status. At least one field must be provided. Returns the updated spec with
   all tasks."
@@ -490,3 +604,16 @@ what each function does. Suggested descriptions:
 12. Idempotent association outcomes are returned to the model as success
     responses: an existing pair returns the existing association, and an
     absent disassociation returns `{ removed: false }`.
+13. `list_specs` accepts an optional `labels` array (max 10), sends one
+    URL-encoded `labels` query parameter per label, and the API filters with
+    AND semantics; summaries include each Spec's `labels`.
+14. `list_labels` requires `spec:list` and returns the Project's distinct
+    labels (sorted, deduplicated) as the discovery path for filtering and
+    adding.
+15. `add_spec_label` and `remove_spec_label` require `spec:update`; both trim
+    the label client-side, reject an empty result before any request,
+    URL-encode the label in the remove path (one path segment, no path
+    injection), and return the updated Spec detail with its `labels`.
+16. Idempotent label outcomes are returned to the model as success responses:
+    adding an existing label and removing an absent one both return the
+    (unchanged) Spec, never an error.
