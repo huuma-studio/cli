@@ -615,6 +615,33 @@ Deno.test("list_specs trims filter labels before sending them", async () => {
   }
 });
 
+Deno.test("label tools trim before validating length and controls", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["spec:list", "spec:update"]);
+      const label = "x".repeat(100);
+      const padded = ` \t${label}\n `;
+
+      await call(tools, "list_specs", { labels: [padded] });
+      await call(tools, "add_spec_label", { spec_id: SPEC_ID, label: padded });
+      await call(tools, "remove_spec_label", {
+        spec_id: SPEC_ID,
+        label: padded,
+      });
+
+      assertEquals(server.requests[0].search, `?labels=${label}`);
+      assertEquals(server.requests[1].body, { label });
+      assertEquals(
+        server.requests[2].path,
+        `/specs/${SPEC_ID}/labels/${label}`,
+      );
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
 Deno.test("list_specs rejects more than ten filter labels without a request", async () => {
   const server = await startServer();
   try {
@@ -665,12 +692,12 @@ Deno.test("list_specs rejects control characters and over-long labels without a 
       await assertRejects(
         () => call(tools, "list_specs", { labels: ["bug\u0007"] }),
         Error,
-        "does not match regex",
+        "requires a label without control characters after trimming",
       );
       await assertRejects(
         () => call(tools, "list_specs", { labels: ["x".repeat(101)] }),
         Error,
-        "length is greater than 100",
+        "requires a label of at most 100 UTF-16 code units after trimming",
       );
       assertEquals(server.requests.length, 0);
     });

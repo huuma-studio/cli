@@ -460,14 +460,11 @@ function listSpecsInput() {
   return object({ labels: array(labelValueInput()).optional() });
 }
 
-/** One label value: at most {@link SPEC_LABEL_MAX_LENGTH} UTF-16 code units
- * and no control characters (Unicode Cc: C0, DEL, C1). Trimming and the
- * non-empty-after-trim rule run in the tool functions, mirroring the
- * Studio's normalize-then-validate order. */
+/** One label value. Its value-object constraints run in
+ * {@link normalizeLabel} after surrounding whitespace is removed, mirroring
+ * the Studio's normalize-then-validate order. */
 function labelValueInput() {
-  return string()
-    .maxLength(SPEC_LABEL_MAX_LENGTH)
-    .regex(/^[^\u0000-\u001F\u007F-\u009F]*$/);
+  return string();
 }
 
 /** `{ spec_id, label }` — shared by `add_spec_label` and `remove_spec_label`.
@@ -616,15 +613,27 @@ function errorLabel(status: number): string {
 
 // --- helpers ---------------------------------------------------------------
 
-/** Trims one label and rejects an empty result, mirroring the Studio's
- * normalization so a whitespace-padded label targets the same stored value
- * for adding, removing, and filtering. The trimmed value is what gets sent. */
+/** Trims one label, then validates the normalized value, mirroring the
+ * Studio's normalize-then-validate order. The trimmed value is what gets
+ * sent for adding, removing, and filtering. */
 function normalizeLabel(label: string, toolName: string): string {
   const trimmed = label.trim();
   if (trimmed === "") {
     throw new Error(
       `${toolName} requires a non-empty label. Surrounding whitespace is ` +
         "trimmed; the value left after trimming must not be empty.",
+    );
+  }
+  if (trimmed.length > SPEC_LABEL_MAX_LENGTH) {
+    throw new Error(
+      `${toolName} requires a label of at most ${SPEC_LABEL_MAX_LENGTH} ` +
+        "UTF-16 code units after trimming.",
+    );
+  }
+  if (/[\u0000-\u001F\u007F-\u009F]/.test(trimmed)) {
+    throw new Error(
+      `${toolName} requires a label without control characters after ` +
+        "trimming.",
     );
   }
   return trimmed;
