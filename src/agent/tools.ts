@@ -1,5 +1,5 @@
 import type { AgentOptions } from "@huuma/ai/agent";
-import type { McpConnection } from "@huuma/ai/tools";
+
 import {
   cli,
   createDirectory,
@@ -8,6 +8,7 @@ import {
   fetchWebsite,
   files,
   grep,
+  image,
   readFile,
   search,
   skills,
@@ -55,11 +56,13 @@ export interface ToolConfig {
  * its tools lazily so nothing is constructed unless requested — `cli` and
  * `search` validate their own config and would otherwise throw. `files` is
  * shorthand for the whole file-system set; every other key is the tool name
- * the model sees. */
+ * the model sees. `read_image` remains separate from the five-tool `files`
+ * bundle, matching @huuma/ai's own grouping. */
 const TOOL_FACTORIES: Record<string, (config: ToolConfig) => AgentTools> = {
   cli: (config) => [cliTool(config.cliCommands ?? [])],
   grep: () => [grep()],
   read_file: () => [readFile()],
+  read_image: () => [image()],
   write_file: () => [writeFile()],
   create_directory: () => [createDirectory()],
   delete_file: () => [deleteFile()],

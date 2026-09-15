@@ -82,6 +82,7 @@ Deno.test("the agent command returns help for --help without starting a chat", a
   assertStringIncludes(result, "mistral");
   assertStringIncludes(result, "--host");
   assertStringIncludes(result, "--tools");
+  assertStringIncludes(result, "read_image");
   assertStringIncludes(result, "--cli-commands");
   assertStringIncludes(result, "--search-engine");
   assertStringIncludes(result, "--skills-path");

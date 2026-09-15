@@ -216,6 +216,7 @@ so nothing powerful is enabled unless you ask for it on the command line.
 
 ```bash
 huuma agent --tools read_file,grep "What does src/mod.ts export?"
+huuma agent --tools read_image "Describe ./screenshot.png"
 huuma agent --skills-path ./other-skills "What skills are installed there?"
 ```
 
@@ -244,12 +245,13 @@ empty value is rejected. The flag must come before the prompt, like `--tools`.
 | ------------------ | ------------------------------------------------------------ |
 | `cli`              | Run allow-listed CLI commands                                |
 | `grep`             | Search files for a pattern                                   |
-| `read_file`        | Read a file                                                  |
+| `read_file`        | Read a text file                                             |
+| `read_image`       | Attach a PNG, JPEG, GIF, or WebP image for the model         |
 | `write_file`       | Write a file                                                 |
 | `create_directory` | Create a directory                                           |
 | `delete_file`      | Delete a file or directory                                   |
 | `edit_file`        | Make an in-place edit to a file                              |
-| `files`            | Shorthand for the five file tools above                      |
+| `files`            | Five general file tools; excludes `read_image`               |
 | `fetch_website`    | Fetch a URL and return it as Markdown                        |
 | `search`           | Search the web                                               |
 | `specs`            | Live read/write access to a Project's Specs and Tasks        |
@@ -275,6 +277,9 @@ API keys are environment variables:
 ```bash
 # A read-only research agent
 huuma agent --tools read_file,grep,fetch_website "Find where Registry is defined"
+
+# Inspect a local image (supported formats: PNG, JPEG, GIF, WebP; max 5 MB)
+huuma agent --tools read_image "Describe ./screenshot.png"
 
 # A coding agent allowed to run Deno and Git
 huuma agent --tools files,cli --cli-commands deno,git \

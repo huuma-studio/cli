@@ -123,8 +123,9 @@ OPTIONS
 
 TOOLS
   ${allToolNames().join(", ")}
-  ("files" is shorthand for every file tool; "skills" expands to
-  list_skills and retrieve_skill and is always enabled — it does not need
+  ("files" is shorthand for the five general file tools; "read_image" is
+  separate. "skills" expands to list_skills and retrieve_skill and is always
+  enabled — it does not need
   to be listed here)
 
 SUBAGENTS

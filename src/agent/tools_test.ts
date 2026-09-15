@@ -16,7 +16,7 @@ Deno.test("resolveTools builds the named tools, case-insensitively", () => {
   assertEquals(toolNames(["GREP", "fetch_website"]), ["grep", "fetch_website"]);
 });
 
-Deno.test("resolveTools expands the files group", () => {
+Deno.test("resolveTools expands the files group without read_image", () => {
   assertEquals(toolNames(["files"]), [
     "read_file",
     "write_file",
@@ -24,6 +24,34 @@ Deno.test("resolveTools expands the files group", () => {
     "delete_file",
     "edit_file",
   ]);
+});
+
+Deno.test("resolveTools exposes the image tool as read_image", () => {
+  assertEquals(toolNames(["read_image"]), ["read_image"]);
+  assertStringIncludes(allToolNames().join(","), "read_image");
+});
+
+Deno.test("resolveTools read_image attaches supported image media", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    const path = join(root, "pixel.png");
+    await Deno.writeFile(
+      path,
+      new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    );
+
+    const [tool] = resolveTools(["read_image"]).tools;
+    const result = await tool.call({ path }) as {
+      output: string;
+      files: { file: { mimeType: string; data: string } }[];
+    };
+
+    assertStringIncludes(result.output, "Image loaded:");
+    assertEquals(result.files[0]?.file.mimeType, "image/png");
+    assertEquals(result.files[0]?.file.data, "iVBORw0KGgo=");
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
 
 Deno.test("resolveTools expands skills into list_skills and retrieve_skill", () => {
