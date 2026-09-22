@@ -191,6 +191,34 @@ retried. Non-terminal retries stop 15 seconds before `--turn-deadline` so a
 terminal failure can be reported; terminal callbacks may retry through the hard
 deadline. The CLI exits `0` only after `turn.finished` is acknowledged.
 
+Every `message.appended` event also carries an optional `usage` payload beside
+the native message — what the message cost as well as what it said — and
+`turn.finished` carries a Turn summary (`turn.failed` carries none):
+
+```json
+{
+  "usage": {
+    "tokens": {
+      "model": "claude-haiku-4-5",
+      "inputTokens": 812, "outputTokens": 240, "thinkingTokens": 0,
+      "cacheReadInputTokens": 1024, "cacheWriteInputTokens": 0, "totalTokens": 1052
+    },
+    "cpu": { "userMs": 830, "systemMs": 210, "totalMs": 1040 },
+    "ram": { "rssBytes": 104857600, "heapUsedBytes": 41943040, "peakRssBytes": 130023424 }
+  }
+}
+```
+
+`tokens` is the usage attributable to that message (the delta between
+consecutive accumulated model-usage snapshots, so tool messages and later
+messages of a multi-message batch carry none); `cpu` is the runner process's
+CPU milliseconds (self + reaped children) since the previous emission, or since
+`turn.running` for the first; `ram` samples current gauges plus a Turn-scoped
+peak of sampled RSS. Every section is best-effort — a sampling failure is
+logged and only the affected section is omitted, and collection never blocks,
+delays, or corrupts message delivery. See ADR 0011 for the schema and its
+compatibility rules.
+
 Errors reported through `turn.failed` are sanitized and truncated; callback
 secrets and raw provider payloads are never sent or printed. Studio owns retries
 of Agent execution: a retry is a new managed turn with a new `--turn-id`, while
