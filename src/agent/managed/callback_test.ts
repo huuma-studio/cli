@@ -5,6 +5,7 @@ import {
   CallbackError as CallbackErrorClass,
   type CallbackErrorKind,
   CallbackReporter,
+  MAX_MESSAGE_BODY_BYTES,
   type ResponseLike,
   sanitizeError,
   truncateUtf8Bytes,
@@ -671,4 +672,164 @@ Deno.test("truncateUtf8Bytes handles 4-byte code points (emoji)", () => {
   assertEquals(bytes.byteLength <= 1023, true);
   assertEquals(new TextDecoder().decode(bytes), out);
   assertEquals(out.endsWith("😀"), true);
+});
+
+// ---------------------------------------------------------------------------
+// 16. messageAppended bodies are kept strictly under MAX_MESSAGE_BODY_BYTES.
+// ---------------------------------------------------------------------------
+
+Deno.test("messageAppended posts under-cap messages verbatim", async () => {
+  const h = makeHarness({ responses: [response(204)] });
+  const message = {
+    role: "tool",
+    contents: [
+      {
+        toolResult: {
+          id: "t1",
+          name: "cli",
+          result: { output: "x".repeat(900_000) },
+        },
+      },
+    ],
+  };
+  await h.reporter.messageAppended(1, message);
+  const call = h.fetchCalls[0]!;
+  assertEquals(call.init.body.byteLength < MAX_MESSAGE_BODY_BYTES, true);
+  // Untouched: deep-equal to the original, no truncation marker anywhere.
+  assertEquals(decodeBody(call.init.body), {
+    run_id: "run-1",
+    turn_id: "turn-1",
+    event: "message.appended",
+    turn_sequence: 1,
+    message,
+  });
+});
+
+Deno.test("messageAppended truncates oversized messages under the cap", async () => {
+  const h = makeHarness({ responses: [response(204)] });
+  const message = { role: "model", contents: [{ text: "x".repeat(3_000_000) }] };
+  await h.reporter.messageAppended(7, message);
+  const call = h.fetchCalls[0]!;
+  assertEquals(call.init.body.byteLength < MAX_MESSAGE_BODY_BYTES, true);
+  // Envelope and idempotency key are unaffected by the shrink.
+  assertEquals(
+    call.init.headers["Idempotency-Key"],
+    "turn-1:message.appended:7",
+  );
+  const decoded = decodeBody(call.init.body) as {
+    run_id: string;
+    turn_id: string;
+    event: string;
+    turn_sequence: number;
+    message: { role: string; contents: { text: string }[] };
+  };
+  assertEquals(decoded.run_id, "run-1");
+  assertEquals(decoded.turn_id, "turn-1");
+  assertEquals(decoded.event, "message.appended");
+  assertEquals(decoded.turn_sequence, 7);
+  assertEquals(decoded.message.role, "model");
+  const text = decoded.message.contents[0].text;
+  assertEquals(text.startsWith("x"), true);
+  assertEquals(text.endsWith("...[truncated]"), true);
+  assertEquals(text.length < 3_000_000, true);
+});
+
+Deno.test("oversized multibyte messages truncate on a code point boundary", async () => {
+  const h = makeHarness({ responses: [response(204)] });
+  const message = { role: "model", contents: [{ text: "α".repeat(2_000_000) }] };
+  await h.reporter.messageAppended(1, message);
+  const call = h.fetchCalls[0]!;
+  assertEquals(call.init.body.byteLength < MAX_MESSAGE_BODY_BYTES, true);
+  // decodeBody parses the JSON, proving the body round-trips as valid UTF-8.
+  const decoded = decodeBody(call.init.body) as {
+    message: { contents: { text: string }[] };
+  };
+  const text = decoded.message.contents[0].text;
+  assertEquals(text.endsWith("...[truncated]"), true);
+  // No replacement characters: the cut landed on a whole α, not mid-sequence.
+  assertEquals(text.includes("�"), false);
+});
+
+Deno.test("every oversized string is truncated, not just the first", async () => {
+  const h = makeHarness({ responses: [response(204)] });
+  const message = {
+    role: "user",
+    contents: [
+      { text: "a".repeat(700_000) },
+      { file: { mimeType: "image/png", data: "Z".repeat(700_000) } },
+    ],
+  };
+  await h.reporter.messageAppended(1, message);
+  const call = h.fetchCalls[0]!;
+  assertEquals(call.init.body.byteLength < MAX_MESSAGE_BODY_BYTES, true);
+  const decoded = decodeBody(call.init.body) as {
+    message: {
+      contents: [
+        { text: string },
+        { file: { data: string; mimeType: string } },
+      ];
+    };
+  };
+  assertEquals(decoded.message.contents[0].text.endsWith("...[truncated]"), true);
+  assertEquals(
+    decoded.message.contents[1].file.data.endsWith("...[truncated]"),
+    true,
+  );
+  assertEquals(decoded.message.contents[1].file.mimeType, "image/png");
+});
+
+Deno.test("the per-string budget halves until the body fits", async () => {
+  const h = makeHarness({ responses: [response(204)] });
+  // 40 parts x 30 KB = 1.2 MB. The first per-string budget (just below the
+  // 30 KB strings) cannot fit that, so halving must kick in.
+  const message = {
+    role: "tool",
+    contents: Array.from({ length: 40 }, (_, i) => ({
+      toolResult: {
+        id: `id-${i}`,
+        name: "cli",
+        result: { output: "y".repeat(30_000) },
+      },
+    })),
+  };
+  await h.reporter.messageAppended(1, message);
+  const call = h.fetchCalls[0]!;
+  assertEquals(call.init.body.byteLength < MAX_MESSAGE_BODY_BYTES, true);
+  const decoded = decodeBody(call.init.body) as {
+    message: {
+      contents: { toolResult: { id: string; result: { output: string } } }[];
+    };
+  };
+  assertEquals(decoded.message.contents.length, 40);
+  for (const [i, part] of decoded.message.contents.entries()) {
+    assertEquals(part.toolResult.id, `id-${i}`);
+    const output = part.toolResult.result.output;
+    assertEquals(output.endsWith("...[truncated]"), true);
+    assertEquals(output.length < 30_000, true);
+  }
+});
+
+Deno.test("pathological messages collapse to a preview placeholder", async () => {
+  const h = makeHarness({ responses: [response(204)] });
+  // ~120k tiny strings: even the minimum per-string budget cannot get the
+  // body under the cap, so the placeholder fallback must fire.
+  const message = {
+    role: "tool",
+    contents: Array.from({ length: 120_000 }, (_, i) => ({
+      toolResult: {
+        id: `id-${i}`,
+        name: "cli",
+        result: { output: "z".repeat(20) },
+      },
+    })),
+  };
+  await h.reporter.messageAppended(1, message);
+  const call = h.fetchCalls[0]!;
+  assertEquals(call.init.body.byteLength < MAX_MESSAGE_BODY_BYTES, true);
+  const decoded = decodeBody(call.init.body) as {
+    message: { role: string; contents: string };
+  };
+  assertEquals(decoded.message.role, "tool");
+  assertEquals(typeof decoded.message.contents, "string");
+  assertEquals(decoded.message.contents.endsWith("...[truncated]"), true);
 });
