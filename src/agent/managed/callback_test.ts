@@ -8,6 +8,7 @@ import {
   MAX_MESSAGE_BODY_BYTES,
   type ResponseLike,
   sanitizeError,
+  truncateMessageForBody,
   truncateUtf8Bytes,
 } from "./callback.ts";
 
@@ -832,4 +833,41 @@ Deno.test("pathological messages collapse to a preview placeholder", async () =>
   assertEquals(decoded.message.role, "tool");
   assertEquals(typeof decoded.message.contents, "string");
   assertEquals(decoded.message.contents.endsWith("...[truncated]"), true);
+});
+
+Deno.test("truncateMessageForBody skips structural truncation when the floor cannot fit", () => {
+  // Many small strings: even cut to the 1-byte floor plus marker the value
+  // stays over a tiny budget, so the preview placeholder fires without any
+  // halving passes.
+  const message = {
+    role: "tool",
+    contents: Array.from({ length: 500 }, (_, i) => ({
+      toolResult: {
+        id: `id-${i}`,
+        name: "cli",
+        result: { output: "z".repeat(20) },
+      },
+    })),
+  };
+  const out = truncateMessageForBody(message, 2_000) as {
+    role: string;
+    contents: string;
+  };
+  assertEquals(out.role, "tool");
+  assertEquals(typeof out.contents, "string");
+  assertEquals(out.contents.endsWith("...[truncated]"), true);
+});
+
+Deno.test("truncateMessageForBody returns structural truncation when the floor fits", () => {
+  const message = { role: "model", contents: [{ text: "x".repeat(5_000) }] };
+  const out = truncateMessageForBody(message, 1_000) as {
+    role: string;
+    contents: { text: string }[];
+  };
+  assertEquals(out.role, "model");
+  const text = out.contents[0].text;
+  assertEquals(text.startsWith("x"), true);
+  assertEquals(text.endsWith("...[truncated]"), true);
+  // The structural candidate fits the budget and keeps the message shape.
+  assertEquals(JSON.stringify(out).length <= 1_000, true);
 });

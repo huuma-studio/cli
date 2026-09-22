@@ -440,19 +440,37 @@ function jsonByteLength(value: unknown): number {
  *    (capped at {@link MAX_STRING_BUDGET_BYTES}) and halves until the body
  *    fits. A string is only cut when that actually shrinks it — one barely
  *    over the budget would grow once the marker is appended.
- * 3. Last resort for pathological values (very many small strings): the
+ * 3. The budget-1 candidate is the floor of step 2: every cut string is then
+ *    down to the 1-byte cut plus the marker. When even the floor does not
+ *    fit (very many small strings), step 2 is skipped entirely and the
  *    message collapses to a preview placeholder — the original role (when
  *    present) plus the serialized original, truncated, as `contents`.
  *
- * Deterministic: the same message always yields the same result, so body
- * bytes stay stable across callback retries. */
+ * The original message is serialized exactly once and shared by every
+ * measurement and the fallback, so pathological values pay one clone walk
+ * plus one encode before giving up on structural truncation. Deterministic:
+ * the same message always yields the same result, so body bytes stay stable
+ * across callback retries. */
 export function truncateMessageForBody(
   message: unknown,
   maxMessageBytes: number,
 ): unknown {
-  const originalSize = jsonByteLength(message);
+  // Serialize the original once; the JSON string feeds the measurements here
+  // and the preview fallback, which never re-stringifies the message.
+  const originalJson = JSON.stringify(message) ?? "";
+  const originalSize = utf8.encode(originalJson).byteLength;
   if (originalSize <= maxMessageBytes) return message;
-  let previousSize = originalSize;
+  // Measure the floor candidate first. For every budget b >= 1 each string's
+  // serialized contribution is at least its contribution at budget 1, so a
+  // floor that does not fit proves no per-string budget can help.
+  const floorState = { cut: false };
+  const floorCandidate = truncateLongStrings(message, 1, floorState);
+  const floorSize = floorState.cut
+    ? jsonByteLength(floorCandidate)
+    : originalSize;
+  if (floorSize > maxMessageBytes) {
+    return previewPlaceholder(message, originalJson, maxMessageBytes);
+  }
   // A pass cuts only when some string exceeds budget + marker, so start just
   // below the longest string value (keys are never cut) and cap the start at
   // MAX_STRING_BUDGET_BYTES to keep the first cut meaningful.
@@ -460,17 +478,17 @@ export function truncateMessageForBody(
     MAX_STRING_BUDGET_BYTES,
     Math.max(1, maxStringBytes(message) - MESSAGE_TRUNCATION_MARKER_BYTES - 1),
   );
-  while (budget >= 1) {
+  while (budget > 1) {
     const state = { cut: false };
     const candidate = truncateLongStrings(message, budget, state);
     // When nothing was cut the candidate is identical to the input — reuse
-    // the already-known size instead of re-encoding it.
-    const size = state.cut ? jsonByteLength(candidate) : previousSize;
+    // the already-known original size instead of re-encoding it.
+    const size = state.cut ? jsonByteLength(candidate) : originalSize;
     if (size <= maxMessageBytes) return candidate;
-    previousSize = size;
     budget = Math.floor(budget / 2);
   }
-  return previewPlaceholder(message, maxMessageBytes);
+  // Budget 1 is the already-measured floor candidate.
+  return floorCandidate;
 }
 
 /** Longest UTF-8 byte length among string values in `value` (keys excluded —
@@ -527,19 +545,20 @@ function truncateLongStrings(
 }
 
 /** Builds the preview placeholder for values that cannot fit under any
- * per-string budget. The preview is the original message's JSON, cut on a
- * code point boundary and halved until the placeholder itself fits. It is
- * embedded as a JSON string value, so a cut mid-escape cannot corrupt the
- * body — the outer JSON stays valid regardless. */
+ * per-string budget. `source` is the caller's single JSON serialization of
+ * the original message; it is cut on a code point boundary and halved until
+ * the placeholder itself fits — never re-stringified. It is embedded as a
+ * JSON string value, so a cut mid-escape cannot corrupt the body — the
+ * outer JSON stays valid regardless. */
 function previewPlaceholder(
   message: unknown,
+  source: string,
   maxMessageBytes: number,
 ): unknown {
   const record = typeof message === "object" && message !== null
     ? message as { role?: unknown }
     : undefined;
   const role = typeof record?.role === "string" ? record.role : undefined;
-  const source = JSON.stringify(message) ?? "";
   let previewBytes = Math.max(maxMessageBytes, 0);
   while (true) {
     const preview = truncateUtf8Bytes(source, previewBytes) +
