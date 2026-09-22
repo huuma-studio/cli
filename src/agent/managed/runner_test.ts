@@ -12,6 +12,7 @@
 import type {
   FileContent,
   Message,
+  ModelUsage,
   TextContent,
   ToolResultContent,
 } from "@huuma/ai/agent";
@@ -21,6 +22,7 @@ import type { ManagedConfig } from "./config.ts";
 import type { Assistant } from "../chat.ts";
 import type { SetupResult } from "../setup.ts";
 import { type ManagedTurnDeps, runManagedTurn } from "./runner.ts";
+import type { CpuCounters, UsageDeps } from "./usage.ts";
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -152,6 +154,10 @@ interface FakeAgentOptions {
    * emitting anything — the transient model-failure shape the runner's
    * retry loop (ADR 0010) recovers from. */
   failFirstRuns?: number;
+  /** Accumulated usage snapshot passed with each emission, aligned to the
+   * emission index (0 = the triggering user message). Mirrors the second
+   * `OnMessage` argument of the real `@huuma/ai` agent. */
+  usageSnapshots?: (ModelUsage | undefined)[];
 }
 
 /** Builds a fake `agentFactory` that returns an `Assistant` whose `run`
@@ -192,7 +198,7 @@ function makeFakeAgentFactory(opts: FakeAgentOptions = {}) {
           throw opts.throwError ?? new Error("fake agent error");
         }
         if (options?.onMessage) {
-          await options.onMessage(emissions[i]!);
+          await options.onMessage(emissions[i]!, opts.usageSnapshots?.[i]);
         }
         messages.push(emissions[i]!);
       }
@@ -1031,6 +1037,379 @@ Deno.test("failed finish_turn followed by text-only model message → protocol f
       // The error must mention the failed/malformed finish_turn, not be
       // swallowed into an implicit question.
       assertNotEquals(failed.error.indexOf("finish_turn"), -1);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Usage payload collection (spec 106, ADR 0011): token deltas from the second
+// OnMessage argument, CPU/RAM deltas from injected sources, attempt resets,
+// Turn summaries, and fail-safe degradation.
+// ---------------------------------------------------------------------------
+
+/** Builds injectable `UsageDeps` with scripted CPU/RAM sources. An exhausted
+ * CPU queue returns a stable zero sample; a queued `undefined` models an
+ * unavailable `/proc`. */
+function makeUsageDeps(opts: {
+  cpu?: (CpuCounters | undefined | Error)[];
+  ram?: ({ rssBytes: number; heapUsedBytes: number } | Error)[];
+  ramAlways?: () => { rssBytes: number; heapUsedBytes: number };
+} = {}) {
+  const logged: string[] = [];
+  const cpuQueue = [...(opts.cpu ?? [])];
+  const ramQueue = [...(opts.ram ?? [])];
+  let ramCalls = 0;
+  const deps: UsageDeps = {
+    readCpu: () => {
+      if (cpuQueue.length === 0) return { userTicks: 0, systemTicks: 0 };
+      const next = cpuQueue.shift();
+      if (next === undefined) return undefined;
+      if (next instanceof Error) throw next;
+      return next;
+    },
+    readRam: () => {
+      ramCalls += 1;
+      if (opts.ramAlways) return opts.ramAlways();
+      const next = ramQueue.shift();
+      if (next === undefined) return { rssBytes: 0, heapUsedBytes: 0 };
+      if (next instanceof Error) throw next;
+      return next;
+    },
+    logError: (message) => logged.push(message),
+  };
+  return {
+    deps,
+    logged,
+    ramCalls: () => ramCalls,
+  };
+}
+
+/** The decoded usage of the n-th `message.appended` fetch call (1-based). */
+function usageOfMessage(
+  calls: RecordedFetch[],
+  turnSequence: number,
+): Record<string, unknown> {
+  const call = calls.find((c) => {
+    const body = decodeBody(c.body) as {
+      event?: string;
+      turn_sequence?: number;
+    };
+    return body.event === "message.appended" &&
+      body.turn_sequence === turnSequence;
+  });
+  if (!call) throw new Error(`no message.appended fetch for sequence ${turnSequence}`);
+  return (decodeBody(call.body) as { usage?: Record<string, unknown> }).usage ??
+    {};
+}
+
+Deno.test("usage: model messages carry token deltas; tool messages omit tokens; the echo sends no callback", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    const usage = makeUsageDeps({
+      cpu: [
+        { userTicks: 0, systemTicks: 0 }, // turn.running baseline
+        { userTicks: 10, systemTicks: 1 }, // seq 1 (model)
+        { userTicks: 11, systemTicks: 1 }, // seq 2 (tool)
+        { userTicks: 12, systemTicks: 1 }, // seq 3 (finish_turn)
+        { userTicks: 13, systemTicks: 1 }, // turn summary
+      ],
+      ram: [
+        { rssBytes: 100, heapUsedBytes: 40 },
+        { rssBytes: 130, heapUsedBytes: 50 },
+        { rssBytes: 90, heapUsedBytes: 30 },
+        { rssBytes: 90, heapUsedBytes: 30 },
+      ],
+    });
+    const snapshot = { inputTokens: 100, outputTokens: 40, totalTokens: 140 };
+    const agent = makeFakeAgentFactory({
+      extraEmissions: [
+        modelMessage("Working on it."),
+        { role: "tool", contents: [{ toolResult: { id: "t1", name: "grep", result: { output: "x" } } }] },
+        finishTurnMessage("completion"),
+      ],
+      usageSnapshots: [
+        undefined, // triggering user message (suppressed — no callback)
+        snapshot, // model message follows the model call
+        snapshot, // tool message: no model call
+        snapshot, // finish_turn tool message: no model call
+      ],
+    });
+    const { config, cleanup } = await makeConfig();
+    try {
+      await runManagedTurn(config, {
+        agentFactory: agent.factory,
+        callbackDeps: cb.deps,
+        usageDeps: usage.deps,
+      });
+      assertEquals(Deno.exitCode, 0);
+
+      // Exactly 3 message.appended events — the echo with its snapshot was
+      // suppressed and never delivered.
+      const messageCalls = cb.fetchCalls.filter((c) =>
+        (decodeBody(c.body) as { event: string }).event === "message.appended"
+      );
+      assertEquals(messageCalls.length, 3);
+
+      // Seq 1 (model message): full snapshot delta + model id + cpu + ram.
+      assertEquals(usageOfMessage(cb.fetchCalls, 1), {
+        tokens: {
+          model: "claude-haiku-4-5",
+          inputTokens: 100,
+          outputTokens: 40,
+          totalTokens: 140,
+        },
+        cpu: { userMs: 100, systemMs: 10, totalMs: 110 },
+        ram: { rssBytes: 100, heapUsedBytes: 40, peakRssBytes: 100 },
+      });
+
+      // Seq 2 (tool message): unchanged snapshot → no tokens block.
+      assertEquals(usageOfMessage(cb.fetchCalls, 2), {
+        cpu: { userMs: 10, systemMs: 0, totalMs: 10 },
+        ram: { rssBytes: 130, heapUsedBytes: 50, peakRssBytes: 130 },
+      });
+
+      // Seq 3 (finish_turn tool message): same shape, peak RSS stays high.
+      assertEquals(usageOfMessage(cb.fetchCalls, 3), {
+        cpu: { userMs: 10, systemMs: 0, totalMs: 10 },
+        ram: { rssBytes: 90, heapUsedBytes: 30, peakRssBytes: 130 },
+      });
+
+      // turn.finished carries the Turn summary.
+      const finished = decodeBody(cb.fetchCalls.at(-1)!.body) as {
+        usage: Record<string, unknown>;
+      };
+      assertEquals(finished.usage, {
+        tokens: {
+          model: "claude-haiku-4-5",
+          inputTokens: 100,
+          outputTokens: 40,
+          totalTokens: 140,
+        },
+        cpu: { userMs: 130, systemMs: 10, totalMs: 140 },
+        ram: { rssBytes: 90, heapUsedBytes: 30, peakRssBytes: 130 },
+      });
+      assertEquals(usage.logged, []);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+Deno.test("usage: the retry reset gives each attempt its own token baseline and the summary sums attempts", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    const usage = makeUsageDeps({
+      cpu: [
+        { userTicks: 0, systemTicks: 0 }, // turn.running baseline
+        { userTicks: 10, systemTicks: 1 }, // attempt 1 model message
+        { userTicks: 12, systemTicks: 1 }, // attempt 2 model message (baseline continues)
+        { userTicks: 12, systemTicks: 1 }, // attempt 2 finish_turn
+        { userTicks: 14, systemTicks: 1 }, // turn summary
+      ],
+    });
+    // Attempt 1: model message with its own accumulated snapshot, then a
+    // transient failure. Attempt 2: a fresh accumulation from zero.
+    let runs = 0;
+    const run: Assistant["run"] = async (prompt, _history, options) => {
+      runs += 1;
+      const echo: Message = { role: "user", contents: prompt as string };
+      const attempt1 = [
+        [modelMessage("working"), { inputTokens: 100, outputTokens: 40 }] as const,
+      ];
+      const attempt2 = [
+        [modelMessage("second try"), { inputTokens: 30, outputTokens: 12 }] as const,
+        [finishTurnMessage("completion"), { inputTokens: 30, outputTokens: 12 }] as const,
+      ];
+      const emissions = runs === 1
+        ? [[echo, undefined] as const, ...attempt1]
+        : [[echo, undefined] as const, ...attempt2];
+      const messages: Message[] = [];
+      for (const [message, snapshot] of emissions) {
+        await options?.onMessage?.(message, snapshot);
+        messages.push(message);
+      }
+      if (runs === 1) throw new Error("503 Service Unavailable");
+      return messages;
+    };
+    const factory = async (_config: ManagedConfig): Promise<SetupResult> => ({
+      assistant: { run },
+      mcpConnections: [],
+    });
+    const { config, cleanup } = await makeConfig({ retries: 2 });
+    try {
+      await runManagedTurn(config, {
+        agentFactory: factory,
+        callbackDeps: cb.deps,
+        usageDeps: usage.deps,
+      });
+      assertEquals(Deno.exitCode, 0);
+      assertEquals(runs, 2);
+
+      // Attempt 1's model message (seq 1) carries attempt 1's whole usage.
+      assertEquals(usageOfMessage(cb.fetchCalls, 1).tokens, {
+        model: "claude-haiku-4-5",
+        inputTokens: 100,
+        outputTokens: 40,
+      });
+      // Attempt 2's first message (seq 2) carries attempt 2's usage only —
+      // the baseline reset per attempt — and its CPU delta continues
+      // monotonically from attempt 1's last emission (20ms user, not a
+      // fresh 120ms).
+      assertEquals(usageOfMessage(cb.fetchCalls, 2), {
+        tokens: {
+          model: "claude-haiku-4-5",
+          inputTokens: 30,
+          outputTokens: 12,
+        },
+        cpu: { userMs: 20, systemMs: 0, totalMs: 20 },
+        ram: { rssBytes: 0, heapUsedBytes: 0, peakRssBytes: 0 },
+      });
+      // Attempt 2's finish_turn (seq 3) has no new model call → no tokens.
+      assertEquals(usageOfMessage(cb.fetchCalls, 3).tokens, undefined);
+
+      // The Turn summary sums every attempt's final snapshot: 100/40 + 30/12.
+      const finished = decodeBody(cb.fetchCalls.at(-1)!.body) as {
+        usage: Record<string, unknown>;
+      };
+      assertEquals(finished.usage.tokens, {
+        model: "claude-haiku-4-5",
+        inputTokens: 130,
+        outputTokens: 52,
+      });
+      assertEquals(finished.usage.cpu, {
+        userMs: 140,
+        systemMs: 10,
+        totalMs: 150,
+      });
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+Deno.test("usage: cpu is omitted when /proc is unavailable, and ram still reports", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    const usage = makeUsageDeps({
+      cpu: [undefined, undefined, undefined, undefined, undefined],
+      ramAlways: () => ({ rssBytes: 42, heapUsedBytes: 21 }),
+    });
+    const agent = makeFakeAgentFactory({
+      extraEmissions: [modelMessage("hi"), finishTurnMessage("completion")],
+      usageSnapshots: [undefined, { inputTokens: 5 }, { inputTokens: 5 }],
+    });
+    const { config, cleanup } = await makeConfig();
+    try {
+      await runManagedTurn(config, {
+        agentFactory: agent.factory,
+        callbackDeps: cb.deps,
+        usageDeps: usage.deps,
+      });
+      assertEquals(Deno.exitCode, 0);
+      assertEquals(usageOfMessage(cb.fetchCalls, 1), {
+        tokens: { model: "claude-haiku-4-5", inputTokens: 5 },
+        ram: { rssBytes: 42, heapUsedBytes: 21, peakRssBytes: 42 },
+      });
+      const finished = decodeBody(cb.fetchCalls.at(-1)!.body) as {
+        usage: Record<string, unknown>;
+      };
+      assertEquals(Object.hasOwn(finished.usage, "cpu"), false);
+      assertEquals(finished.usage.ram, {
+        rssBytes: 42,
+        heapUsedBytes: 21,
+        peakRssBytes: 42,
+      });
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+Deno.test("usage: a sampling failure is logged and never blocks, delays, or corrupts delivery", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    let ramCalls = 0;
+    const usage = makeUsageDeps({
+      // /proc is unavailable in this test so the ram failure is isolated.
+      cpu: [undefined, undefined, undefined, undefined],
+      // RAM sampling fails on the first emission only.
+      ram: [
+        new Error("memoryUsage exploded"),
+        { rssBytes: 10, heapUsedBytes: 5 },
+        { rssBytes: 10, heapUsedBytes: 5 },
+      ],
+    });
+    // Patch readRam to count calls for the delivery assertion.
+    const originalReadRam = usage.deps.readRam;
+    usage.deps.readRam = () => {
+      ramCalls += 1;
+      return originalReadRam();
+    };
+    const agent = makeFakeAgentFactory({
+      extraEmissions: [
+        modelMessage("first"), // seq 1 — ram sampling fails
+        finishTurnMessage("completion"), // seq 2
+      ],
+      usageSnapshots: [undefined, { inputTokens: 5 }, { inputTokens: 5 }],
+    });
+    const { config, cleanup } = await makeConfig();
+    try {
+      await runManagedTurn(config, {
+        agentFactory: agent.factory,
+        callbackDeps: cb.deps,
+        usageDeps: usage.deps,
+      });
+      assertEquals(Deno.exitCode, 0);
+      // Delivery happened exactly once per message despite the failure.
+      assertEquals(eventKinds(cb.fetchCalls), [
+        "turn.running",
+        "message.appended",
+        "message.appended",
+        "turn.finished",
+      ]);
+      // The affected section is omitted; tokens still compose.
+      assertEquals(usageOfMessage(cb.fetchCalls, 1), {
+        tokens: { model: "claude-haiku-4-5", inputTokens: 5 },
+      });
+      assertEquals(usageOfMessage(cb.fetchCalls, 2).ram, {
+        rssBytes: 10,
+        heapUsedBytes: 5,
+        peakRssBytes: 10,
+      });
+      // The failure was logged through the runner's error sink.
+      assertEquals(
+        usage.logged.some((l) => l.startsWith("[managed:usage.ram]")),
+        true,
+      );
+      assertEquals(ramCalls, 3); // two messages + the summary
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+Deno.test("usage: turn.failed carries no usage payload", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    const usage = makeUsageDeps();
+    const agent = makeFakeAgentFactory({
+      failFirstRuns: 99,
+      throwError: new Error("503 Service Unavailable"),
+    });
+    const { config, cleanup } = await makeConfig({ retries: 2 });
+    try {
+      await runManagedTurn(config, {
+        agentFactory: agent.factory,
+        callbackDeps: cb.deps,
+        usageDeps: usage.deps,
+      });
+      assertEquals(Deno.exitCode, 1);
+      assertEquals(eventKinds(cb.fetchCalls), ["turn.running", "turn.failed"]);
+      const failed = decodeBody(cb.fetchCalls.at(-1)!.body) as
+        Record<string, unknown>;
+      assertEquals(Object.hasOwn(failed, "usage"), false);
     } finally {
       await cleanup();
     }

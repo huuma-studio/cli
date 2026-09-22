@@ -59,10 +59,19 @@
  * `turn_sequence`, and echo suppression via the re-armed first-emission
  * check. Callback/delivery errors and the first-emission protocol failure
  * are never classified as model failures and keep their existing paths.
+ *
+ * Usage amendment (spec 106, ADR 0011): every emitted `message.appended`
+ * carries an optional `usage` payload (token deltas from the second
+ * `OnMessage` argument, CPU deltas from `/proc/self/stat`, RAM gauges), and
+ * `turn.finished` carries the Turn summary. `turn.failed` carries no usage.
+ * Composition is fail-safe telemetry: a sampling failure is logged and only
+ * the affected section is omitted — it never blocks, delays, or corrupts
+ * message delivery.
  */
 import type {
   FileContent,
   Message,
+  ModelUsage,
   TextContent,
   ToolResultContent,
 } from "@huuma/ai/agent";
@@ -80,6 +89,11 @@ import {
 import type { ManagedConfig } from "./config.ts";
 import { loadManagedInput } from "./input.ts";
 import { ProtocolError, runWithRetries, type RetryDeps } from "../retry.ts";
+import {
+  productionUsageDeps,
+  type UsageDeps,
+  UsageTracker,
+} from "./usage.ts";
 
 /** Injectable dependencies for {@link runManagedTurn}. */
 export interface ManagedTurnDeps {
@@ -94,6 +108,9 @@ export interface ManagedTurnDeps {
   /** Injectable callback deps (fetch/now/sleep/random) for deterministic
    * delivery behavior. T6 injects production deps; T7 injects fakes. */
   callbackDeps: CallbackDeps;
+  /** Injectable usage-sampling sources (CPU/RAM) so usage composition is
+   * deterministic in tests. Defaults to {@link productionUsageDeps}. */
+  usageDeps?: UsageDeps;
   /** Error sink for sanitized managed-mode diagnostics. Defaults to
    * `console.error`; injectable so tests and embedders can capture output. */
   logError?: (message: string) => void;
@@ -208,6 +225,16 @@ export async function runManagedTurn(
       return;
     }
 
+    // Usage telemetry starts here: the CPU baseline is anchored at the
+    // acknowledged `turn.running` (spec 106, ADR 0011). The tracker is
+    // fail-safe — composition failures are logged and degrade to omitted
+    // sections, never to incorrect values, and never block delivery.
+    const usage = new UsageTracker(
+      deps.usageDeps ?? productionUsageDeps(logError),
+      config.model.modelId,
+    );
+    usage.start();
+
     // 5. Run the Agent loop, retrying transient model failures with bounded
     //    backoff (ADR 0010). `onMessage` verifies and suppresses the first
     //    emission (the triggering user message Studio already persisted as
@@ -217,7 +244,10 @@ export async function runManagedTurn(
     //    out of `agent.run`.
     let firstEmission = true;
     let turnSequence = 0;
-    const onMessage = async (message: Message): Promise<void> => {
+    const onMessage = async (
+      message: Message,
+      snapshot?: ModelUsage,
+    ): Promise<void> => {
       if (firstEmission) {
         firstEmission = false;
         // Verify and suppress the already-persisted triggering user message.
@@ -239,7 +269,12 @@ export async function runManagedTurn(
         return; // Suppress — Studio owns sequence 0.
       }
       turnSequence += 1;
-      await reporter.messageAppended(turnSequence, message);
+      // `messageUsage` never throws; `undefined` omits the `usage` field.
+      await reporter.messageAppended(
+        turnSequence,
+        message,
+        usage.messageUsage(snapshot),
+      );
     };
 
     // Each attempt re-arms the first-emission suppression: `agent.run`
@@ -254,6 +289,12 @@ export async function runManagedTurn(
     // whole-Turn awaiting_retry re-run, bounded by --retries.
     const runAttempt = (): Promise<Message[]> => {
       firstEmission = true;
+      // The token-delta baseline resets per attempt (ADR 0010): the first
+      // message of a re-invoked `agent.run` carries that attempt's whole
+      // usage so far. The attempt's final snapshot is folded into the Turn
+      // total for the `turn.finished` summary. CPU baselines continue
+      // monotonically — the counters are cumulative.
+      usage.resetAttempt();
       return assistant.run(input.prompt, input.history, {
         onMessage,
         onMessageError: "throw",
@@ -335,10 +376,11 @@ export async function runManagedTurn(
     //    events are acknowledged (inherent — `onMessage` awaited each, and
     //    `agent.run` has returned). Mark `terminalAttempted` before the call:
     //    a failed terminal delivery is never replaced by `turn.failed` (both
-    //    share the `<turn-id>:terminal` key).
+    //    share the `<turn-id>:terminal` key). The optional Turn usage summary
+    //    rides along (spec 106); `turn.failed` never carries usage.
     terminalAttempted = true;
     try {
-      await reporter.turnFinished(outcome);
+      await reporter.turnFinished(outcome, usage.turnSummary());
       Deno.exitCode = 0;
     } catch (error) {
       reportError("callback.turn_finished", error);
