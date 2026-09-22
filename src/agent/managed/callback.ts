@@ -10,6 +10,9 @@
  *   responsible for calling methods in order.
  * - Stable retry request: the JSON body bytes and `Idempotency-Key` header
  *   are constructed once per event and reused verbatim for every retry.
+ * - Bounded bodies: `message.appended` bodies are kept strictly under 1 MB
+ *   (`MAX_MESSAGE_BODY_BYTES`); oversized messages are shrunk to valid JSON
+ *   before the body bytes are built.
  * - Deadline-aware retries: exponential backoff with jitter, capped at 5 s,
  *   honoring `Retry-After` only when it does not extend beyond the applicable
  *   cutoff. Non-terminal events retry until `turnDeadline - 15_000` ms;
@@ -97,6 +100,15 @@ const MAX_ATTEMPT_TIMEOUT_MS = 10_000;
 /** `turn.failed` error strings are truncated to at most 1024 UTF-8 bytes
  * without splitting a code point. */
 const MAX_ERROR_BYTES = 1024;
+/** `message.appended` bodies are kept strictly under 10^6 UTF-8 bytes —
+ * under 1 MB whether that is counted decimally or as 1 MiB (2^20). The
+ * endpoint rejects larger bodies with 413, which the delivery contract
+ * classifies as fatal, so one oversized message would fail the whole Turn.
+ * When a body reaches the cap the message value itself is shrunk (see
+ * {@link truncateMessageForBody}); the envelope fields (`run_id`, `turn_id`,
+ * `event`, `turn_sequence`) are never touched. Exported so tests can pin
+ * the cap. */
+export const MAX_MESSAGE_BODY_BYTES = 1_000_000;
 /** Exponential backoff base. */
 const BACKOFF_BASE_MS = 250;
 /** Exponential backoff cap. */
@@ -148,10 +160,15 @@ export class CallbackReporter {
     await this.deliver(`${this.turnId}:turn.running`, body, false);
   }
 
-  /** POSTs `message.appended` for one native `@huuma/ai` message. The `message`
-   * is opaque JSON — the caller supplies it and the reporter does not rewrite
-   * fields. `turnSequence` is a positive integer starting at 1 (sequence 0 is
-   * reserved for the app-persisted triggering user message). */
+  /** POSTs `message.appended` for one native `@huuma/ai` message.
+   * `turnSequence` is a positive integer starting at 1 (sequence 0 is
+   * reserved for the app-persisted triggering user message).
+   *
+   * Messages that fit are posted verbatim. When the encoded body would reach
+   * {@link MAX_MESSAGE_BODY_BYTES}, the message is first shrunk to valid JSON
+   * via {@link truncateMessageForBody} — Studio rejects larger bodies with
+   * 413, a fatal outcome. The shrink is deterministic, so body bytes remain
+   * stable across retries. */
   async messageAppended(turnSequence: number, message: unknown): Promise<void> {
     if (!Number.isInteger(turnSequence) || turnSequence < 1) {
       throw new Error(
@@ -160,13 +177,27 @@ export class CallbackReporter {
         }`,
       );
     }
-    const body = this.encodeBody({
+    const plain = {
       run_id: this.runId,
       turn_id: this.turnId,
       event: "message.appended",
       turn_sequence: turnSequence,
       message,
-    });
+    };
+    let body = this.encodeBody(plain);
+    if (body.byteLength >= MAX_MESSAGE_BODY_BYTES) {
+      // Reserve the envelope's share of the cap. The `{}` placeholder stands
+      // in for the message so the measurement matches the final body's key
+      // order; the 2 bytes it under-counts are a safety margin.
+      const overhead = jsonByteLength({ ...plain, message: {} });
+      body = this.encodeBody({
+        ...plain,
+        message: truncateMessageForBody(
+          message,
+          MAX_MESSAGE_BODY_BYTES - overhead,
+        ),
+      });
+    }
     await this.deliver(
       `${this.turnId}:message.appended:${turnSequence}`,
       body,
@@ -377,6 +408,169 @@ export function truncateUtf8Bytes(s: string, maxBytes: number): string {
   return new TextDecoder("utf-8", { fatal: false }).decode(
     bytes.subarray(0, cut),
   );
+}
+
+/** Marker appended to every string value shortened by message-body
+ * truncation. ASCII-only, so the marker itself never grows under UTF-8. */
+const MESSAGE_TRUNCATION_MARKER = "...[truncated]";
+const MESSAGE_TRUNCATION_MARKER_BYTES = MESSAGE_TRUNCATION_MARKER.length;
+/** Upper bound for the first per-string budget used by
+ * {@link truncateMessageForBody}: strings longer than this are cut on the
+ * first pass; the budget halves on every later pass until the encoded body
+ * fits, so the largest strings give way first and roles, keys, and
+ * identifiers survive. */
+const MAX_STRING_BUDGET_BYTES = 262_144;
+
+const utf8 = new TextEncoder();
+
+/** Byte length of `JSON.stringify(value)`. `undefined` serializes to nothing
+ * and counts as empty. */
+function jsonByteLength(value: unknown): number {
+  const json = JSON.stringify(value);
+  return json === undefined ? 0 : utf8.encode(json).byteLength;
+}
+
+/** Shrinks a message value so the encoded `message.appended` body stays
+ * within `maxMessageBytes`, keeping the result valid JSON:
+ *
+ * 1. Values that already fit pass through untouched.
+ * 2. Otherwise strings longer than a per-string budget are cut to the budget
+ *    on a code point boundary (via {@link truncateUtf8Bytes}) and marked with
+ *    `...[truncated]`. The budget starts just below the longest string
+ *    (capped at {@link MAX_STRING_BUDGET_BYTES}) and halves until the body
+ *    fits. A string is only cut when that actually shrinks it — one barely
+ *    over the budget would grow once the marker is appended.
+ * 3. The budget-1 candidate is the floor of step 2: every cut string is then
+ *    down to the 1-byte cut plus the marker. When even the floor does not
+ *    fit (very many small strings), step 2 is skipped entirely and the
+ *    message collapses to a preview placeholder — the original role (when
+ *    present) plus the serialized original, truncated, as `contents`.
+ *
+ * The original message is serialized exactly once and shared by every
+ * measurement and the fallback, so pathological values pay one clone walk
+ * plus one encode before giving up on structural truncation. Deterministic:
+ * the same message always yields the same result, so body bytes stay stable
+ * across callback retries. */
+export function truncateMessageForBody(
+  message: unknown,
+  maxMessageBytes: number,
+): unknown {
+  // Serialize the original once; the JSON string feeds the measurements here
+  // and the preview fallback, which never re-stringifies the message.
+  const originalJson = JSON.stringify(message) ?? "";
+  const originalSize = utf8.encode(originalJson).byteLength;
+  if (originalSize <= maxMessageBytes) return message;
+  // Measure the floor candidate first. For every budget b >= 1 each string's
+  // serialized contribution is at least its contribution at budget 1, so a
+  // floor that does not fit proves no per-string budget can help.
+  const floorState = { cut: false };
+  const floorCandidate = truncateLongStrings(message, 1, floorState);
+  const floorSize = floorState.cut
+    ? jsonByteLength(floorCandidate)
+    : originalSize;
+  if (floorSize > maxMessageBytes) {
+    return previewPlaceholder(message, originalJson, maxMessageBytes);
+  }
+  // A pass cuts only when some string exceeds budget + marker, so start just
+  // below the longest string value (keys are never cut) and cap the start at
+  // MAX_STRING_BUDGET_BYTES to keep the first cut meaningful.
+  let budget = Math.min(
+    MAX_STRING_BUDGET_BYTES,
+    Math.max(1, maxStringBytes(message) - MESSAGE_TRUNCATION_MARKER_BYTES - 1),
+  );
+  while (budget > 1) {
+    const state = { cut: false };
+    const candidate = truncateLongStrings(message, budget, state);
+    // When nothing was cut the candidate is identical to the input — reuse
+    // the already-known original size instead of re-encoding it.
+    const size = state.cut ? jsonByteLength(candidate) : originalSize;
+    if (size <= maxMessageBytes) return candidate;
+    budget = Math.floor(budget / 2);
+  }
+  // Budget 1 is the already-measured floor candidate.
+  return floorCandidate;
+}
+
+/** Longest UTF-8 byte length among string values in `value` (keys excluded —
+ * they are never cut). Allocation-free walk used to pick the first per-string
+ * budget. Returns 0 when there are no string values. */
+function maxStringBytes(value: unknown): number {
+  if (typeof value === "string") return utf8.encode(value).byteLength;
+  if (Array.isArray(value)) {
+    let max = 0;
+    for (const item of value) {
+      max = Math.max(max, maxStringBytes(item));
+    }
+    return max;
+  }
+  if (value !== null && typeof value === "object") {
+    let max = 0;
+    for (const member of Object.values(value as Record<string, unknown>)) {
+      max = Math.max(max, maxStringBytes(member));
+    }
+    return max;
+  }
+  return 0;
+}
+
+/** Returns a copy of `value` where every string longer than `budget` UTF-8
+ * bytes is cut to `budget` on a code point boundary and marked. Keys are
+ * preserved verbatim; only string values shrink. Sets `state.cut` when at
+ * least one string was shortened, so the caller can skip re-encoding an
+ * unchanged candidate. */
+function truncateLongStrings(
+  value: unknown,
+  budget: number,
+  state: { cut: boolean },
+): unknown {
+  if (typeof value === "string") {
+    const bytes = utf8.encode(value).byteLength;
+    if (bytes <= budget + MESSAGE_TRUNCATION_MARKER_BYTES) return value;
+    state.cut = true;
+    return truncateUtf8Bytes(value, budget) + MESSAGE_TRUNCATION_MARKER;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => truncateLongStrings(item, budget, state));
+  }
+  if (value !== null && typeof value === "object") {
+    const copy: Record<string, unknown> = {};
+    for (
+      const [key, member] of Object.entries(value as Record<string, unknown>)
+    ) {
+      copy[key] = truncateLongStrings(member, budget, state);
+    }
+    return copy;
+  }
+  return value;
+}
+
+/** Builds the preview placeholder for values that cannot fit under any
+ * per-string budget. `source` is the caller's single JSON serialization of
+ * the original message; it is cut on a code point boundary and halved until
+ * the placeholder itself fits — never re-stringified. It is embedded as a
+ * JSON string value, so a cut mid-escape cannot corrupt the body — the
+ * outer JSON stays valid regardless. */
+function previewPlaceholder(
+  message: unknown,
+  source: string,
+  maxMessageBytes: number,
+): unknown {
+  const record = typeof message === "object" && message !== null
+    ? message as { role?: unknown }
+    : undefined;
+  const role = typeof record?.role === "string" ? record.role : undefined;
+  let previewBytes = Math.max(maxMessageBytes, 0);
+  while (true) {
+    const preview = truncateUtf8Bytes(source, previewBytes) +
+      MESSAGE_TRUNCATION_MARKER;
+    const placeholder = role === undefined
+      ? { contents: preview }
+      : { role, contents: preview };
+    if (jsonByteLength(placeholder) <= maxMessageBytes || previewBytes <= 0) {
+      return placeholder;
+    }
+    previewBytes = Math.floor(previewBytes / 2);
+  }
 }
 
 /**
