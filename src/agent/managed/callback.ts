@@ -3,7 +3,10 @@
  *
  * {@link CallbackReporter} emits the four managed-turn event kinds
  * (`turn.running`, `message.appended`, `turn.finished`, `turn.failed`) to one
- * fixed callback URL with strict delivery semantics:
+ * fixed callback URL with strict delivery semantics. `message.appended` and
+ * `turn.finished` optionally carry a `usage` payload (spec 106, ADR 0011),
+ * serialized verbatim beside `message`/`outcome` as just another field of
+ * the per-event body:
  *
  * - Sequential and ordered: each event method awaits its acknowledgement
  *   before returning. There is no background queue; the caller (T5) is
@@ -21,6 +24,7 @@
  * `config.ts`; callers pass plain constructor args. It never logs and never
  * exposes response bodies or secrets.
  */
+import type { MessageUsage, TurnUsageSummary } from "./usage.ts";
 
 /** A minimal HTTP response shape: status code plus an optional header lookup
  * for `Retry-After`. The reporter never reads the response body. */
@@ -151,8 +155,14 @@ export class CallbackReporter {
   /** POSTs `message.appended` for one native `@huuma/ai` message. The `message`
    * is opaque JSON — the caller supplies it and the reporter does not rewrite
    * fields. `turnSequence` is a positive integer starting at 1 (sequence 0 is
-   * reserved for the app-persisted triggering user message). */
-  async messageAppended(turnSequence: number, message: unknown): Promise<void> {
+   * reserved for the app-persisted triggering user message). The optional
+   * `usage` payload (spec 106, ADR 0011) is serialized verbatim as a
+   * top-level `usage` field beside `message`; `undefined` omits the field. */
+  async messageAppended(
+    turnSequence: number,
+    message: unknown,
+    usage?: MessageUsage,
+  ): Promise<void> {
     if (!Number.isInteger(turnSequence) || turnSequence < 1) {
       throw new Error(
         `turn_sequence must be a positive integer starting at 1; received ${
@@ -166,6 +176,7 @@ export class CallbackReporter {
       event: "message.appended",
       turn_sequence: turnSequence,
       message,
+      ...(usage !== undefined && { usage }),
     });
     await this.deliver(
       `${this.turnId}:message.appended:${turnSequence}`,
@@ -174,15 +185,21 @@ export class CallbackReporter {
     );
   }
 
-  /** POSTs `turn.finished` with the `finish_turn` outcome. Shares the terminal
-   * idempotency key with `turn.failed` so contradictory terminals cannot both
-   * win. Valid only after every emitted message has been acknowledged. */
-  async turnFinished(outcome: "question" | "completion"): Promise<void> {
+  /** POSTs `turn.finished` with the `finish_turn` outcome and the optional
+   * Turn usage summary (spec 106, ADR 0011), serialized verbatim. Shares the
+   * terminal idempotency key with `turn.failed` so contradictory terminals
+   * cannot both win. Valid only after every emitted message has been
+   * acknowledged. */
+  async turnFinished(
+    outcome: "question" | "completion",
+    usage?: TurnUsageSummary,
+  ): Promise<void> {
     const body = this.encodeBody({
       run_id: this.runId,
       turn_id: this.turnId,
       event: "turn.finished",
       outcome,
+      ...(usage !== undefined && { usage }),
     });
     await this.deliver(`${this.turnId}:terminal`, body, true);
   }

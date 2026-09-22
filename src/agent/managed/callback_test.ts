@@ -177,6 +177,112 @@ Deno.test("messageAppended rejects sequence 0 (reserved) and non-integers", asyn
   assertEquals(h.fetchCalls.length, 0);
 });
 
+// ---------------------------------------------------------------------------
+// 1b. Optional usage payloads (spec 106, ADR 0011).
+// ---------------------------------------------------------------------------
+
+Deno.test("messageAppended carries usage verbatim beside the message when supplied", async () => {
+  const h = makeHarness({ responses: [response(204)] });
+  const message = { role: "model", contents: [{ text: "Working on it." }] };
+  const usage = {
+    tokens: {
+      model: "claude-haiku-4-5",
+      inputTokens: 812,
+      outputTokens: 240,
+      thinkingTokens: 0,
+      cacheReadInputTokens: 1024,
+      cacheWriteInputTokens: 0,
+      totalTokens: 1052,
+    },
+    cpu: { userMs: 830, systemMs: 210, totalMs: 1040 },
+    ram: { rssBytes: 104857600, heapUsedBytes: 41943040, peakRssBytes: 130023424 },
+  };
+  await h.reporter.messageAppended(3, message, usage);
+  const call = h.fetchCalls[0]!;
+  assertEquals(call.init.headers["Idempotency-Key"], "turn-1:message.appended:3");
+  assertEquals(decodeBody(call.init.body), {
+    run_id: "run-1",
+    turn_id: "turn-1",
+    event: "message.appended",
+    turn_sequence: 3,
+    message,
+    usage,
+  });
+});
+
+Deno.test("messageAppended omits the usage field when not supplied", async () => {
+  const h = makeHarness({ responses: [response(204)] });
+  const message = { role: "tool", contents: [] };
+  await h.reporter.messageAppended(1, message);
+  const body = decodeBody(h.fetchCalls[0]!.init.body) as
+    Record<string, unknown>;
+  assertEquals(body.usage, undefined);
+  assertEquals(Object.hasOwn(body, "usage"), false);
+});
+
+Deno.test("turnFinished carries the optional Turn usage summary", async () => {
+  const h = makeHarness({ responses: [response(204), response(204)] });
+  const usage = {
+    tokens: {
+      model: "claude-haiku-4-5",
+      inputTokens: 1600,
+      outputTokens: 480,
+      totalTokens: 2080,
+    },
+    cpu: { userMs: 1600, systemMs: 410, totalMs: 2010 },
+    ram: { rssBytes: 110100480, heapUsedBytes: 44040192, peakRssBytes: 130023424 },
+  };
+  await h.reporter.turnFinished("completion", usage);
+  assertEquals(decodeBody(h.fetchCalls[0]!.init.body), {
+    run_id: "run-1",
+    turn_id: "turn-1",
+    event: "turn.finished",
+    outcome: "completion",
+    usage,
+  });
+  // Without the summary the field is omitted.
+  await h.reporter.turnFinished("question");
+  const without = decodeBody(h.fetchCalls[1]!.init.body) as
+    Record<string, unknown>;
+  assertEquals(Object.hasOwn(without, "usage"), false);
+});
+
+Deno.test("turnFailed bodies are unchanged and never carry usage", async () => {
+  const h = makeHarness({ responses: [response(204)] });
+  await h.reporter.turnFailed("provider down");
+  const body = decodeBody(h.fetchCalls[0]!.init.body) as
+    Record<string, unknown>;
+  assertEquals(Object.hasOwn(body, "usage"), false);
+  assertEquals(body, {
+    run_id: "run-1",
+    turn_id: "turn-1",
+    event: "turn.failed",
+    error: "provider down",
+  });
+});
+
+Deno.test("usage-bearing bodies keep byte stability across retries", async () => {
+  const h = makeHarness({
+    turnDeadlineMs: 120_000,
+    responses: [
+      response(500),
+      response(500),
+      response(204),
+    ],
+  });
+  const usage = {
+    tokens: { model: "claude-haiku-4-5", totalTokens: 7 },
+  };
+  await h.reporter.messageAppended(1, { role: "model" }, usage);
+  assertEquals(h.fetchCalls.length, 3);
+  const firstBody = h.fetchCalls[0]!.init.body;
+  for (const call of h.fetchCalls) {
+    if (call.init.body !== firstBody) {
+      throw new Error("usage-bearing body bytes were not reused by reference");
+    }
+  }
+});
+
 Deno.test("turnFinished posts outcome with shared terminal idempotency key", async () => {
   const h = makeHarness({ responses: [response(204), response(204)] });
   await h.reporter.turnFinished("completion");
