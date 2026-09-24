@@ -61,8 +61,8 @@ guessed.
 - `model` is the configured model identifier and is omitted when unknown.
 - `cpu` is process CPU consumed since the previous emitted message, or since
   `turn.running` for the first emitted message. It contains user, system, and
-  total milliseconds. It includes reaped-child counters when the platform
-  exposes them.
+  total milliseconds. Linux clock ticks are converted using the host's
+  `AT_CLKTCK` auxiliary-vector value, and the counters include reaped children.
 - `ram` is sampled at emission time. `peakRssBytes` is the highest RSS observed
   at an emission boundary during the Turn; it is not a continuously monitored
   process peak.
@@ -118,10 +118,11 @@ RSS remain Turn-scoped and continue across attempts.
 
 ## Failure handling
 
-Telemetry is best-effort. Failure to collect one section is logged through the
-managed runner's sanitized diagnostic path and omits only that section. It must
-not block, delay, modify, or fail message delivery. The reporter itself does not
-validate or transform supplied usage.
+Telemetry is best-effort. Each resource sample has a 25 ms deadline; a failure
+or timeout is logged through the managed runner's sanitized diagnostic path and
+omits only that section. Sampling therefore adds at most that bounded delay and
+never prevents, modifies, or fails message delivery. The reporter itself does
+not validate or transform supplied usage.
 
 ## Compatibility and rollout
 

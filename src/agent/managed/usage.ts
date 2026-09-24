@@ -58,9 +58,15 @@ export interface UsageSampler {
   sampleRam: () => ProcessRamSnapshot | Promise<ProcessRamSnapshot>;
 }
 
-/** Linux exposes process CPU counters in clock ticks. Huuma sandboxes use the
- * conventional 100 Hz clock, so each tick represents 10 milliseconds. */
-const LINUX_CLOCK_TICKS_PER_SECOND = 100;
+/** Maximum time resource telemetry may delay an emission. A timed-out sample
+ * is treated like any other sampling failure and its section is omitted. */
+export const USAGE_SAMPLE_TIMEOUT_MS = 25;
+/** Linux auxiliary-vector tag containing the process clock tick frequency. */
+const AT_CLKTCK = 17;
+/** Linux auxiliary-vector terminator tag. */
+const AT_NULL = 0;
+const NATIVE_LITTLE_ENDIAN =
+  new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 const MODEL_USAGE_KEYS = [
   "inputTokens",
   "outputTokens",
@@ -70,11 +76,16 @@ const MODEL_USAGE_KEYS = [
   "thinkingTokens",
 ] as const satisfies readonly (keyof ModelUsage)[];
 
+let clockTicksPerSecond: Promise<number> | undefined;
+
 /** Production sampler used by managed CLI invocations. CPU includes the runner
  * plus reaped children (`utime + cutime`, `stime + cstime`). */
 export const productionUsageSampler: UsageSampler = {
   sampleCpu: async () =>
-    parseProcSelfStat(await Deno.readTextFile("/proc/self/stat")),
+    parseProcSelfStat(
+      await Deno.readTextFile("/proc/self/stat"),
+      await linuxClockTicksPerSecond(),
+    ),
   sampleRam: () => {
     const memory = Deno.memoryUsage();
     return { rssBytes: memory.rss, heapUsedBytes: memory.heapUsed };
@@ -84,7 +95,10 @@ export const productionUsageSampler: UsageSampler = {
 /** Parses Linux `/proc/self/stat` into millisecond CPU counters. The process
  * name is parenthesized and may contain spaces, so fields are split only after
  * its final closing parenthesis. */
-export function parseProcSelfStat(stat: string): ProcessCpuSnapshot {
+export function parseProcSelfStat(
+  stat: string,
+  clockTicksPerSecond: number,
+): ProcessCpuSnapshot {
   const commEnd = stat.lastIndexOf(")");
   if (commEnd < 0) {
     throw new Error("invalid /proc/self/stat: missing process name terminator");
@@ -98,11 +112,35 @@ export function parseProcSelfStat(stat: string): ProcessCpuSnapshot {
   const stime = parseCounter(fields[12], "stime");
   const cutime = parseCounter(fields[13], "cutime");
   const cstime = parseCounter(fields[14], "cstime");
-  const millisecondsPerTick = 1000 / LINUX_CLOCK_TICKS_PER_SECOND;
+  const millisecondsPerTick = 1000 /
+    positiveFinite(clockTicksPerSecond, "Linux CLK_TCK");
   return {
     userMs: (utime + cutime) * millisecondsPerTick,
     systemMs: (stime + cstime) * millisecondsPerTick,
   };
+}
+
+/** Parses Linux `/proc/self/auxv` and returns its `AT_CLKTCK` value. */
+export function parseAuxvClockTicks(
+  auxv: Uint8Array,
+  wordBytes: 4 | 8,
+  littleEndian: boolean,
+): number {
+  const entryBytes = wordBytes * 2;
+  if (auxv.byteLength % entryBytes !== 0) {
+    throw new Error("invalid /proc/self/auxv: incomplete entry");
+  }
+  const view = new DataView(auxv.buffer, auxv.byteOffset, auxv.byteLength);
+  for (let offset = 0; offset < auxv.byteLength; offset += entryBytes) {
+    const tag = readAuxvWord(view, offset, wordBytes, littleEndian);
+    if (tag === AT_NULL) break;
+    if (tag !== AT_CLKTCK) continue;
+    return positiveFinite(
+      readAuxvWord(view, offset + wordBytes, wordBytes, littleEndian),
+      "Linux AT_CLKTCK",
+    );
+  }
+  throw new Error("invalid /proc/self/auxv: AT_CLKTCK is missing");
 }
 
 /** Accumulates retry-aware token totals and composes best-effort resource usage
@@ -141,7 +179,9 @@ export class ManagedUsageTracker {
    * Turn because later deltas could no longer be attributed accurately. */
   async start(): Promise<void> {
     try {
-      const snapshot = validateCpuSnapshot(await this.sampler.sampleCpu());
+      const snapshot = validateCpuSnapshot(
+        await sampleWithTimeout("CPU", () => this.sampler.sampleCpu()),
+      );
       this.cpuStart = snapshot;
       this.cpuPrevious = snapshot;
     } catch (error) {
@@ -230,7 +270,9 @@ export class ManagedUsageTracker {
   private async sampleCpuDelta(): Promise<ManagedCpuUsage | undefined> {
     if (!this.cpuAvailable || this.cpuPrevious === undefined) return undefined;
     try {
-      const current = validateCpuSnapshot(await this.sampler.sampleCpu());
+      const current = validateCpuSnapshot(
+        await sampleWithTimeout("CPU", () => this.sampler.sampleCpu()),
+      );
       const usage = cpuDelta(this.cpuPrevious, current);
       this.cpuPrevious = current;
       return usage;
@@ -248,7 +290,9 @@ export class ManagedUsageTracker {
     try {
       return cpuDelta(
         this.cpuStart,
-        validateCpuSnapshot(await this.sampler.sampleCpu()),
+        validateCpuSnapshot(
+          await sampleWithTimeout("CPU", () => this.sampler.sampleCpu()),
+        ),
       );
     } catch (error) {
       this.cpuAvailable = false;
@@ -259,13 +303,82 @@ export class ManagedUsageTracker {
 
   private async sampleRam(): Promise<ManagedMessageRamUsage | undefined> {
     try {
-      const current = validateRamSnapshot(await this.sampler.sampleRam());
+      const current = validateRamSnapshot(
+        await sampleWithTimeout("RAM", () => this.sampler.sampleRam()),
+      );
       this.peakRssBytes = Math.max(this.peakRssBytes ?? 0, current.rssBytes);
       return { ...current, peakRssBytes: this.peakRssBytes };
     } catch (error) {
       this.onError("ram", error);
       return undefined;
     }
+  }
+}
+
+function linuxClockTicksPerSecond(): Promise<number> {
+  clockTicksPerSecond ??= readLinuxClockTicksPerSecond();
+  return clockTicksPerSecond;
+}
+
+async function readLinuxClockTicksPerSecond(): Promise<number> {
+  const auxv = await Deno.readFile("/proc/self/auxv");
+  return parseAuxvClockTicks(
+    auxv,
+    nativeWordBytes(),
+    NATIVE_LITTLE_ENDIAN,
+  );
+}
+
+function nativeWordBytes(): 4 | 8 {
+  switch (Deno.build.arch) {
+    case "x86_64":
+    case "aarch64":
+      return 8;
+    default:
+      throw new Error(
+        `cannot determine Linux auxiliary-vector word size for ${Deno.build.arch}`,
+      );
+  }
+}
+
+function readAuxvWord(
+  view: DataView,
+  offset: number,
+  wordBytes: 4 | 8,
+  littleEndian: boolean,
+): number {
+  if (wordBytes === 4) return view.getUint32(offset, littleEndian);
+  const value = view.getBigUint64(offset, littleEndian);
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error(
+      "invalid /proc/self/auxv: value exceeds safe integer range",
+    );
+  }
+  return Number(value);
+}
+
+async function sampleWithTimeout<T>(
+  section: "CPU" | "RAM",
+  sample: () => T | Promise<T>,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(sample),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `${section} sampling timed out after ${USAGE_SAMPLE_TIMEOUT_MS}ms`,
+              ),
+            ),
+          USAGE_SAMPLE_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
   }
 }
 
@@ -301,6 +414,13 @@ function validateModelUsage(usage: ModelUsage): ModelUsage {
     if (value !== undefined) copy[key] = nonNegativeFinite(value, key);
   }
   return copy;
+}
+
+function positiveFinite(value: number, name: string): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name} must be a positive finite number`);
+  }
+  return value;
 }
 
 function nonNegativeFinite(value: number, name: string): number {

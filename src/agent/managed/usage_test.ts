@@ -2,6 +2,7 @@ import type { ModelUsage } from "@huuma/ai/agent";
 import { assertEquals } from "@std/assert";
 import {
   ManagedUsageTracker,
+  parseAuxvClockTicks,
   parseProcSelfStat,
   type ProcessCpuSnapshot,
   type ProcessRamSnapshot,
@@ -30,12 +31,21 @@ function queueSampler(options: {
   };
 }
 
-Deno.test("parseProcSelfStat includes self and reaped-child CPU counters", () => {
+Deno.test("parseProcSelfStat uses the host tick rate for self and child CPU", () => {
   const stat = "123 (worker with spaces) R 1 2 3 4 5 6 7 8 9 10 11 12 13 14";
-  assertEquals(parseProcSelfStat(stat), {
-    userMs: 240,
-    systemMs: 260,
+  assertEquals(parseProcSelfStat(stat, 250), {
+    userMs: 96,
+    systemMs: 104,
   });
+});
+
+Deno.test("parseAuxvClockTicks reads AT_CLKTCK from 64-bit Linux auxv", () => {
+  const auxv = new Uint8Array(32);
+  const view = new DataView(auxv.buffer);
+  view.setBigUint64(0, 17n, true);
+  view.setBigUint64(8, 250n, true);
+  // The second zero-filled entry is AT_NULL.
+  assertEquals(parseAuxvClockTicks(auxv, 8, true), 250);
 });
 
 Deno.test("ManagedUsageTracker attributes token deltas and resource samples per message", async () => {
@@ -156,6 +166,44 @@ Deno.test("ManagedUsageTracker resets token deltas and sums final snapshots acro
     cpu: { userMs: 3, systemMs: 3, totalMs: 6 },
     ram: { peakRssBytes: 110 },
   });
+});
+
+Deno.test("ManagedUsageTracker bounds slow samples and continues composing usage", async () => {
+  let cpuSamples = 0;
+  const errors: string[] = [];
+  const tracker = new ManagedUsageTracker({
+    model: "model-1",
+    sampler: {
+      sampleCpu: () => {
+        cpuSamples += 1;
+        if (cpuSamples === 1) return { userMs: 0, systemMs: 0 };
+        return new Promise<ProcessCpuSnapshot>(() => {});
+      },
+      sampleRam: () => ({ rssBytes: 100, heapUsedBytes: 50 }),
+    },
+    onError: (section, error) =>
+      errors.push(`${section}:${(error as Error).message}`),
+  });
+  await tracker.start();
+  tracker.beginAttempt();
+
+  let guard: ReturnType<typeof setTimeout> | undefined;
+  const usage = await Promise.race([
+    tracker.messageUsage({ totalTokens: 5 }),
+    new Promise<never>((_, reject) => {
+      guard = setTimeout(
+        () => reject(new Error("usage composition did not finish")),
+        500,
+      );
+    }),
+  ]).finally(() => {
+    if (guard !== undefined) clearTimeout(guard);
+  });
+  assertEquals(usage, {
+    tokens: { model: "model-1", totalTokens: 5 },
+    ram: { rssBytes: 100, heapUsedBytes: 50, peakRssBytes: 100 },
+  });
+  assertEquals(errors, ["cpu:CPU sampling timed out after 25ms"]);
 });
 
 Deno.test("ManagedUsageTracker contains sampling failures and omits only unavailable sections", async () => {
