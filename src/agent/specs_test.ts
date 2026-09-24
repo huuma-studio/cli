@@ -4,7 +4,7 @@ import { SPECS_PERMISSIONS, SPECS_TOKEN_ENV, specsTools } from "./specs.ts";
 import { resolveTools } from "./tools.ts";
 import { withEnv } from "./testing.ts";
 
-/** All nine permissions, in declaration order. */
+/** All ten permissions, in declaration order. */
 const ALL_PERMISSIONS = [...SPECS_PERMISSIONS];
 
 /** Valid UUID-shaped sentinel IDs so the tool's `uuid()` validation passes and
@@ -15,6 +15,8 @@ const MISSING_SPEC = "33333333-3333-3333-3333-333333333333";
 const FORBIDDEN_SPEC = "44444444-4444-4444-4444-444444444444";
 const UNAUTH_SPEC = "55555555-5555-5555-5555-555555555555";
 const BOOM_SPEC = "66666666-6666-6666-6666-666666666666";
+const INVALID_COMMENT_SPEC = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+const COMMENT_ID = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
 const MISSING_TASK = "77777777-7777-7777-7777-777777777777";
 const FORBIDDEN_TASK = "88888888-8888-8888-8888-888888888888";
 const RUN_ID = "99999999-9999-9999-9999-999999999999";
@@ -223,6 +225,22 @@ function route(
       // the same association payload comes back for every call.
       return json(200, associationFixture(specId));
     }
+    if (rest === "comments") {
+      if (specId === MISSING_SPEC) return json(404, { error: "Spec not found" });
+      if (specId === FORBIDDEN_SPEC) return json(403, { detail: "no access" });
+      if (specId === UNAUTH_SPEC) return json(401, { detail: "bad token" });
+      if (specId === INVALID_COMMENT_SPEC) {
+        return json(400, { error: "Comment body is invalid" });
+      }
+      if (specId === BOOM_SPEC) return json(500, { error: "kaboom" });
+      return json(
+        200,
+        commentFixture(
+          specId,
+          (log.body as { body_markdown?: string })?.body_markdown ?? "",
+        ),
+      );
+    }
     if (rest === "labels") {
       if (specId === MISSING_SPEC) return json(404, { error: "Spec not found" });
       if (specId === FORBIDDEN_SPEC) return json(403, { detail: "no access" });
@@ -319,6 +337,17 @@ function associationFixture(specId: string) {
   return { spec_id: specId, run_id: RUN_ID, created_at: ASSOCIATED_AT };
 }
 
+function commentFixture(specId: string, bodyMarkdown: string) {
+  return {
+    id: COMMENT_ID,
+    spec_id: specId,
+    author_type: "system",
+    run_id: RUN_ID,
+    body_markdown: bodyMarkdown,
+    created_at: ASSOCIATED_AT,
+  };
+}
+
 /** Builds the tools (with a token) for `permissions` against `base`. */
 function buildTools(base: string, permissions: SpecsPermission[]) {
   return specsTools({ specsPermissions: permissions, specsApiUrl: base });
@@ -383,16 +412,17 @@ Deno.test("specsTools fails fast without --specs-api-url when permissions are gr
   });
 });
 
-Deno.test("specsTools rejects an unknown permission", async () => {
+Deno.test("specsTools rejects an unknown permission with the full valid set", async () => {
   await withEnv({ [SPECS_TOKEN_ENV]: "token" }, () => {
     assertThrows(
       () =>
         specsTools({
-          specsPermissions: ["spec:list", "spec:bogus"],
+          specsPermissions: ["spec:list", "comment:read"],
           specsApiUrl: "https://x/api",
         }),
       Error,
-      'Unknown specs permission "spec:bogus"',
+      `Unknown specs permission "comment:read". Use --specs-permissions ` +
+        `with a comma-separated list of: ${SPECS_PERMISSIONS.join(", ")}.`,
     );
   });
 });
@@ -411,7 +441,7 @@ Deno.test("specsTools exposes only the permitted functions", async () => {
   });
 });
 
-Deno.test("specsTools exposes all fourteen functions for full permissions", async () => {
+Deno.test("specsTools exposes all fifteen functions for full permissions", async () => {
   await withEnv({ [SPECS_TOKEN_ENV]: "token" }, () => {
     const tools = specsTools({
       specsPermissions: ALL_PERMISSIONS,
@@ -434,8 +464,19 @@ Deno.test("specsTools exposes all fourteen functions for full permissions", asyn
         "read_task",
         "update_task",
         "create_task",
+        "create_comment",
       ],
     );
+  });
+});
+
+Deno.test("specsTools exposes only create_comment with comment:create", async () => {
+  await withEnv({ [SPECS_TOKEN_ENV]: "token" }, () => {
+    const tools = specsTools({
+      specsPermissions: ["comment:create"],
+      specsApiUrl: "https://x/api",
+    });
+    assertEquals(tools.map((t) => t.name), ["create_comment"]);
   });
 });
 
@@ -1309,6 +1350,106 @@ Deno.test("association tools surface the runs-endpoint error contract", async ()
         () => call(tools, "associate_spec", { spec_id: BOOM_SPEC }),
         Error,
         "kaboom",
+      );
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Comment tool
+// ---------------------------------------------------------------------------
+
+Deno.test("create_comment sends only Markdown and surfaces the created comment", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["comment:create"]);
+      const bodyMarkdown = "## Finding\n\nAdd a regression test.";
+      const result = await call(tools, "create_comment", {
+        spec_id: SPEC_ID,
+        body_markdown: bodyMarkdown,
+        run_id: "11111111-2222-3333-4444-555555555555",
+        author_type: "user",
+        author_user_id: "ffffffff-ffff-ffff-ffff-ffffffffffff",
+      });
+
+      assertEquals(result, commentFixture(SPEC_ID, bodyMarkdown));
+      assertEquals(server.requests[0].method, "POST");
+      assertEquals(server.requests[0].path, `/specs/${SPEC_ID}/comments`);
+      assertEquals(server.requests[0].auth, "Bearer secret-token");
+      assertEquals(server.requests[0].contentType, "application/json");
+      assertEquals(server.requests[0].body, { body_markdown: bodyMarkdown });
+      assertEquals(
+        server.requests[0].rawBody,
+        JSON.stringify({ body_markdown: bodyMarkdown }),
+      );
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("create_comment rejects invalid input before making a request", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["comment:create"]);
+      await assertRejects(
+        () =>
+          call(tools, "create_comment", {
+            spec_id: "not-a-uuid/comments",
+            body_markdown: "Hello",
+          }),
+        Error,
+        "is not a valid",
+      );
+      await assertRejects(
+        () =>
+          call(tools, "create_comment", {
+            spec_id: SPEC_ID,
+            body_markdown: " \n\t ",
+          }),
+        Error,
+        "create_comment requires a non-empty body_markdown",
+      );
+      assertEquals(server.requests.length, 0);
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("create_comment surfaces the comments-endpoint error contract", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["comment:create"]);
+      const create = (specId: string) =>
+        call(tools, "create_comment", {
+          spec_id: specId,
+          body_markdown: "A valid comment",
+        });
+
+      // Error bodies win for 400, 404, and 5xx.
+      await assertRejects(
+        () => create(INVALID_COMMENT_SPEC),
+        Error,
+        "Comment body is invalid",
+      );
+      await assertRejects(() => create(MISSING_SPEC), Error, "Spec not found");
+      await assertRejects(() => create(BOOM_SPEC), Error, "kaboom");
+      // Responses without an `error` body use the stable status labels.
+      await assertRejects(
+        () => create(UNAUTH_SPEC),
+        Error,
+        "Authentication failed",
+      );
+      await assertRejects(
+        () => create(FORBIDDEN_SPEC),
+        Error,
+        "Permission denied",
       );
     });
   } finally {
