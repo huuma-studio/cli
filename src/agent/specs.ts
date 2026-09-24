@@ -81,9 +81,34 @@ export interface SpecsToolOptions {
   /** Base URL of the Studio internal API, from `--specs-api-url`. Does NOT
    * end with a trailing slash; paths are appended directly. */
   specsApiUrl?: string;
-  /** Studio Turn UUID from `--turn-id`. Required by `create_comment` to derive
-   * a stable idempotency key across managed model retries. */
+  /** Studio Turn UUID from `--turn-id`. Managed comments use it as their
+   * idempotency scope; local mode falls back to a per-setup UUID. */
   turnId?: string;
+  /** Attempt-aware occurrence tracker supplied by managed setup. The runner
+   * resets it before each model attempt so replayed calls reuse their keys. */
+  attemptScope?: SpecsAttemptScope;
+}
+
+/** Tracks each exact side-effecting operation's occurrence within one model
+ * attempt. Managed setup keeps one instance and resets it before retries;
+ * local setup can use the default process-local instance without resets because
+ * local retries resume from emitted tool history rather than re-executing it. */
+export interface SpecsAttemptScope {
+  beginAttempt(): void;
+  nextOccurrence(operation: string): number;
+}
+
+/** Creates the mutable attempt scope shared by the Specs tools and runner. */
+export function createSpecsAttemptScope(): SpecsAttemptScope {
+  const occurrences = new Map<string, number>();
+  return {
+    beginAttempt: () => occurrences.clear(),
+    nextOccurrence: (operation) => {
+      const occurrence = (occurrences.get(operation) ?? 0) + 1;
+      occurrences.set(operation, occurrence);
+      return occurrence;
+    },
+  };
 }
 
 /** Builds the `specs` tool set: the fifteen Specs/Tasks/Comments functions the
@@ -140,13 +165,6 @@ export function specsTools(options: SpecsToolOptions = {}): AgentTools {
 
   const base = apiUrl.replace(/\/+$/, "");
   const granted = new Set(permissions);
-  const turnId = options.turnId;
-  if (granted.has("comment:create") && !turnId) {
-    throw new Error(
-      "The create_comment tool needs --turn-id so repeated managed attempts " +
-        "reuse one idempotency key.",
-    );
-  }
   const tools: AgentTools = [];
 
   // Registration order is contract-documented (RUNNER-CONTRACT §4.2): the
@@ -187,7 +205,12 @@ export function specsTools(options: SpecsToolOptions = {}): AgentTools {
     tools.push(createTaskTool(base, token));
   }
   if (granted.has("comment:create")) {
-    tools.push(createCommentTool(base, token, turnId!));
+    tools.push(createCommentTool(
+      base,
+      token,
+      options.turnId ?? crypto.randomUUID(),
+      options.attemptScope ?? createSpecsAttemptScope(),
+    ));
   }
   return tools;
 }
@@ -464,13 +487,14 @@ function createTaskTool(base: string, token: string): Tool<ReturnType<typeof cre
 
 /** `create_comment` — add a system-owned Markdown comment to a Spec on behalf
  * of the current Run. The Studio derives authorship from the JWT `run_id`
- * claim; no run or author field is accepted from the model. Repeated calls
- * with the same Turn, Spec, and Markdown carry the same idempotency key so a
- * managed model retry cannot create a duplicate comment. */
+ * claim; no run or author field is accepted from the model. Each exact
+ * operation receives an occurrence number within the current model attempt:
+ * retries reuse those numbers, while intentional duplicate calls do not. */
 function createCommentTool(
   base: string,
   token: string,
-  turnId: string,
+  idempotencyScopeId: string,
+  attemptScope: SpecsAttemptScope,
 ): Tool<ReturnType<typeof createCommentInput>, unknown> {
   return tool({
     name: "create_comment",
@@ -481,10 +505,15 @@ function createCommentTool(
     input: createCommentInput(),
     fn: async ({ spec_id, body_markdown }) => {
       requireNonBlankComment(body_markdown);
-      const idempotencyKey = await commentIdempotencyKey(
-        turnId,
+      const identity = JSON.stringify({
         spec_id,
         body_markdown,
+      });
+      const occurrence = attemptScope.nextOccurrence(identity);
+      const idempotencyKey = await commentIdempotencyKey(
+        idempotencyScopeId,
+        identity,
+        occurrence,
       );
       return await specsRequest(
         "POST",
@@ -638,19 +667,15 @@ async function specsRequest(
   return await handleResponse(response);
 }
 
-/** Derives the stable key for one logical comment creation. The Turn UUID
- * scopes legitimate comments across Turns, while the SHA-256 digest avoids
- * leaking the Spec ID or Markdown through an HTTP header. Canonical JSON makes
- * an identical tool call produce identical bytes on every managed attempt. */
+/** Derives the stable key for one comment invocation. The scope UUID isolates
+ * Turns (or local setup sessions), the digest hides the operation payload, and
+ * the per-attempt occurrence preserves two intentional identical calls while
+ * replaying the same call sequence with the same keys after a managed retry. */
 async function commentIdempotencyKey(
-  turnId: string,
-  specId: string,
-  bodyMarkdown: string,
+  scopeId: string,
+  identity: string,
+  occurrence: number,
 ): Promise<string> {
-  const identity = JSON.stringify({
-    spec_id: specId,
-    body_markdown: bodyMarkdown,
-  });
   const digest = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode(identity),
@@ -659,7 +684,7 @@ async function commentIdempotencyKey(
     new Uint8Array(digest),
     (byte) => byte.toString(16).padStart(2, "0"),
   ).join("");
-  return `${turnId}:create_comment:${hex}`;
+  return `${scopeId}:create_comment:${hex}:${occurrence}`;
 }
 
 /** Parses a success body as JSON or throws a descriptive error for a failure

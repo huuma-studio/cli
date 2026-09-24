@@ -194,10 +194,12 @@ export async function runManagedTurn(
     //    `--host`-only-for-ollama and defensive API-key checks). Returns a
     //    `SetupResult` so the runner can track MCP connections for cleanup.
     let assistant: Assistant;
+    let beginAttempt: (() => void) | undefined;
     try {
       const result = await deps.agentFactory(config);
       assistant = result.assistant;
       mcpConnections = result.mcpConnections;
+      beginAttempt = result.beginAttempt;
     } catch (error) {
       await attemptTurnFailed("setup", error);
       Deno.exitCode = 1;
@@ -275,6 +277,7 @@ export async function runManagedTurn(
     // whole-Turn awaiting_retry re-run, bounded by --retries.
     const runAttempt = async (): Promise<Message[]> => {
       firstEmission = true;
+      beginAttempt?.();
       usageTracker?.beginAttempt();
       try {
         return await assistant.run(input.prompt, input.history, {

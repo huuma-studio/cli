@@ -10,6 +10,7 @@ import type { ModelSelection } from "./args.ts";
 import type { Assistant } from "./chat.ts";
 import { envValue } from "./env.ts";
 import type { ManagedConfig } from "./managed/config.ts";
+import { createSpecsAttemptScope, type SpecsAttemptScope } from "./specs.ts";
 import type { SubagentContext } from "./subagents/mod.ts";
 import { resolveSubagents, resolveTools, skillsTool } from "./tools.ts";
 import {
@@ -41,6 +42,7 @@ export interface ResolvedAgentTools {
 export function resolveAgentTools(
   options: SetupOptions,
   mcpTools?: ReturnType<typeof resolveTools>["tools"],
+  attemptScope?: SpecsAttemptScope,
 ): ResolvedAgentTools {
   const {
     cliCommands,
@@ -57,6 +59,7 @@ export function resolveAgentTools(
     specsPermissions,
     specsApiUrl,
     turnId,
+    attemptScope,
     mcpTools,
   });
   // Skills are a baseline capability, on for every run. The pair is prepended to
@@ -87,7 +90,7 @@ export interface SetupOptions {
   specsPermissions?: string[];
   /** Studio internal API base URL from `--specs-api-url`. */
   specsApiUrl?: string;
-  /** Studio Turn UUID from `--turn-id`. Managed setup uses it to derive stable
+  /** Studio Turn UUID from `--turn-id`. Managed setup uses it to scope stable
    * idempotency keys for side-effecting Run-owned tools. */
   turnId?: string;
   /** Path to the MCP config file from `--mcp-config`. */
@@ -102,6 +105,9 @@ export interface SetupOptions {
 export interface SetupResult {
   assistant: Assistant;
   mcpConnections: McpConnection[];
+  /** Managed-only hook invoked immediately before each `assistant.run` attempt.
+   * It resets retry-aware tool invocation state. */
+  beginAttempt?: () => void;
 }
 
 export async function setup(options: SetupOptions = {}): Promise<SetupResult> {
@@ -346,9 +352,11 @@ export async function managedSetup(
   // invariant as the local `setup`. If tool resolution throws, close the
   // already-open MCP connections so they don't leak.
   try {
+    const specsAttemptScope = createSpecsAttemptScope();
     const { tools, subagentNames, skillsBaseline } = resolveAgentTools(
       config,
       mcpTools,
+      specsAttemptScope,
     );
     const resolvedSystemPrompt = config.systemPrompt ?? SYSTEM_PROMPT;
 
@@ -365,6 +373,7 @@ export async function managedSetup(
         systemPrompt: resolvedSystemPrompt,
       }),
       mcpConnections,
+      beginAttempt: specsAttemptScope.beginAttempt,
     });
 
     const provider = config.model.provider;

@@ -31,8 +31,10 @@ runner receives two additional CLI args:
   appends paths to this base (e.g., `${specsApiUrl}/specs`).
 
 The existing managed `--turn-id` argument is also passed into the Specs tool
-factory. It is required when `comment:create` is granted so comment creation can
-remain idempotent across managed model retries.
+factory and scopes comment idempotency across managed model retries. Local mode,
+which does not accept `--turn-id`, uses a random per-setup UUID instead; its
+retry loop resumes from emitted tool history and does not re-execute successful
+tool calls.
 
 If `specs` is not in `--tools`, neither Specs-specific arg is present.
 
@@ -508,15 +510,18 @@ client-side before any request.
 an `Idempotency-Key` with this format:
 
 ```text
-<turn-id>:create_comment:<sha256-hex>
+<scope-id>:create_comment:<sha256-hex>:<occurrence>
 ```
 
 The digest is SHA-256 over the UTF-8 bytes of the canonical JSON
-`{"spec_id":"<spec UUID>","body_markdown":"<exact Markdown>"}`. The Turn ID
-scopes the operation to one managed Turn, and the digest keeps the Spec ID and
-comment text out of the header. Re-executing the same tool input after a
-transient model failure therefore sends the exact same key; a different Spec,
-Markdown body, or Turn sends a different key.
+`{"spec_id":"<spec UUID>","body_markdown":"<exact Markdown>"}`. In managed
+mode the scope ID is the Turn UUID; in local mode it is a random per-setup UUID.
+The digest keeps the Spec ID and comment text out of the header. `occurrence` is
+the one-based count of that exact operation within the current model attempt.
+The managed runner resets occurrence counts before every attempt, so retrying
+the same call sequence reuses its keys while two intentional calls with the
+same Spec and Markdown receive distinct keys (`:1`, `:2`, and so on). A
+different Spec, Markdown body, or scope also receives a different key.
 
 **Request body**: JSON object containing only the Markdown body, with
 `Content-Type: application/json`:
@@ -552,7 +557,8 @@ Bot" comment attributed to the calling Run. A blank or invalid
 same key again for the same Run and request returns the original 200 response
 and does not create another comment. Reusing a key for a different request is a
 409 conflict. This protects side effects when `agent.run` retries from the
-original history after the first comment POST succeeded.
+original history after a comment POST succeeded without conflating intentional
+repeated comments within one attempt.
 
 ## 6. Error Handling
 

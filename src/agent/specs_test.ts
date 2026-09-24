@@ -1,6 +1,11 @@
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
-import type { SpecsPermission } from "./specs.ts";
-import { SPECS_PERMISSIONS, SPECS_TOKEN_ENV, specsTools } from "./specs.ts";
+import type { SpecsAttemptScope, SpecsPermission } from "./specs.ts";
+import {
+  createSpecsAttemptScope,
+  SPECS_PERMISSIONS,
+  SPECS_TOKEN_ENV,
+  specsTools,
+} from "./specs.ts";
 import { resolveTools } from "./tools.ts";
 import { withEnv } from "./testing.ts";
 
@@ -352,11 +357,16 @@ function commentFixture(specId: string, bodyMarkdown: string) {
 }
 
 /** Builds the tools (with a token) for `permissions` against `base`. */
-function buildTools(base: string, permissions: SpecsPermission[]) {
+function buildTools(
+  base: string,
+  permissions: SpecsPermission[],
+  attemptScope?: SpecsAttemptScope,
+) {
   return specsTools({
     specsPermissions: permissions,
     specsApiUrl: base,
     turnId: TURN_ID,
+    attemptScope,
   });
 }
 
@@ -489,17 +499,13 @@ Deno.test("specsTools exposes only create_comment with comment:create", async ()
   });
 });
 
-Deno.test("specsTools requires a Turn id for comment idempotency", async () => {
+Deno.test("specsTools keeps local comment setup usable without a Turn id", async () => {
   await withEnv({ [SPECS_TOKEN_ENV]: "token" }, () => {
-    assertThrows(
-      () =>
-        specsTools({
-          specsPermissions: ["comment:create"],
-          specsApiUrl: "https://x/api",
-        }),
-      Error,
-      "create_comment tool needs --turn-id",
-    );
+    const tools = specsTools({
+      specsPermissions: ["comment:create"],
+      specsApiUrl: "https://x/api",
+    });
+    assertEquals(tools.map((tool) => tool.name), ["create_comment"]);
   });
 });
 
@@ -1409,7 +1415,8 @@ Deno.test("create_comment sends only Markdown and surfaces the created comment",
         ),
         true,
       );
-      assertEquals(server.requests[0].idempotencyKey?.length, 116);
+      assertEquals(server.requests[0].idempotencyKey?.length, 118);
+      assertEquals(server.requests[0].idempotencyKey?.endsWith(":1"), true);
       assertEquals(server.requests[0].body, { body_markdown: bodyMarkdown });
       assertEquals(
         server.requests[0].rawBody,
@@ -1421,16 +1428,26 @@ Deno.test("create_comment sends only Markdown and surfaces the created comment",
   }
 });
 
-Deno.test("create_comment reuses its key across managed retry re-execution", async () => {
+Deno.test("create_comment replays per-occurrence keys across managed retries", async () => {
   const server = await startServer();
   try {
     await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
-      const tools = buildTools(server.base, ["comment:create"]);
+      const attemptScope = createSpecsAttemptScope();
+      const tools = buildTools(
+        server.base,
+        ["comment:create"],
+        attemptScope,
+      );
       const input = {
         spec_id: SPEC_ID,
         body_markdown: "One logical comment",
       };
 
+      attemptScope.beginAttempt();
+      await call(tools, "create_comment", input);
+      await call(tools, "create_comment", input);
+
+      attemptScope.beginAttempt();
       await call(tools, "create_comment", input);
       await call(tools, "create_comment", input);
       await call(tools, "create_comment", {
@@ -1438,16 +1455,18 @@ Deno.test("create_comment reuses its key across managed retry re-execution", asy
         body_markdown: "A different comment",
       });
 
-      assertEquals(server.requests.length, 3);
-      assertEquals(
-        server.requests[0].idempotencyKey,
-        server.requests[1].idempotencyKey,
-      );
-      assertEquals(
-        server.requests[0].idempotencyKey ===
-          server.requests[2].idempotencyKey,
-        false,
-      );
+      assertEquals(server.requests.length, 5);
+      const keys = server.requests.map((request) => request.idempotencyKey);
+      // Two intentional identical calls in one attempt remain distinct.
+      assertEquals(keys[0] === keys[1], false);
+      assertEquals(keys[0]?.endsWith(":1"), true);
+      assertEquals(keys[1]?.endsWith(":2"), true);
+      // Retry re-execution assigns the same keys to the same occurrences.
+      assertEquals(keys[2], keys[0]);
+      assertEquals(keys[3], keys[1]);
+      // A different operation has a different digest even at occurrence 1.
+      assertEquals(keys[4] === keys[0], false);
+      assertEquals(keys[4]?.endsWith(":1"), true);
     });
   } finally {
     await server.shutdown();
