@@ -5,6 +5,7 @@ import { reportAgentError } from "./diagnostics.ts";
 import type { CallbackDeps, ResponseLike } from "./managed/callback.ts";
 import { resolveManagedConfig } from "./managed/config.ts";
 import { runManagedTurn } from "./managed/runner.ts";
+import { productionUsageSampler } from "./managed/usage.ts";
 import { managedSetup, setup } from "./setup.ts";
 import { SUBAGENT_SUMMARIES } from "./subagents/mod.ts";
 import { allToolNames } from "./tools.ts";
@@ -52,6 +53,7 @@ export default async (args: string[] = []): Promise<string> => {
       await runManagedTurn(config, {
         agentFactory: managedSetup,
         callbackDeps: productionCallbackDeps,
+        usageSampler: productionUsageSampler,
       });
       return "";
     }

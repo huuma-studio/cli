@@ -12,6 +12,7 @@
 import type {
   FileContent,
   Message,
+  ModelUsage,
   TextContent,
   ToolResultContent,
 } from "@huuma/ai/agent";
@@ -21,6 +22,12 @@ import type { ManagedConfig } from "./config.ts";
 import type { Assistant } from "../chat.ts";
 import type { SetupResult } from "../setup.ts";
 import { type ManagedTurnDeps, runManagedTurn } from "./runner.ts";
+import type {
+  ManagedTokenUsage,
+  ProcessCpuSnapshot,
+  ProcessRamSnapshot,
+  UsageSampler,
+} from "./usage.ts";
 
 // ---------------------------------------------------------------------------
 // Test harness
@@ -119,6 +126,26 @@ function decodeBody(body: Uint8Array): unknown {
 }
 
 /** A response with optional headers. */
+function makeUsageSampler(options: {
+  cpu: ProcessCpuSnapshot[];
+  ram: ProcessRamSnapshot[];
+}): UsageSampler {
+  const cpu = [...options.cpu];
+  const ram = [...options.ram];
+  return {
+    sampleCpu: () => {
+      const next = cpu.shift();
+      if (next === undefined) throw new Error("CPU sample queue exhausted");
+      return next;
+    },
+    sampleRam: () => {
+      const next = ram.shift();
+      if (next === undefined) throw new Error("RAM sample queue exhausted");
+      return next;
+    },
+  };
+}
+
 function response(
   status: number,
   headers?: Record<string, string>,
@@ -152,6 +179,8 @@ interface FakeAgentOptions {
    * emitting anything — the transient model-failure shape the runner's
    * retry loop (ADR 0010) recovers from. */
   failFirstRuns?: number;
+  /** Accumulated usage snapshots corresponding to `extraEmissions`. */
+  usageSnapshots?: (ModelUsage | undefined)[];
 }
 
 /** Builds a fake `agentFactory` that returns an `Assistant` whose `run`
@@ -192,7 +221,8 @@ function makeFakeAgentFactory(opts: FakeAgentOptions = {}) {
           throw opts.throwError ?? new Error("fake agent error");
         }
         if (options?.onMessage) {
-          await options.onMessage(emissions[i]!);
+          const usage = i === 0 ? undefined : opts.usageSnapshots?.[i - 1];
+          await options.onMessage(emissions[i]!, usage);
         }
         messages.push(emissions[i]!);
       }
@@ -438,6 +468,143 @@ Deno.test("happy path: turn.running → ordered message.appended → turn.finish
         assertEquals(body.run_id, RUN_ID);
         assertEquals(body.turn_id, TURN_ID);
       }
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+Deno.test("managed usage: callbacks carry model deltas, resource samples, and Turn totals", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    const accumulated: ModelUsage = {
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+    };
+    const agent = makeFakeAgentFactory({
+      extraEmissions: [
+        modelMessage("Working on it."),
+        finishTurnMessage("completion"),
+      ],
+      usageSnapshots: [accumulated, accumulated],
+    });
+    const usageSampler = makeUsageSampler({
+      cpu: [
+        { userMs: 10, systemMs: 5 },
+        { userMs: 15, systemMs: 7 },
+        { userMs: 20, systemMs: 10 },
+        { userMs: 22, systemMs: 11 },
+      ],
+      ram: [
+        { rssBytes: 100, heapUsedBytes: 40 },
+        { rssBytes: 120, heapUsedBytes: 50 },
+      ],
+    });
+    const { config, cleanup } = await makeConfig();
+    try {
+      await runManagedTurn(config, {
+        agentFactory: agent.factory,
+        callbackDeps: cb.deps,
+        usageSampler,
+      });
+      assertEquals(Deno.exitCode, 0);
+
+      const modelBody = decodeBody(cb.fetchCalls[1]!.body) as {
+        usage: unknown;
+      };
+      assertEquals(modelBody.usage, {
+        tokens: {
+          model: "claude-haiku-4-5",
+          inputTokens: 100,
+          outputTokens: 20,
+          totalTokens: 120,
+        },
+        cpu: { userMs: 5, systemMs: 2, totalMs: 7 },
+        ram: { rssBytes: 100, heapUsedBytes: 40, peakRssBytes: 100 },
+      });
+
+      const toolBody = decodeBody(cb.fetchCalls[2]!.body) as {
+        usage: unknown;
+      };
+      assertEquals(toolBody.usage, {
+        cpu: { userMs: 5, systemMs: 3, totalMs: 8 },
+        ram: { rssBytes: 120, heapUsedBytes: 50, peakRssBytes: 120 },
+      });
+
+      const finishedBody = decodeBody(cb.fetchCalls[3]!.body) as {
+        usage: unknown;
+      };
+      assertEquals(finishedBody.usage, {
+        tokens: {
+          model: "claude-haiku-4-5",
+          inputTokens: 100,
+          outputTokens: 20,
+          totalTokens: 120,
+        },
+        cpu: { userMs: 12, systemMs: 6, totalMs: 18 },
+        ram: { peakRssBytes: 120 },
+      });
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+Deno.test("managed usage: sampling failures are logged without blocking delivery", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    const accumulated: ModelUsage = { totalTokens: 12 };
+    const agent = makeFakeAgentFactory({
+      extraEmissions: [
+        modelMessage("Working on it."),
+        finishTurnMessage("completion"),
+      ],
+      usageSnapshots: [accumulated, accumulated],
+    });
+    let ramSamples = 0;
+    const usageSampler: UsageSampler = {
+      sampleCpu: () => {
+        throw new Error("proc unavailable");
+      },
+      sampleRam: () => {
+        ramSamples += 1;
+        if (ramSamples === 1) throw new Error("memory sample failed");
+        return { rssBytes: 120, heapUsedBytes: 50 };
+      },
+    };
+    const errors: string[] = [];
+    const { config, cleanup } = await makeConfig();
+    try {
+      await runManagedTurn(config, {
+        agentFactory: agent.factory,
+        callbackDeps: cb.deps,
+        usageSampler,
+        logError: (message) => errors.push(message),
+      });
+      assertEquals(Deno.exitCode, 0);
+      assertEquals(eventKinds(cb.fetchCalls), [
+        "turn.running",
+        "message.appended",
+        "message.appended",
+        "turn.finished",
+      ]);
+      const firstMessage = decodeBody(cb.fetchCalls[1]!.body) as {
+        usage: unknown;
+      };
+      assertEquals(firstMessage.usage, {
+        tokens: { model: "claude-haiku-4-5", totalTokens: 12 },
+      });
+      const secondMessage = decodeBody(cb.fetchCalls[2]!.body) as {
+        usage: unknown;
+      };
+      assertEquals(secondMessage.usage, {
+        ram: { rssBytes: 120, heapUsedBytes: 50, peakRssBytes: 120 },
+      });
+      assertEquals(errors, [
+        "[managed:telemetry.cpu] proc unavailable",
+        "[managed:telemetry.ram] memory sample failed",
+      ]);
     } finally {
       await cleanup();
     }
@@ -1619,22 +1786,43 @@ Deno.test("managed retry: delivered prefix keeps its sequences and the echo is r
         );
       }
       const messages: Message[] = [];
-      for (const emission of emissions) {
-        await options?.onMessage?.(emission);
+      for (const [index, emission] of emissions.entries()) {
+        const usage = index === 0
+          ? undefined
+          : runs === 1
+          ? { totalTokens: 100 }
+          : { totalTokens: 40 };
+        await options?.onMessage?.(emission, usage);
         messages.push(emission);
       }
       if (runs === 1) throw new Error("503 Service Unavailable");
       return messages;
     };
-    const factory = async (_config: ManagedConfig): Promise<SetupResult> => ({
-      assistant: { run },
-      mcpConnections: [],
+    const factory = (_config: ManagedConfig): Promise<SetupResult> =>
+      Promise.resolve({
+        assistant: { run },
+        mcpConnections: [],
+      });
+    const usageSampler = makeUsageSampler({
+      cpu: [
+        { userMs: 0, systemMs: 0 },
+        { userMs: 1, systemMs: 1 },
+        { userMs: 2, systemMs: 2 },
+        { userMs: 3, systemMs: 3 },
+        { userMs: 4, systemMs: 4 },
+      ],
+      ram: [
+        { rssBytes: 100, heapUsedBytes: 50 },
+        { rssBytes: 110, heapUsedBytes: 55 },
+        { rssBytes: 105, heapUsedBytes: 52 },
+      ],
     });
     const { config, cleanup } = await makeConfig({ retries: 2 });
     try {
       await runManagedTurn(config, {
         agentFactory: factory,
         callbackDeps: cb.deps,
+        usageSampler,
       });
       assertEquals(Deno.exitCode, 0);
       assertEquals(runs, 2);
@@ -1656,6 +1844,28 @@ Deno.test("managed retry: delivered prefix keeps its sequences and the echo is r
       ]);
       assertEquals(terminalKeyCount(cb.fetchCalls), 1);
       assertEquals(cb.sleepCalls.length, 1);
+
+      const messageBodies = cb.fetchCalls.slice(1, 4).map((call) =>
+        decodeBody(call.body) as { usage: { tokens?: ManagedTokenUsage } }
+      );
+      assertEquals(messageBodies[0].usage.tokens, {
+        model: "claude-haiku-4-5",
+        totalTokens: 100,
+      });
+      // The second attempt starts from its own accumulated snapshot, so 40 is
+      // attributed in full rather than compared against attempt 1's 100.
+      assertEquals(messageBodies[1].usage.tokens, {
+        model: "claude-haiku-4-5",
+        totalTokens: 40,
+      });
+      assertEquals(messageBodies[2].usage.tokens, undefined);
+      const finished = decodeBody(cb.fetchCalls.at(-1)!.body) as {
+        usage: { tokens: ModelUsage & { model?: string } };
+      };
+      assertEquals(finished.usage.tokens, {
+        model: "claude-haiku-4-5",
+        totalTokens: 140,
+      });
     } finally {
       await cleanup();
     }
@@ -1745,7 +1955,16 @@ Deno.test("managed retry: no attempt starts once the terminal reserve is reached
       assertEquals(Deno.exitCode, 1);
       assertEquals(agent.runCallCount(), 10);
       assertEquals(cb.sleepCalls, [
-        125, 250, 500, 1000, 2000, 2500, 2500, 2500, 2500, 2500,
+        125,
+        250,
+        500,
+        1000,
+        2000,
+        2500,
+        2500,
+        2500,
+        2500,
+        2500,
       ]);
       assertEquals(cb.clock(), 16_375);
       assertEquals(eventKinds(cb.fetchCalls), [
