@@ -30,7 +30,11 @@ runner receives two additional CLI args:
 - `--specs-api-url`: the base URL for the Studio internal API. The runner
   appends paths to this base (e.g., `${specsApiUrl}/specs`).
 
-If `specs` is not in `--tools`, neither arg is present.
+The existing managed `--turn-id` argument is also passed into the Specs tool
+factory. It is required when `comment:create` is granted so comment creation can
+remain idempotent across managed model retries.
+
+If `specs` is not in `--tools`, neither Specs-specific arg is present.
 
 ## 3. Sandbox Secret
 
@@ -500,6 +504,20 @@ client-side before any request.
 
 **HTTP**: `POST ${specsApiUrl}/specs/${spec_id}/comments`
 
+**Headers**: in addition to authentication and `Content-Type`, the runner sends
+an `Idempotency-Key` with this format:
+
+```text
+<turn-id>:create_comment:<sha256-hex>
+```
+
+The digest is SHA-256 over the UTF-8 bytes of the canonical JSON
+`{"spec_id":"<spec UUID>","body_markdown":"<exact Markdown>"}`. The Turn ID
+scopes the operation to one managed Turn, and the digest keeps the Spec ID and
+comment text out of the header. Re-executing the same tool input after a
+transient model failure therefore sends the exact same key; a different Spec,
+Markdown body, or Turn sends a different key.
+
 **Request body**: JSON object containing only the Markdown body, with
 `Content-Type: application/json`:
 
@@ -530,6 +548,12 @@ field, and the API ignores any such extra request-body fields.
 Bot" comment attributed to the calling Run. A blank or invalid
 `body_markdown` is rejected with 400.
 
+**Idempotency**: Studio persists the key with the created comment. Receiving the
+same key again for the same Run and request returns the original 200 response
+and does not create another comment. Reusing a key for a different request is a
+409 conflict. This protects side effects when `agent.run` retries from the
+original history after the first comment POST succeeded.
+
 ## 6. Error Handling
 
 The API returns standard HTTP status codes:
@@ -541,6 +565,7 @@ The API returns standard HTTP status codes:
 | 401    | Missing/invalid/expired token | Return error: "Authentication failed"   |
 | 403    | Permission not granted        | Return error: "Permission denied"       |
 | 404    | Spec/task not found           | Return error: "Not found"                |
+| 409    | Idempotency-key conflict      | Surface conflict; do not retry as a new call |
 | 5xx    | Server error                  | Return error: "Server error"             |
 
 The runner should surface the error message from the JSON response body
@@ -563,8 +588,8 @@ expose any specs tool functions (treat as if `--specs-permissions` was empty).
 - For PATCH requests, send the JSON body as the request body. Only include
   fields the model specified — do not send null or undefined fields.
   `associate_spec` sends the empty JSON object `{}` as its POST body (§5.10);
-  `create_comment` sends only `{ body_markdown }` (§5.15), and
-  `disassociate_spec` sends no body.
+  `create_comment` sends only `{ body_markdown }` plus the stable
+  `Idempotency-Key` described in §5.15, and `disassociate_spec` sends no body.
 - Descriptions in responses are Markdown strings. Descriptions in update
   requests are also Markdown strings. The Studio handles TipTap conversion
   internally — the runner does not need to know about TipTap.

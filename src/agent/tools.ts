@@ -46,6 +46,9 @@ export interface ToolConfig {
   /** Studio internal API base URL from `--specs-api-url`, used by the `specs`
    * tool. Does not end with a trailing slash. */
   specsApiUrl?: string;
+  /** Studio Turn UUID from `--turn-id`, used to make managed comment creation
+   * idempotent across model retries. */
+  turnId?: string;
   /** Pre-resolved MCP tools from {@link resolveMcpServers}. The `mcp` tool
    * factory returns these directly (they are already connected and listed),
    * keeping the factory synchronous per the existing pattern. */

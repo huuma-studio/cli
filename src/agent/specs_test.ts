@@ -17,6 +17,7 @@ const UNAUTH_SPEC = "55555555-5555-5555-5555-555555555555";
 const BOOM_SPEC = "66666666-6666-6666-6666-666666666666";
 const INVALID_COMMENT_SPEC = "dddddddd-dddd-dddd-dddd-dddddddddddd";
 const COMMENT_ID = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+const TURN_ID = "abababab-abab-abab-abab-abababababab";
 const MISSING_TASK = "77777777-7777-7777-7777-777777777777";
 const FORBIDDEN_TASK = "88888888-8888-8888-8888-888888888888";
 const RUN_ID = "99999999-9999-9999-9999-999999999999";
@@ -82,6 +83,7 @@ async function startServer(): Promise<{
       search: url.search,
       auth: req.headers.get("Authorization") ?? "",
       contentType: req.headers.get("Content-Type"),
+      idempotencyKey: req.headers.get("Idempotency-Key"),
       rawBody,
       body: parseJsonBody(rawBody),
     };
@@ -104,6 +106,7 @@ interface RequestLog {
   search: string;
   auth: string;
   contentType: string | null;
+  idempotencyKey: string | null;
   rawBody: string | undefined;
   body: unknown;
 }
@@ -350,7 +353,11 @@ function commentFixture(specId: string, bodyMarkdown: string) {
 
 /** Builds the tools (with a token) for `permissions` against `base`. */
 function buildTools(base: string, permissions: SpecsPermission[]) {
-  return specsTools({ specsPermissions: permissions, specsApiUrl: base });
+  return specsTools({
+    specsPermissions: permissions,
+    specsApiUrl: base,
+    turnId: TURN_ID,
+  });
 }
 
 /** Calls a tool by name, returning its parsed output. */
@@ -446,6 +453,7 @@ Deno.test("specsTools exposes all fifteen functions for full permissions", async
     const tools = specsTools({
       specsPermissions: ALL_PERMISSIONS,
       specsApiUrl: "https://x/api",
+      turnId: TURN_ID,
     });
     assertEquals(
       tools.map((t) => t.name),
@@ -475,8 +483,23 @@ Deno.test("specsTools exposes only create_comment with comment:create", async ()
     const tools = specsTools({
       specsPermissions: ["comment:create"],
       specsApiUrl: "https://x/api",
+      turnId: TURN_ID,
     });
     assertEquals(tools.map((t) => t.name), ["create_comment"]);
+  });
+});
+
+Deno.test("specsTools requires a Turn id for comment idempotency", async () => {
+  await withEnv({ [SPECS_TOKEN_ENV]: "token" }, () => {
+    assertThrows(
+      () =>
+        specsTools({
+          specsPermissions: ["comment:create"],
+          specsApiUrl: "https://x/api",
+        }),
+      Error,
+      "create_comment tool needs --turn-id",
+    );
   });
 });
 
@@ -1380,10 +1403,50 @@ Deno.test("create_comment sends only Markdown and surfaces the created comment",
       assertEquals(server.requests[0].path, `/specs/${SPEC_ID}/comments`);
       assertEquals(server.requests[0].auth, "Bearer secret-token");
       assertEquals(server.requests[0].contentType, "application/json");
+      assertEquals(
+        server.requests[0].idempotencyKey?.startsWith(
+          `${TURN_ID}:create_comment:`,
+        ),
+        true,
+      );
+      assertEquals(server.requests[0].idempotencyKey?.length, 116);
       assertEquals(server.requests[0].body, { body_markdown: bodyMarkdown });
       assertEquals(
         server.requests[0].rawBody,
         JSON.stringify({ body_markdown: bodyMarkdown }),
+      );
+    });
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("create_comment reuses its key across managed retry re-execution", async () => {
+  const server = await startServer();
+  try {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const tools = buildTools(server.base, ["comment:create"]);
+      const input = {
+        spec_id: SPEC_ID,
+        body_markdown: "One logical comment",
+      };
+
+      await call(tools, "create_comment", input);
+      await call(tools, "create_comment", input);
+      await call(tools, "create_comment", {
+        ...input,
+        body_markdown: "A different comment",
+      });
+
+      assertEquals(server.requests.length, 3);
+      assertEquals(
+        server.requests[0].idempotencyKey,
+        server.requests[1].idempotencyKey,
+      );
+      assertEquals(
+        server.requests[0].idempotencyKey ===
+          server.requests[2].idempotencyKey,
+        false,
       );
     });
   } finally {

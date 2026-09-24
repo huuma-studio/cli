@@ -48,6 +48,7 @@ export function resolveAgentTools(
     skillsPath,
     specsPermissions,
     specsApiUrl,
+    turnId,
   } = options;
   const { tools, subagentNames } = resolveTools(options.tools ?? [], {
     cliCommands,
@@ -55,6 +56,7 @@ export function resolveAgentTools(
     skillsPath,
     specsPermissions,
     specsApiUrl,
+    turnId,
     mcpTools,
   });
   // Skills are a baseline capability, on for every run. The pair is prepended to
@@ -85,6 +87,9 @@ export interface SetupOptions {
   specsPermissions?: string[];
   /** Studio internal API base URL from `--specs-api-url`. */
   specsApiUrl?: string;
+  /** Studio Turn UUID from `--turn-id`. Managed setup uses it to derive stable
+   * idempotency keys for side-effecting Run-owned tools. */
+  turnId?: string;
   /** Path to the MCP config file from `--mcp-config`. */
   mcpConfig?: string;
   /** Inline MCP server specs from `--mcp-server` (repeatable). */

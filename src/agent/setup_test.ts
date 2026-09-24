@@ -49,6 +49,18 @@ Deno.test("resolveAgentTools skips the skills baseline when --tools already list
   assertEquals(skillsBaseline, []);
 });
 
+Deno.test("resolveAgentTools threads --turn-id into managed comments", async () => {
+  await withEnv({ HUUMA_SPECS_API_TOKEN: "token" }, () => {
+    const { tools } = resolveAgentTools({
+      tools: ["specs"],
+      specsPermissions: ["comment:create"],
+      specsApiUrl: "https://studio.example/api/internal",
+      turnId: "abababab-abab-abab-abab-abababababab",
+    });
+    assertEquals(tools.map((tool) => tool.name), ["create_comment"]);
+  });
+});
+
 Deno.test("resolveAgentTools threads --skills-path into the scan directory", async () => {
   const root = await Deno.makeTempDir();
   try {

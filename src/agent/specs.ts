@@ -81,6 +81,9 @@ export interface SpecsToolOptions {
   /** Base URL of the Studio internal API, from `--specs-api-url`. Does NOT
    * end with a trailing slash; paths are appended directly. */
   specsApiUrl?: string;
+  /** Studio Turn UUID from `--turn-id`. Required by `create_comment` to derive
+   * a stable idempotency key across managed model retries. */
+  turnId?: string;
 }
 
 /** Builds the `specs` tool set: the fifteen Specs/Tasks/Comments functions the
@@ -137,6 +140,13 @@ export function specsTools(options: SpecsToolOptions = {}): AgentTools {
 
   const base = apiUrl.replace(/\/+$/, "");
   const granted = new Set(permissions);
+  const turnId = options.turnId;
+  if (granted.has("comment:create") && !turnId) {
+    throw new Error(
+      "The create_comment tool needs --turn-id so repeated managed attempts " +
+        "reuse one idempotency key.",
+    );
+  }
   const tools: AgentTools = [];
 
   // Registration order is contract-documented (RUNNER-CONTRACT §4.2): the
@@ -177,7 +187,7 @@ export function specsTools(options: SpecsToolOptions = {}): AgentTools {
     tools.push(createTaskTool(base, token));
   }
   if (granted.has("comment:create")) {
-    tools.push(createCommentTool(base, token));
+    tools.push(createCommentTool(base, token, turnId!));
   }
   return tools;
 }
@@ -454,10 +464,13 @@ function createTaskTool(base: string, token: string): Tool<ReturnType<typeof cre
 
 /** `create_comment` — add a system-owned Markdown comment to a Spec on behalf
  * of the current Run. The Studio derives authorship from the JWT `run_id`
- * claim; no run or author field is accepted from the model. */
+ * claim; no run or author field is accepted from the model. Repeated calls
+ * with the same Turn, Spec, and Markdown carry the same idempotency key so a
+ * managed model retry cannot create a duplicate comment. */
 function createCommentTool(
   base: string,
   token: string,
+  turnId: string,
 ): Tool<ReturnType<typeof createCommentInput>, unknown> {
   return tool({
     name: "create_comment",
@@ -466,13 +479,19 @@ function createCommentTool(
       "comment appears in Studio as a system (Huuma Bot) comment attributed " +
       "to the Run. Returns the created comment.",
     input: createCommentInput(),
-    fn: ({ spec_id, body_markdown }) => {
+    fn: async ({ spec_id, body_markdown }) => {
       requireNonBlankComment(body_markdown);
-      return specsRequest(
+      const idempotencyKey = await commentIdempotencyKey(
+        turnId,
+        spec_id,
+        body_markdown,
+      );
+      return await specsRequest(
         "POST",
         `${base}/specs/${spec_id}/comments`,
         token,
         { body_markdown },
+        idempotencyKey,
       );
     },
   });
@@ -602,10 +621,14 @@ async function specsRequest(
   url: string,
   token: string,
   body?: Record<string, unknown>,
+  idempotencyKey?: string,
 ): Promise<unknown> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
   };
+  if (idempotencyKey !== undefined) {
+    headers["Idempotency-Key"] = idempotencyKey;
+  }
   const init: RequestInit = { method, headers };
   if (BODY_METHODS.has(method) && body !== undefined) {
     headers["Content-Type"] = "application/json";
@@ -613,6 +636,30 @@ async function specsRequest(
   }
   const response = await fetch(url, init);
   return await handleResponse(response);
+}
+
+/** Derives the stable key for one logical comment creation. The Turn UUID
+ * scopes legitimate comments across Turns, while the SHA-256 digest avoids
+ * leaking the Spec ID or Markdown through an HTTP header. Canonical JSON makes
+ * an identical tool call produce identical bytes on every managed attempt. */
+async function commentIdempotencyKey(
+  turnId: string,
+  specId: string,
+  bodyMarkdown: string,
+): Promise<string> {
+  const identity = JSON.stringify({
+    spec_id: specId,
+    body_markdown: bodyMarkdown,
+  });
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(identity),
+  );
+  const hex = Array.from(
+    new Uint8Array(digest),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `${turnId}:create_comment:${hex}`;
 }
 
 /** Parses a success body as JSON or throws a descriptive error for a failure
