@@ -63,6 +63,7 @@
 import type {
   FileContent,
   Message,
+  ModelUsage,
   TextContent,
   ToolResultContent,
 } from "@huuma/ai/agent";
@@ -79,7 +80,8 @@ import {
 } from "./callback.ts";
 import type { ManagedConfig } from "./config.ts";
 import { loadManagedInput } from "./input.ts";
-import { ProtocolError, runWithRetries, type RetryDeps } from "../retry.ts";
+import { ManagedUsageTracker, type UsageSampler } from "./usage.ts";
+import { ProtocolError, type RetryDeps, runWithRetries } from "../retry.ts";
 
 /** Injectable dependencies for {@link runManagedTurn}. */
 export interface ManagedTurnDeps {
@@ -94,6 +96,9 @@ export interface ManagedTurnDeps {
   /** Injectable callback deps (fetch/now/sleep/random) for deterministic
    * delivery behavior. T6 injects production deps; T7 injects fakes. */
   callbackDeps: CallbackDeps;
+  /** Optional process telemetry sampler. The production entrypoint supplies the
+   * Linux/Deno sampler; tests can omit it or inject deterministic snapshots. */
+  usageSampler?: UsageSampler;
   /** Error sink for sanitized managed-mode diagnostics. Defaults to
    * `console.error`; injectable so tests and embedders can capture output. */
   logError?: (message: string) => void;
@@ -128,6 +133,15 @@ export async function runManagedTurn(
       turnDeadline: config.turnDeadline,
       deps: deps.callbackDeps,
     });
+    const usageTracker = deps.usageSampler === undefined
+      ? undefined
+      : new ManagedUsageTracker({
+        model: config.model.modelId,
+        sampler: deps.usageSampler,
+        onError: (section, error) => {
+          reportError(`telemetry.${section}`, error);
+        },
+      });
 
     // Terminal invariant guard: at most one terminal event is attempted per
     // Turn. Both `turn.finished` and `turn.failed` share the
@@ -207,6 +221,9 @@ export async function runManagedTurn(
       Deno.exitCode = 1;
       return;
     }
+    // CPU attribution begins after `turn.running` is acknowledged. Sampling is
+    // best-effort: the tracker logs and disables only the unavailable section.
+    await usageTracker?.start();
 
     // 5. Run the Agent loop, retrying transient model failures with bounded
     //    backoff (ADR 0010). `onMessage` verifies and suppresses the first
@@ -217,7 +234,10 @@ export async function runManagedTurn(
     //    out of `agent.run`.
     let firstEmission = true;
     let turnSequence = 0;
-    const onMessage = async (message: Message): Promise<void> => {
+    const onMessage = async (
+      message: Message,
+      accumulatedUsage?: ModelUsage,
+    ): Promise<void> => {
       if (firstEmission) {
         firstEmission = false;
         // Verify and suppress the already-persisted triggering user message.
@@ -238,8 +258,9 @@ export async function runManagedTurn(
         }
         return; // Suppress — Studio owns sequence 0.
       }
+      const usage = await usageTracker?.messageUsage(accumulatedUsage);
       turnSequence += 1;
-      await reporter.messageAppended(turnSequence, message);
+      await reporter.messageAppended(turnSequence, message, usage);
     };
 
     // Each attempt re-arms the first-emission suppression: `agent.run`
@@ -252,12 +273,19 @@ export async function runManagedTurn(
     // means tool work executed before a transient failure may execute again
     // on the next attempt — the same re-execution semantics as Studio's
     // whole-Turn awaiting_retry re-run, bounded by --retries.
-    const runAttempt = (): Promise<Message[]> => {
+    const runAttempt = async (): Promise<Message[]> => {
       firstEmission = true;
-      return assistant.run(input.prompt, input.history, {
-        onMessage,
-        onMessageError: "throw",
-      });
+      usageTracker?.beginAttempt();
+      try {
+        return await assistant.run(input.prompt, input.history, {
+          onMessage,
+          onMessageError: "throw",
+        });
+      } finally {
+        // Include usage observed before a failed model attempt in the successful
+        // Turn summary, then reset the delta baseline for a possible retry.
+        usageTracker?.endAttempt();
+      }
     };
 
     // Retry timing reuses the injected callback deps so tests stay
@@ -338,7 +366,8 @@ export async function runManagedTurn(
     //    share the `<turn-id>:terminal` key).
     terminalAttempted = true;
     try {
-      await reporter.turnFinished(outcome);
+      const usage = await usageTracker?.turnUsage();
+      await reporter.turnFinished(outcome, usage);
       Deno.exitCode = 0;
     } catch (error) {
       reportError("callback.turn_finished", error);

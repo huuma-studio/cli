@@ -11,6 +11,7 @@ import {
   truncateMessageForBody,
   truncateUtf8Bytes,
 } from "./callback.ts";
+import type { ManagedMessageUsage, ManagedTurnUsage } from "./usage.ts";
 
 /** A recorded fetch call: the URL and the init the reporter passed. */
 interface RecordedFetch {
@@ -166,6 +167,34 @@ Deno.test("messageAppended posts verbatim message with sequence-derived key", as
   );
 });
 
+Deno.test("messageAppended includes usage verbatim when supplied", async () => {
+  const h = makeHarness({ responses: [response(204)] });
+  const message = { role: "model", contents: [{ text: "Done." }] };
+  const usage: ManagedMessageUsage = {
+    tokens: {
+      model: "claude-haiku-4-5",
+      inputTokens: 120,
+      outputTokens: 18,
+      totalTokens: 138,
+    },
+    cpu: { userMs: 12, systemMs: 3, totalMs: 15 },
+    ram: {
+      rssBytes: 104_857_600,
+      heapUsedBytes: 41_943_040,
+      peakRssBytes: 130_023_424,
+    },
+  };
+  await h.reporter.messageAppended(1, message, usage);
+  assertEquals(decodeBody(h.fetchCalls[0]!.init.body), {
+    run_id: "run-1",
+    turn_id: "turn-1",
+    event: "message.appended",
+    turn_sequence: 1,
+    message,
+    usage,
+  });
+});
+
 Deno.test("messageAppended rejects sequence 0 (reserved) and non-integers", async () => {
   const h = makeHarness({ responses: [response(204)] });
   await assertRejects(
@@ -200,6 +229,28 @@ Deno.test("turnFinished posts outcome with shared terminal idempotency key", asy
   });
 });
 
+Deno.test("turnFinished includes the Turn usage summary verbatim", async () => {
+  const h = makeHarness({ responses: [response(204)] });
+  const usage: ManagedTurnUsage = {
+    tokens: {
+      model: "claude-haiku-4-5",
+      inputTokens: 300,
+      outputTokens: 50,
+      totalTokens: 350,
+    },
+    cpu: { userMs: 30, systemMs: 10, totalMs: 40 },
+    ram: { peakRssBytes: 130_023_424 },
+  };
+  await h.reporter.turnFinished("completion", usage);
+  assertEquals(decodeBody(h.fetchCalls[0]!.init.body), {
+    run_id: "run-1",
+    turn_id: "turn-1",
+    event: "turn.finished",
+    outcome: "completion",
+    usage,
+  });
+});
+
 Deno.test("turnFailed posts sanitized error with shared terminal idempotency key", async () => {
   const h = makeHarness({ responses: [response(204)] });
   await h.reporter.turnFailed("provider down");
@@ -230,6 +281,26 @@ Deno.test("turnFinished and turnFailed share the terminal idempotency key", asyn
 // ---------------------------------------------------------------------------
 // 3. Body bytes are reused across retries (same reference + same bytes).
 // ---------------------------------------------------------------------------
+
+Deno.test("usage body bytes and idempotency key are reused verbatim across retries", async () => {
+  const h = makeHarness({
+    responses: [response(500), response(204)],
+  });
+  await h.reporter.messageAppended(
+    1,
+    { role: "model", contents: [{ text: "Done." }] },
+    { tokens: { model: "claude-haiku-4-5", totalTokens: 42 } },
+  );
+  assertEquals(h.fetchCalls.length, 2);
+  assertEquals(
+    h.fetchCalls[0]!.init.body === h.fetchCalls[1]!.init.body,
+    true,
+  );
+  assertEquals(
+    h.fetchCalls[0]!.init.headers["Idempotency-Key"],
+    h.fetchCalls[1]!.init.headers["Idempotency-Key"],
+  );
+});
 
 Deno.test("body bytes and idempotency key are reused verbatim across retries", async () => {
   const h = makeHarness({
@@ -708,7 +779,10 @@ Deno.test("messageAppended posts under-cap messages verbatim", async () => {
 
 Deno.test("messageAppended truncates oversized messages under the cap", async () => {
   const h = makeHarness({ responses: [response(204)] });
-  const message = { role: "model", contents: [{ text: "x".repeat(3_000_000) }] };
+  const message = {
+    role: "model",
+    contents: [{ text: "x".repeat(3_000_000) }],
+  };
   await h.reporter.messageAppended(7, message);
   const call = h.fetchCalls[0]!;
   assertEquals(call.init.body.byteLength < MAX_MESSAGE_BODY_BYTES, true);
@@ -735,9 +809,46 @@ Deno.test("messageAppended truncates oversized messages under the cap", async ()
   assertEquals(text.length < 3_000_000, true);
 });
 
+Deno.test("oversized messages preserve usage while staying under the cap", async () => {
+  const h = makeHarness({ responses: [response(204)] });
+  const message = {
+    role: "model",
+    contents: [{ text: "x".repeat(3_000_000) }],
+  };
+  const usage: ManagedMessageUsage = {
+    tokens: {
+      model: "claude-haiku-4-5",
+      inputTokens: 812,
+      outputTokens: 240,
+      totalTokens: 1_052,
+    },
+    cpu: { userMs: 830, systemMs: 210, totalMs: 1_040 },
+    ram: {
+      rssBytes: 104_857_600,
+      heapUsedBytes: 41_943_040,
+      peakRssBytes: 130_023_424,
+    },
+  };
+  await h.reporter.messageAppended(1, message, usage);
+  const call = h.fetchCalls[0]!;
+  assertEquals(call.init.body.byteLength < MAX_MESSAGE_BODY_BYTES, true);
+  const decoded = decodeBody(call.init.body) as {
+    message: { contents: { text: string }[] };
+    usage: ManagedMessageUsage;
+  };
+  assertEquals(decoded.usage, usage);
+  assertEquals(
+    decoded.message.contents[0].text.endsWith("...[truncated]"),
+    true,
+  );
+});
+
 Deno.test("oversized multibyte messages truncate on a code point boundary", async () => {
   const h = makeHarness({ responses: [response(204)] });
-  const message = { role: "model", contents: [{ text: "α".repeat(2_000_000) }] };
+  const message = {
+    role: "model",
+    contents: [{ text: "α".repeat(2_000_000) }],
+  };
   await h.reporter.messageAppended(1, message);
   const call = h.fetchCalls[0]!;
   assertEquals(call.init.body.byteLength < MAX_MESSAGE_BODY_BYTES, true);
@@ -771,7 +882,10 @@ Deno.test("every oversized string is truncated, not just the first", async () =>
       ];
     };
   };
-  assertEquals(decoded.message.contents[0].text.endsWith("...[truncated]"), true);
+  assertEquals(
+    decoded.message.contents[0].text.endsWith("...[truncated]"),
+    true,
+  );
   assertEquals(
     decoded.message.contents[1].file.data.endsWith("...[truncated]"),
     true,
