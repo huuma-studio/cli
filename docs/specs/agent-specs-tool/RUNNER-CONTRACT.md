@@ -9,8 +9,9 @@ Reference ADR: `docs/adr/0011-specs-tool-per-turn-jwt-access.md`
 ## 1. Overview
 
 The `specs` tool gives an Agent live access to the Specs and Tasks in its
-Project, and lets the calling Run associate itself with a Spec. The runner
-exposes fourteen tool functions to the model. Each function makes an HTTP call
+Project, lets the calling Run associate itself with a Spec, and lets the Run
+add a system-owned comment to a Spec. The runner exposes fifteen tool functions
+to the model. Each function makes an HTTP call
 to the Studio's internal API. Authentication is handled by a host-scoped
 sandbox secret — the runner never sees the real credential.
 
@@ -20,7 +21,7 @@ When the `specs` tool is enabled (i.e., `specs` is in the `--tools` list), the
 runner receives two additional CLI args:
 
 ```
---specs-permissions spec:list,spec:read,spec:update,spec:create,spec:associate,task:list,task:read,task:update,task:create
+--specs-permissions spec:list,spec:read,spec:update,spec:create,spec:associate,task:list,task:read,task:update,task:create,comment:create
 --specs-api-url https://studio.huuma.app/api/internal
 ```
 
@@ -54,7 +55,7 @@ parse it.
 
 ## 4. Permission Model
 
-Nine permissions control which tool functions are exposed:
+Ten permissions control which tool functions are exposed:
 
 | Permission        | Tool function                        | HTTP call                                  |
 |-------------------|--------------------------------------|--------------------------------------------|
@@ -67,6 +68,7 @@ Nine permissions control which tool functions are exposed:
 | `task:read`       | `read_task`                          | `GET /tasks/:taskId`                       |
 | `task:update`     | `update_task`                        | `PATCH /tasks/:taskId`                     |
 | `task:create`     | `create_task`                        | `POST /specs/:specId/tasks`                |
+| `comment:create`  | `create_comment`                     | `POST /specs/:specId/comments`             |
 
 The runner exposes only the functions whose permission appears in
 `--specs-permissions`. The Studio API also enforces permissions server-side
@@ -74,25 +76,29 @@ as a second line of defense (returns 403 if the permission is missing from the
 JWT), so even if the runner mistakenly exposes a function, the API call will
 fail.
 
-### 4.1 Association security property
+### 4.1 Run-derived identity security properties
 
-The association target Run is always identified by the JWT `run_id` claim —
-the identity the Studio minted for the calling Run. The model never supplies a
-run identifier: no association tool input schema contains one, and any run id
-in a request body is ignored by the API. A Run can therefore only associate
-itself, never another Run.
+The association target Run and comment author are always identified by the JWT
+`run_id` claim — the identity the Studio minted for the calling Run. The model
+never supplies a run identifier or comment author: no association or comment
+tool input schema contains those fields, and any run id or author field in a
+request body is ignored by the API. A Run can therefore only associate itself
+and create comments attributed to itself, never another Run. Comments created
+this way are system-owned and appear in Studio as "Huuma Bot" comments with the
+calling Run recorded as provenance.
 
 ### 4.2 Registration order
 
 Tool registration order is deterministic and follows the permission checks:
 `list_specs`, `list_labels`, `read_spec`, `list_spec_runs`, `update_spec`,
 `add_spec_label`, `remove_spec_label`, `create_spec`, `associate_spec`,
-`disassociate_spec`, `list_tasks`, `read_task`, `update_task`, `create_task`.
-The relative order of the original eight functions is unchanged; `list_spec_runs`
+`disassociate_spec`, `list_tasks`, `read_task`, `update_task`, `create_task`,
+`create_comment`. The relative order of the original eight functions is unchanged; `list_spec_runs`
 is registered with its `spec:read` sibling, the association pair with
 `spec:associate`, and each label function with its permission's existing
 block — `list_labels` with `spec:list`, the label mutations with
-`spec:update`.
+`spec:update`. `create_comment` registers in its own `comment:create` block
+after `task:create`, last overall.
 
 ## 5. Tool Function Specifications
 
@@ -484,6 +490,46 @@ request path so it stays a single path segment — a label containing `/`
 cannot alter the request path. An empty-after-trim label is rejected
 client-side before any request.
 
+### 5.15 create_comment
+
+**Permission**: `comment:create`
+
+**Parameters**:
+- `spec_id` (string, required) — the spec UUID
+- `body_markdown` (string, required) — non-empty comment body in Markdown
+
+**HTTP**: `POST ${specsApiUrl}/specs/${spec_id}/comments`
+
+**Request body**: JSON object containing only the Markdown body, with
+`Content-Type: application/json`:
+
+```json
+{
+  "body_markdown": "## Finding\n\nThe implementation needs a regression test."
+}
+```
+
+The calling Run is the author. Its identity comes exclusively from the JWT
+`run_id` claim (§4.1); the model never supplies a run identifier or author
+field, and the API ignores any such extra request-body fields.
+
+**Response 200** — the created system comment with its serialized Markdown:
+
+```json
+{
+  "id": "uuid",
+  "spec_id": "uuid",
+  "author_type": "system",
+  "run_id": "uuid",
+  "body_markdown": "## Finding\n\nThe implementation needs a regression test.",
+  "created_at": "2026-09-25T12:00:00.000Z"
+}
+```
+
+`author_type` is always `"system"`. Studio displays the comment as a "Huuma
+Bot" comment attributed to the calling Run. A blank or invalid
+`body_markdown` is rejected with 400.
+
 ## 6. Error Handling
 
 The API returns standard HTTP status codes:
@@ -491,7 +537,7 @@ The API returns standard HTTP status codes:
 | Status | Meaning                        | Runner behavior                          |
 |--------|-------------------------------|------------------------------------------|
 | 200    | Success                       | Parse JSON, return to model              |
-| 400    | Invalid label value / too many labels | Return the error message from the body |
+| 400    | Invalid label or comment body | Return the error message from the body |
 | 401    | Missing/invalid/expired token | Return error: "Authentication failed"   |
 | 403    | Permission not granted        | Return error: "Permission denied"       |
 | 404    | Spec/task not found           | Return error: "Not found"                |
@@ -510,13 +556,14 @@ expose any specs tool functions (treat as if `--specs-permissions` was empty).
   `--specs-permissions` is non-empty.
 - Each tool function makes a `fetch()` call to the Studio API with the
   `Authorization` header set to `Bearer [REDACTED]` env var
-  value) and `Content-Type: application/json` for PATCH requests.
+  value) and `Content-Type: application/json` for PATCH and POST requests.
 - The API base URL (`--specs-api-url`) does NOT end with a trailing slash.
   Paths are appended directly: `${baseUrl}/specs`, `${baseUrl}/specs/${id}`,
   etc.
 - For PATCH requests, send the JSON body as the request body. Only include
   fields the model specified — do not send null or undefined fields.
   `associate_spec` sends the empty JSON object `{}` as its POST body (§5.10);
+  `create_comment` sends only `{ body_markdown }` (§5.15), and
   `disassociate_spec` sends no body.
 - Descriptions in responses are Markdown strings. Descriptions in update
   requests are also Markdown strings. The Studio handles TipTap conversion
@@ -576,13 +623,16 @@ what each function does. Suggested descriptions:
 - `disassociate_spec`: "Remove the current Run's association with a Spec.
   Idempotent: removing an absent association is a no-op that returns
   { removed: false }; removing an existing one returns { removed: true }."
+- `create_comment`: "Add a Markdown comment to a Spec on behalf of the current
+  Run. The comment appears in Studio as a system (Huuma Bot) comment attributed
+  to the Run. Returns the created comment."
 
 ## 9. Acceptance Criteria
 
 1. Runner recognizes `specs` in `--tools` and parses `--specs-permissions`
    and `--specs-api-url`.
-2. Eleven tool functions are registered when their corresponding permission is
-   present in `--specs-permissions`, in the documented order (§4.2).
+2. Fifteen tool functions are registered when their corresponding permission
+   is present in `--specs-permissions`, in the documented order (§4.2).
 3. Each function makes an authenticated HTTP call to the Studio API using the
    `HUUMA_SPECS_API_TOKEN` env var in the `Authorization` header.
 4. Only functions with a matching permission are exposed to the model.
@@ -617,3 +667,12 @@ what each function does. Suggested descriptions:
 16. Idempotent label outcomes are returned to the model as success responses:
     adding an existing label and removing an absent one both return the
     (unchanged) Spec, never an error.
+17. `create_comment` requires `comment:create`, registers last, validates a UUID
+    `spec_id` and non-empty Markdown body, and posts only `{ body_markdown }` to
+    `${specsApiUrl}/specs/:specId/comments`.
+18. Comment authorship comes only from the JWT `run_id` claim; no tool input or
+    request body carries a run identifier or author field. The returned comment
+    has `author_type: "system"` and appears in Studio as "Huuma Bot" attributed
+    to the calling Run.
+19. Invalid or blank comment Markdown returns 400 through the normal API error
+    contract; 401, 403, 404, and 5xx behavior is unchanged.
