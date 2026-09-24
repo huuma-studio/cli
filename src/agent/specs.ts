@@ -3,7 +3,7 @@ import { array, enums, object, string, uuid } from "@huuma/validate";
 import { envValue } from "./env.ts";
 import type { AgentTools } from "./tools.ts";
 
-/** The nine permissions the `specs` tool kind can expose. Each maps to one to
+/** The ten permissions the `specs` tool kind can expose. Each maps to one to
  * three tool functions the model may call. The Studio grants a subset per Turn
  * and passes it on the `--specs-permissions` flag; the runner exposes only
  * those functions (the Studio API re-checks each one server-side). See
@@ -17,7 +17,8 @@ export type SpecsPermission =
   | "task:list"
   | "task:read"
   | "task:update"
-  | "task:create";
+  | "task:create"
+  | "comment:create";
 
 /** The full set, for validation of the `--specs-permissions` flag. An unknown
  * entry is a configuration error rather than a silently-ignored one, so a
@@ -32,6 +33,7 @@ export const SPECS_PERMISSIONS: readonly SpecsPermission[] = [
   "task:read",
   "task:update",
   "task:create",
+  "comment:create",
 ];
 
 const SPECS_PERMISSION_SET = new Set<string>(SPECS_PERMISSIONS);
@@ -79,10 +81,39 @@ export interface SpecsToolOptions {
   /** Base URL of the Studio internal API, from `--specs-api-url`. Does NOT
    * end with a trailing slash; paths are appended directly. */
   specsApiUrl?: string;
+  /** Studio Turn UUID from `--turn-id`. Managed comments use it as their
+   * idempotency scope; local mode falls back to a per-setup UUID. */
+  turnId?: string;
+  /** Attempt-aware occurrence tracker supplied by managed setup. The runner
+   * resets it before each model attempt so replayed calls reuse their keys. */
+  attemptScope?: SpecsAttemptScope;
 }
 
-/** Builds the `specs` tool set: the fourteen Specs/Tasks functions the model
- * can call, restricted to the permissions granted on `--specs-permissions`.
+/** Tracks each exact side-effecting operation's occurrence within one model
+ * attempt. Managed setup keeps one instance and resets it before retries;
+ * local setup can use the default process-local instance without resets because
+ * local retries resume from emitted tool history rather than re-executing it. */
+export interface SpecsAttemptScope {
+  beginAttempt(): void;
+  nextOccurrence(operation: string): number;
+}
+
+/** Creates the mutable attempt scope shared by the Specs tools and runner. */
+export function createSpecsAttemptScope(): SpecsAttemptScope {
+  const occurrences = new Map<string, number>();
+  return {
+    beginAttempt: () => occurrences.clear(),
+    nextOccurrence: (operation) => {
+      const occurrence = (occurrences.get(operation) ?? 0) + 1;
+      occurrences.set(operation, occurrence);
+      return occurrence;
+    },
+  };
+}
+
+/** Builds the `specs` tool set: the fifteen Specs/Tasks/Comments functions the
+ * model can call, restricted to the permissions granted on
+ * `--specs-permissions`.
  *
  * Registration order (RUNNER-CONTRACT, "Sandbox secret" and "Error Handling"):
  * 1. No granted permissions → register nothing (the Studio granted none).
@@ -172,6 +203,14 @@ export function specsTools(options: SpecsToolOptions = {}): AgentTools {
   }
   if (granted.has("task:create")) {
     tools.push(createTaskTool(base, token));
+  }
+  if (granted.has("comment:create")) {
+    tools.push(createCommentTool(
+      base,
+      token,
+      options.turnId ?? crypto.randomUUID(),
+      options.attemptScope ?? createSpecsAttemptScope(),
+    ));
   }
   return tools;
 }
@@ -446,6 +485,47 @@ function createTaskTool(base: string, token: string): Tool<ReturnType<typeof cre
   });
 }
 
+/** `create_comment` — add a system-owned Markdown comment to a Spec on behalf
+ * of the current Run. The Studio derives authorship from the JWT `run_id`
+ * claim; no run or author field is accepted from the model. Each exact
+ * operation receives an occurrence number within the current model attempt:
+ * retries reuse those numbers, while intentional duplicate calls do not. */
+function createCommentTool(
+  base: string,
+  token: string,
+  idempotencyScopeId: string,
+  attemptScope: SpecsAttemptScope,
+): Tool<ReturnType<typeof createCommentInput>, unknown> {
+  return tool({
+    name: "create_comment",
+    description:
+      "Add a Markdown comment to a Spec on behalf of the current Run. The " +
+      "comment appears in Studio as a system (Huuma Bot) comment attributed " +
+      "to the Run. Returns the created comment.",
+    input: createCommentInput(),
+    fn: async ({ spec_id, body_markdown }) => {
+      requireNonBlankComment(body_markdown);
+      const identity = JSON.stringify({
+        spec_id,
+        body_markdown,
+      });
+      const occurrence = attemptScope.nextOccurrence(identity);
+      const idempotencyKey = await commentIdempotencyKey(
+        idempotencyScopeId,
+        identity,
+        occurrence,
+      );
+      return await specsRequest(
+        "POST",
+        `${base}/specs/${spec_id}/comments`,
+        token,
+        { body_markdown },
+        idempotencyKey,
+      );
+    },
+  });
+}
+
 // --- input schemas --------------------------------------------------------
 
 /** Empty object — `list_labels` takes no parameters. */
@@ -544,6 +624,16 @@ function createTaskInput() {
   });
 }
 
+/** `create_comment` parameters. The UUID rejects malformed ids and path
+ * separators in `spec_id`; the function body rejects blank Markdown before a
+ * request. Authorship is intentionally absent and comes from the JWT. */
+function createCommentInput() {
+  return object({
+    spec_id: uuid(),
+    body_markdown: string(),
+  });
+}
+
 // --- HTTP ------------------------------------------------------------------
 
 /** Methods that send a JSON body. */
@@ -560,10 +650,14 @@ async function specsRequest(
   url: string,
   token: string,
   body?: Record<string, unknown>,
+  idempotencyKey?: string,
 ): Promise<unknown> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
   };
+  if (idempotencyKey !== undefined) {
+    headers["Idempotency-Key"] = idempotencyKey;
+  }
   const init: RequestInit = { method, headers };
   if (BODY_METHODS.has(method) && body !== undefined) {
     headers["Content-Type"] = "application/json";
@@ -571,6 +665,26 @@ async function specsRequest(
   }
   const response = await fetch(url, init);
   return await handleResponse(response);
+}
+
+/** Derives the stable key for one comment invocation. The scope UUID isolates
+ * Turns (or local setup sessions), the digest hides the operation payload, and
+ * the per-attempt occurrence preserves two intentional identical calls while
+ * replaying the same call sequence with the same keys after a managed retry. */
+async function commentIdempotencyKey(
+  scopeId: string,
+  identity: string,
+  occurrence: number,
+): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(identity),
+  );
+  const hex = Array.from(
+    new Uint8Array(digest),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `${scopeId}:create_comment:${hex}:${occurrence}`;
 }
 
 /** Parses a success body as JSON or throws a descriptive error for a failure
@@ -654,6 +768,17 @@ function normalizeFilter(labels: string[] | undefined): string[] {
     );
   }
   return labels.map((label) => normalizeLabel(label, "list_specs"));
+}
+
+/** Rejects a blank comment body locally while preserving non-blank Markdown
+ * verbatim for the API (including meaningful leading/trailing whitespace). */
+function requireNonBlankComment(bodyMarkdown: string): void {
+  if (bodyMarkdown.trim() === "") {
+    throw new Error(
+      "create_comment requires a non-empty body_markdown. Whitespace-only " +
+        "Markdown is not allowed.",
+    );
+  }
 }
 
 /** Returns a shallow copy of `fields` containing only the listed keys whose

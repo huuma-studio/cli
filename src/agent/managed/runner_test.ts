@@ -181,6 +181,8 @@ interface FakeAgentOptions {
   failFirstRuns?: number;
   /** Accumulated usage snapshots corresponding to `extraEmissions`. */
   usageSnapshots?: (ModelUsage | undefined)[];
+  /** Optional retry-aware tool lifecycle hook returned by setup. */
+  beginAttempt?: () => void;
 }
 
 /** Builds a fake `agentFactory` that returns an `Assistant` whose `run`
@@ -231,7 +233,11 @@ function makeFakeAgentFactory(opts: FakeAgentOptions = {}) {
       }
       return messages;
     };
-    return { assistant: { run }, mcpConnections: [] };
+    return {
+      assistant: { run },
+      mcpConnections: [],
+      beginAttempt: opts.beginAttempt,
+    };
   };
 
   return {
@@ -1728,8 +1734,10 @@ Deno.test("managed retry: transient agent.run failure is retried and the turn fi
   await withExitCode(async () => {
     const cb = makeCallbackDeps();
     // Attempt 1 throws before emitting anything; attempt 2 completes.
+    let attemptStarts = 0;
     const agent = makeFakeAgentFactory({
       failFirstRuns: 1,
+      beginAttempt: () => attemptStarts += 1,
       throwError: new Error("429 Too Many Requests"),
       extraEmissions: [
         modelMessage("recovered"),
@@ -1744,6 +1752,7 @@ Deno.test("managed retry: transient agent.run failure is retried and the turn fi
       });
       assertEquals(Deno.exitCode, 0);
       assertEquals(agent.runCallCount(), 2);
+      assertEquals(attemptStarts, 2);
       // One backoff sleep for the one retry; delivery itself never retried.
       assertEquals(cb.sleepCalls.length, 1);
       assertEquals(eventKinds(cb.fetchCalls), [

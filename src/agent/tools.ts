@@ -14,7 +14,7 @@ import {
   skills,
   writeFile,
 } from "@huuma/ai/tools";
-import { specsTools } from "./specs.ts";
+import { type SpecsAttemptScope, specsTools } from "./specs.ts";
 import { SUBAGENT_FACTORIES, type SubagentContext } from "./subagents/mod.ts";
 
 /** Default skills directory the agent scans when `--skills-path` is absent.
@@ -46,6 +46,11 @@ export interface ToolConfig {
   /** Studio internal API base URL from `--specs-api-url`, used by the `specs`
    * tool. Does not end with a trailing slash. */
   specsApiUrl?: string;
+  /** Studio Turn UUID from `--turn-id`, used to scope managed comment keys. */
+  turnId?: string;
+  /** Attempt lifecycle shared with the managed runner so retry re-execution
+   * starts comment occurrence numbering from the beginning. */
+  attemptScope?: SpecsAttemptScope;
   /** Pre-resolved MCP tools from {@link resolveMcpServers}. The `mcp` tool
    * factory returns these directly (they are already connected and listed),
    * keeping the factory synchronous per the existing pattern. */
