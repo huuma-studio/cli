@@ -185,16 +185,25 @@ for an unauthenticated host.
 
 Managed mode never reads stdin or opens a REPL. It sends `turn.running`, ordered
 `message.appended` events, then exactly one terminal `turn.finished` or
-`turn.failed` event to the callback URL. Every callback has a deterministic
-idempotency key; transient network, `408`, `429`, and `5xx` responses are
-retried. Non-terminal retries stop 15 seconds before `--turn-deadline` so a
-terminal failure can be reported; terminal callbacks may retry through the hard
-deadline. The CLI exits `0` only after `turn.finished` is acknowledged.
+`turn.failed` event to the callback URL. `message.appended` and `turn.finished`
+may include an optional top-level `usage` object with token, process CPU, and
+memory telemetry; individual sections are omitted when unavailable. Older
+runners omit `usage`, and callback consumers must continue to accept those
+events. See [ADR 0011](docs/adr/0011-managed-turn-usage-payload.md) for the
+versioned payload schema.
+
+Every callback has a deterministic idempotency key; transient network, `408`,
+`429`, and `5xx` responses are retried with the exact same body bytes.
+Non-terminal retries stop 15 seconds before `--turn-deadline` so a terminal
+failure can be reported; terminal callbacks may retry through the hard deadline.
+The CLI exits `0` only after `turn.finished` is acknowledged.
 
 Errors reported through `turn.failed` are sanitized and truncated; callback
-secrets and raw provider payloads are never sent or printed. Studio owns retries
-of Agent execution: a retry is a new managed turn with a new `--turn-id`, while
-HTTP retries within one turn reuse its idempotency keys.
+secrets and raw provider payloads are never sent or printed. Transient model
+failures may be retried within the same Turn according to `--retries`; emitted
+message sequences remain monotonic across attempts. Studio may separately retry
+a failed execution as a new managed Turn with a new `--turn-id`. Callback HTTP
+retries within either Turn reuse that Turn's idempotency keys.
 
 > **Why flags and not env vars?** With `cli` or file tools enabled the agent can
 > edit the files that set env vars (a shell rc, a `.env`), silently steering

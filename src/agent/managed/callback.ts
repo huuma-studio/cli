@@ -25,6 +25,8 @@
  * exposes response bodies or secrets.
  */
 
+import type { ManagedMessageUsage, ManagedTurnUsage } from "./usage.ts";
+
 /** A minimal HTTP response shape: status code plus an optional header lookup
  * for `Retry-After`. The reporter never reads the response body. */
 export interface ResponseLike {
@@ -167,9 +169,14 @@ export class CallbackReporter {
    * Messages that fit are posted verbatim. When the encoded body would reach
    * {@link MAX_MESSAGE_BODY_BYTES}, the message is first shrunk to valid JSON
    * via {@link truncateMessageForBody} — Studio rejects larger bodies with
-   * 413, a fatal outcome. The shrink is deterministic, so body bytes remain
-   * stable across retries. */
-  async messageAppended(turnSequence: number, message: unknown): Promise<void> {
+   * 413, a fatal outcome. Optional usage remains verbatim and its encoded size
+   * is reserved before the message is shrunk. The shrink is deterministic, so
+   * body bytes remain stable across retries. */
+  async messageAppended(
+    turnSequence: number,
+    message: unknown,
+    usage?: ManagedMessageUsage,
+  ): Promise<void> {
     if (!Number.isInteger(turnSequence) || turnSequence < 1) {
       throw new Error(
         `turn_sequence must be a positive integer starting at 1; received ${
@@ -183,6 +190,7 @@ export class CallbackReporter {
       event: "message.appended",
       turn_sequence: turnSequence,
       message,
+      ...(usage === undefined ? {} : { usage }),
     };
     let body = this.encodeBody(plain);
     if (body.byteLength >= MAX_MESSAGE_BODY_BYTES) {
@@ -208,12 +216,16 @@ export class CallbackReporter {
   /** POSTs `turn.finished` with the `finish_turn` outcome. Shares the terminal
    * idempotency key with `turn.failed` so contradictory terminals cannot both
    * win. Valid only after every emitted message has been acknowledged. */
-  async turnFinished(outcome: "question" | "completion"): Promise<void> {
+  async turnFinished(
+    outcome: "question" | "completion",
+    usage?: ManagedTurnUsage,
+  ): Promise<void> {
     const body = this.encodeBody({
       run_id: this.runId,
       turn_id: this.turnId,
       event: "turn.finished",
       outcome,
+      ...(usage === undefined ? {} : { usage }),
     });
     await this.deliver(`${this.turnId}:terminal`, body, true);
   }
