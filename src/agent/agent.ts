@@ -112,7 +112,7 @@ OPTIONS
   --specs-permissions <list> Granted specs-tool permissions (comma-separated
                             entity:operation: spec:list,spec:read,spec:update,
                             spec:create,spec:associate,task:list,task:read,
-                            task:update,task:create)
+                            task:update,task:create,comment:create)
   --specs-api-url <url>     Studio internal API base URL for the specs tool
   --mcp-config <path>       Path to an MCP server config file (JSON mapping
                             server names to transport configs; defaults to

@@ -3,7 +3,7 @@ import { array, enums, object, string, uuid } from "@huuma/validate";
 import { envValue } from "./env.ts";
 import type { AgentTools } from "./tools.ts";
 
-/** The nine permissions the `specs` tool kind can expose. Each maps to one to
+/** The ten permissions the `specs` tool kind can expose. Each maps to one to
  * three tool functions the model may call. The Studio grants a subset per Turn
  * and passes it on the `--specs-permissions` flag; the runner exposes only
  * those functions (the Studio API re-checks each one server-side). See
@@ -17,7 +17,8 @@ export type SpecsPermission =
   | "task:list"
   | "task:read"
   | "task:update"
-  | "task:create";
+  | "task:create"
+  | "comment:create";
 
 /** The full set, for validation of the `--specs-permissions` flag. An unknown
  * entry is a configuration error rather than a silently-ignored one, so a
@@ -32,6 +33,7 @@ export const SPECS_PERMISSIONS: readonly SpecsPermission[] = [
   "task:read",
   "task:update",
   "task:create",
+  "comment:create",
 ];
 
 const SPECS_PERMISSION_SET = new Set<string>(SPECS_PERMISSIONS);
@@ -81,8 +83,9 @@ export interface SpecsToolOptions {
   specsApiUrl?: string;
 }
 
-/** Builds the `specs` tool set: the fourteen Specs/Tasks functions the model
- * can call, restricted to the permissions granted on `--specs-permissions`.
+/** Builds the `specs` tool set: the fifteen Specs/Tasks/Comments functions the
+ * model can call, restricted to the permissions granted on
+ * `--specs-permissions`.
  *
  * Registration order (RUNNER-CONTRACT, "Sandbox secret" and "Error Handling"):
  * 1. No granted permissions → register nothing (the Studio granted none).
@@ -172,6 +175,9 @@ export function specsTools(options: SpecsToolOptions = {}): AgentTools {
   }
   if (granted.has("task:create")) {
     tools.push(createTaskTool(base, token));
+  }
+  if (granted.has("comment:create")) {
+    tools.push(createCommentTool(base, token));
   }
   return tools;
 }
@@ -446,6 +452,32 @@ function createTaskTool(base: string, token: string): Tool<ReturnType<typeof cre
   });
 }
 
+/** `create_comment` — add a system-owned Markdown comment to a Spec on behalf
+ * of the current Run. The Studio derives authorship from the JWT `run_id`
+ * claim; no run or author field is accepted from the model. */
+function createCommentTool(
+  base: string,
+  token: string,
+): Tool<ReturnType<typeof createCommentInput>, unknown> {
+  return tool({
+    name: "create_comment",
+    description:
+      "Add a Markdown comment to a Spec on behalf of the current Run. The " +
+      "comment appears in Studio as a system (Huuma Bot) comment attributed " +
+      "to the Run. Returns the created comment.",
+    input: createCommentInput(),
+    fn: ({ spec_id, body_markdown }) => {
+      requireNonBlankComment(body_markdown);
+      return specsRequest(
+        "POST",
+        `${base}/specs/${spec_id}/comments`,
+        token,
+        { body_markdown },
+      );
+    },
+  });
+}
+
 // --- input schemas --------------------------------------------------------
 
 /** Empty object — `list_labels` takes no parameters. */
@@ -541,6 +573,16 @@ function createTaskInput() {
     acceptance_criteria: array(string()).optional(),
     priority: enums([...TASK_PRIORITIES]),
     status: enums([...TASK_STATUSES]),
+  });
+}
+
+/** `create_comment` parameters. The UUID rejects malformed ids and path
+ * separators in `spec_id`; the function body rejects blank Markdown before a
+ * request. Authorship is intentionally absent and comes from the JWT. */
+function createCommentInput() {
+  return object({
+    spec_id: uuid(),
+    body_markdown: string(),
   });
 }
 
@@ -654,6 +696,17 @@ function normalizeFilter(labels: string[] | undefined): string[] {
     );
   }
   return labels.map((label) => normalizeLabel(label, "list_specs"));
+}
+
+/** Rejects a blank comment body locally while preserving non-blank Markdown
+ * verbatim for the API (including meaningful leading/trailing whitespace). */
+function requireNonBlankComment(bodyMarkdown: string): void {
+  if (bodyMarkdown.trim() === "") {
+    throw new Error(
+      "create_comment requires a non-empty body_markdown. Whitespace-only " +
+        "Markdown is not allowed.",
+    );
+  }
 }
 
 /** Returns a shallow copy of `fields` containing only the listed keys whose
