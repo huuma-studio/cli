@@ -407,26 +407,34 @@ async function pathExists(path: string): Promise<boolean> {
 /** Connects to all configured MCP servers, collects {@link McpConnection}
  * handles, and returns their merged tools.
  *
- * For each server config, calls `mcp()` from `@huuma/ai/tools`. By default a
- * connection failure throws (fail-fast). When `optional: true` is set on a
- * server config, the failure is logged and the server is skipped.
+ * For each server config, calls `mcp()` from `@huuma/ai/tools`. An optional
+ * managed-run signal cancels connection and initial tool listing and is never
+ * swallowed by an `optional` server. By default a connection failure throws
+ * (fail-fast). When `optional: true` is set on a server config, a non-cancellation
+ * failure is logged and the server is skipped.
  *
  * Returns `{ connections, tools }` where `connections` are the open handles
  * (for lifecycle cleanup) and `tools` is the flat array of tools from every
  * connected server. */
 export async function resolveMcpServers(
   servers: McpServerConfig[],
+  signal?: AbortSignal,
 ): Promise<ResolvedMcp> {
   const connections: McpConnection[] = [];
   const tools: AgentTools = [];
 
   for (const server of servers) {
-    const options: McpToolsOptions = toMcpToolsOptions(server);
+    signal?.throwIfAborted();
+    const options: McpToolsOptions = toMcpToolsOptions(server, signal);
     try {
       const conn = await mcp(options);
       connections.push(conn);
       tools.push(...conn.tools());
     } catch (error) {
+      if (signal?.aborted) {
+        await closeMcpConnections(connections);
+        throw signal.reason ?? error;
+      }
       const message = error instanceof Error ? error.message : String(error);
       if (server.optional) {
         console.warn(
@@ -449,10 +457,14 @@ export async function resolveMcpServers(
 
 /** Translates a {@link McpServerConfig} to the `McpToolsOptions` shape
  * expected by `mcp()` from `@huuma/ai/tools`. */
-function toMcpToolsOptions(server: McpServerConfig): McpToolsOptions {
+function toMcpToolsOptions(
+  server: McpServerConfig,
+  signal?: AbortSignal,
+): McpToolsOptions {
   return {
     name: server.name,
     transport: server.transport,
+    signal,
   };
 }
 

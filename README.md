@@ -201,9 +201,17 @@ The CLI exits `0` only after `turn.finished` is acknowledged.
 Errors reported through `turn.failed` are sanitized and truncated; callback
 secrets and raw provider payloads are never sent or printed. Transient model
 failures may be retried within the same Turn according to `--retries`; emitted
-message sequences remain monotonic across attempts. Studio may separately retry
-a failed execution as a new managed Turn with a new `--turn-id`. Callback HTTP
-retries within either Turn reuse that Turn's idempotency keys.
+message sequences remain monotonic across attempts. Every agent run is bounded
+to 100 model calls. Reaching that guard is a permanent failure for the Turn and
+is never retried, so retries cannot multiply the loop or cost bound.
+
+At `--turn-deadline` minus the 15-second terminal reserve, the runner cancels
+setup or the in-flight agent run. The cancellation signal reaches provider
+requests, built-in cancellable tools, sub-agents, MCP calls, and Specs API
+requests. Callback delivery is not cancelled by that signal, leaving the final
+window available for `turn.failed`. Studio may separately retry a failed
+execution as a new managed Turn with a new `--turn-id`. Callback HTTP retries
+within either Turn reuse that Turn's idempotency keys.
 
 > **Why flags and not env vars?** With `cli` or file tools enabled the agent can
 > edit the files that set env vars (a shell rc, a `.env`), silently steering
@@ -253,15 +261,15 @@ empty value is rejected. The flag must come before the prompt, like `--tools`.
 | Tool               | Description                                                  |
 | ------------------ | ------------------------------------------------------------ |
 | `cli`              | Run allow-listed CLI commands                                |
-| `grep`             | Search files for a pattern                                   |
-| `read_file`        | Read a text file                                             |
+| `grep`             | Search files with bounded, streaming output and a 30 s limit |
+| `read_file`        | Read text in bounded pages using optional byte offset/limit  |
 | `read_image`       | Attach a PNG, JPEG, GIF, or WebP image for the model         |
 | `write_file`       | Write a file                                                 |
 | `create_directory` | Create a directory                                           |
 | `delete_file`      | Delete a file or directory                                   |
 | `edit_file`        | Make an in-place edit to a file                              |
 | `files`            | Five general file tools; excludes `read_image`               |
-| `fetch_website`    | Fetch a URL and return it as Markdown                        |
+| `fetch_website`    | Fetch bounded Markdown with a 30 s deadline                  |
 | `search`           | Search the web                                               |
 | `specs`            | Live read/write access to a Project's Specs and Tasks        |
 | `mcp`              | Tools from connected MCP (Model Context Protocol) servers   |

@@ -193,17 +193,24 @@ function makeFakeAgentFactory(opts: FakeAgentOptions = {}) {
   let receivedConfig: ManagedConfig | undefined;
   let receivedPrompt: string | (TextContent | FileContent)[] | undefined;
   let receivedHistory: Message[] | undefined;
+  let receivedSetupSignal: AbortSignal | undefined;
+  let receivedRunSignal: AbortSignal | undefined;
   let runCallCount = 0;
 
-  // `async` matches the `ManagedTurnDeps.agentFactory` signature
-  // `(config) => Promise<SetupResult>`; the body is synchronous today.
+  // `async` matches the `ManagedTurnDeps.agentFactory` signature; the body is
+  // synchronous today.
   // deno-lint-ignore require-await
-  const factory = async (config: ManagedConfig): Promise<SetupResult> => {
+  const factory = async (
+    config: ManagedConfig,
+    signal?: AbortSignal,
+  ): Promise<SetupResult> => {
     receivedConfig = config;
+    receivedSetupSignal = signal;
     const run: Assistant["run"] = async (prompt, history, options) => {
       runCallCount += 1;
       receivedPrompt = prompt;
       receivedHistory = history;
+      receivedRunSignal = options?.signal;
       if (
         opts.failFirstRuns !== undefined && runCallCount <= opts.failFirstRuns
       ) {
@@ -246,6 +253,8 @@ function makeFakeAgentFactory(opts: FakeAgentOptions = {}) {
       config: receivedConfig,
       prompt: receivedPrompt,
       history: receivedHistory,
+      setupSignal: receivedSetupSignal,
+      runSignal: receivedRunSignal,
     }),
     runCallCount: () => runCallCount,
   };
@@ -416,6 +425,8 @@ Deno.test("happy path: turn.running → ordered message.appended → turn.finish
 
       assertEquals(Deno.exitCode, 0);
       assertEquals(agent.runCallCount(), 1);
+      assertEquals(agent.received().setupSignal, agent.received().runSignal);
+      assertEquals(agent.received().runSignal?.aborted, false);
       // turn.running + 3 message.appended + turn.finished
       assertEquals(cb.fetchCalls.length, 5);
 
@@ -1718,6 +1729,82 @@ Deno.test("turn.running budget exhausted → turn.failed attempted within termin
       // one terminal delivery (turn.failed) within the terminal window.
       assertEquals(eventKinds(cb.fetchCalls), ["turn.failed"]);
       assertEquals(terminalKeyCount(cb.fetchCalls), 1);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Managed execution deadline: cancellation starts at the terminal reserve and
+// reaches setup plus every agent.run attempt.
+// ---------------------------------------------------------------------------
+
+Deno.test("managed deadline aborts an in-flight run without retrying and preserves terminal delivery", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    let triggerDeadline: (() => void) | undefined;
+    let disposeCalls = 0;
+    let setupSignal: AbortSignal | undefined;
+    let runSignal: AbortSignal | undefined;
+    let runCalls = 0;
+    let markStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => markStarted = resolve);
+
+    const agentFactory = (
+      _config: ManagedConfig,
+      signal: AbortSignal,
+    ): Promise<SetupResult> => {
+      setupSignal = signal;
+      const run: Assistant["run"] = async (prompt, _history, options) => {
+        runCalls += 1;
+        runSignal = options?.signal;
+        await options?.onMessage?.({ role: "user", contents: prompt });
+        markStarted?.();
+        return await new Promise<Message[]>((_resolve, reject) => {
+          const activeSignal = options?.signal;
+          if (activeSignal === undefined) {
+            reject(new Error("managed run signal missing"));
+            return;
+          }
+          const onAbort = () => reject(activeSignal.reason);
+          if (activeSignal.aborted) onAbort();
+          else activeSignal.addEventListener("abort", onAbort, { once: true });
+        });
+      };
+      return Promise.resolve({ assistant: { run }, mcpConnections: [] });
+    };
+
+    const { config, cleanup } = await makeConfig({ retries: 2 });
+    const errors: string[] = [];
+    try {
+      const pending = runManagedTurn(config, {
+        agentFactory,
+        callbackDeps: cb.deps,
+        scheduleDeadline: (abort, delayMs) => {
+          assertEquals(delayMs, 45_000);
+          triggerDeadline = abort;
+          return () => disposeCalls += 1;
+        },
+        logError: (message) => errors.push(message),
+      });
+      await started;
+      triggerDeadline?.();
+      await pending;
+
+      assertEquals(Deno.exitCode, 1);
+      assertEquals(runCalls, 1);
+      assertEquals(setupSignal, runSignal);
+      assertEquals(runSignal?.aborted, true);
+      assertEquals(cb.sleepCalls, []);
+      assertEquals(eventKinds(cb.fetchCalls), ["turn.running", "turn.failed"]);
+      assertEquals(terminalKeyCount(cb.fetchCalls), 1);
+      assertEquals(disposeCalls, 1);
+      assertEquals(errors.length, 1);
+      assertEquals(
+        errors[0]?.includes("managed turn execution deadline reached"),
+        true,
+      );
     } finally {
       await cleanup();
     }

@@ -31,6 +31,17 @@ export class ProtocolError extends Error {
   }
 }
 
+/** Raised when a managed Turn reaches the start of its terminal-delivery
+ * reserve. It is permanent for the current Turn: retrying with the same
+ * already-aborted signal would only repeat the cancellation and consume time
+ * reserved for `turn.failed`. */
+export class ManagedTurnDeadlineError extends Error {
+  constructor() {
+    super("managed turn execution deadline reached");
+    this.name = "ManagedTurnDeadlineError";
+  }
+}
+
 /** Injectable timing sources for {@link runWithRetries}, mirroring
  * `CallbackDeps` minus `fetch` (model retry performs no HTTP of its own). */
 export interface RetryDeps {
@@ -80,6 +91,7 @@ const TRANSIENT_RE = new RegExp(
 
 const PERMANENT_RE = new RegExp(
   [
+    "^Agent run exceeded maxModelCalls \\(\\d+\\) without finishing",
     "\\b401\\b",
     "\\b403\\b",
     "unauthorized",
@@ -101,12 +113,17 @@ const PERMANENT_RE = new RegExp(
  * patterns are permanent. Unknown errors classify as transient — attempts
  * are bounded, so a wasted retry is cheaper than an avoidable failure.
  *
- * Two failures are never retried regardless of their text: `CallbackError`
+ * Three failures are never retried regardless of their text: `CallbackError`
  * (a callback *delivery* failure — retrying `run()` would re-drive the
- * callback path) and the managed runner's first-emission protocol failure
- * ({@link ProtocolError} — deterministic, it would repeat). */
+ * callback path), the managed runner's first-emission protocol failure
+ * ({@link ProtocolError}), and its terminal-reserve cancellation
+ * ({@link ManagedTurnDeadlineError}). The exact `@huuma/ai` model-call-cap
+ * error is also permanent so retries cannot multiply the 100-call guard. */
 export function classifyModelError(error: unknown): ModelFailureKind {
-  if (error instanceof CallbackError || error instanceof ProtocolError) {
+  if (
+    error instanceof CallbackError || error instanceof ProtocolError ||
+    error instanceof ManagedTurnDeadlineError
+  ) {
     return "permanent";
   }
   const message = error instanceof Error ? error.message : String(error);

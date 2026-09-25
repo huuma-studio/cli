@@ -375,11 +375,58 @@ async function call(
   tools: ReturnType<typeof specsTools>,
   name: string,
   props: unknown,
+  signal?: AbortSignal,
 ): Promise<unknown> {
   const tool = tools.find((t) => t.name === name);
   if (!tool) throw new Error(`tool ${name} not registered`);
-  return await tool.call(props);
+  return await tool.call(props, { signal });
 }
+
+Deno.test(
+  "specs tools forward cancellation to the underlying HTTP request",
+  async () => {
+    await withEnv({ [SPECS_TOKEN_ENV]: "secret-token" }, async () => {
+      const originalFetch = globalThis.fetch;
+      const controller = new AbortController();
+      let requestSignal: AbortSignal | null | undefined;
+      globalThis.fetch = ((
+        _input: string | URL | Request,
+        init?: RequestInit,
+      ) => {
+        requestSignal = init?.signal;
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (signal?.aborted) {
+            reject(signal.reason);
+            return;
+          }
+          signal?.addEventListener("abort", () => reject(signal.reason), {
+            once: true,
+          });
+        });
+      }) as typeof fetch;
+      try {
+        const tools = buildTools("https://studio.example/api/internal", [
+          "spec:read",
+        ]);
+        const pending = call(
+          tools,
+          "read_spec",
+          { spec_id: SPEC_ID },
+          controller.signal,
+        );
+        await Promise.resolve();
+        const reason = new Error("cancel Specs request");
+        controller.abort(reason);
+        await assertRejects(() => pending, Error, reason.message);
+        assertEquals(requestSignal instanceof AbortSignal, true);
+        assertEquals(requestSignal?.aborted, true);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  },
+);
 
 // ---------------------------------------------------------------------------
 // Registration rules
