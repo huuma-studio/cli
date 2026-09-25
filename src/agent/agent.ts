@@ -217,7 +217,11 @@ MANAGED TURN MODE
 
   Passing any of --history, --cwd, --run-id, --turn-id, or --turn-deadline
   without --callback-url is a configuration error, not a local chat with
-  ignored options.
+  ignored options. Managed setup and execution are cancelled 15 seconds before
+  the deadline so turn.failed can still be delivered.
+
+  Every agent run is limited to 100 model calls. Exceeding the limit is a
+  permanent failure and is not retried by --retries.
 
   Credentials:
     HUUMA_AGENT_CALLBACK_SECRET  required, non-empty (env var only — never a

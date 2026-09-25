@@ -4,6 +4,7 @@ import {
   BACKOFF_BASE_MS,
   BACKOFF_CAP_MS,
   classifyModelError,
+  ManagedTurnDeadlineError,
   productionRetryDeps,
   ProtocolError,
   runWithRetries,
@@ -70,6 +71,8 @@ const PERMANENT_MESSAGES = [
   "invalid_request_error: the request body is malformed",
   "Invalid request: unknown parameter",
   "missing API key",
+  "Agent run exceeded maxModelCalls (100) without finishing",
+  'Agent run exceeded maxModelCalls (7) without finishing; last tool called: "grep"',
 ];
 
 Deno.test("classifyModelError classifies transient message patterns", () => {
@@ -108,9 +111,13 @@ Deno.test("classifyModelError classifies every CallbackError kind permanent", ()
   }
 });
 
-Deno.test("classifyModelError classifies the first-emission protocol failure permanent", () => {
+Deno.test("classifyModelError classifies managed protocol and deadline failures permanent", () => {
   assertEquals(
     classifyModelError(new ProtocolError("protocol failure: role mismatch")),
+    "permanent",
+  );
+  assertEquals(
+    classifyModelError(new ManagedTurnDeadlineError()),
     "permanent",
   );
 });
@@ -214,11 +221,12 @@ Deno.test("runWithRetries short-circuits a permanent error immediately", async (
   assertEquals(thrown, permanent);
 });
 
-Deno.test("runWithRetries never retries CallbackError or ProtocolError", async () => {
+Deno.test("runWithRetries never retries callback, protocol, or managed deadline errors", async () => {
   for (
     const error of [
       new CallbackError("conflict", "409"),
       new ProtocolError("protocol failure: role mismatch"),
+      new ManagedTurnDeadlineError(),
     ]
   ) {
     const { deps, sleeps } = fakeDeps();

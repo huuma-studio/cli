@@ -229,7 +229,7 @@ function listSpecsTool(
       "label (AND). Returns an array of spec summaries with id, number, " +
       "title, type, status, and labels.",
     input: listSpecsInput(),
-    fn: (fields) => {
+    fn: (fields, { signal }) => {
       const labels = normalizeFilter(fields.labels);
       // One `labels` query parameter per label, each URL-encoded — the
       // API's filter form. No labels means an unfiltered GET.
@@ -237,7 +237,7 @@ function listSpecsTool(
         .map((label) => `labels=${encodeURIComponent(label)}`)
         .join("&");
       const url = query === "" ? `${base}/specs` : `${base}/specs?${query}`;
-      return specsRequest("GET", url, token);
+      return specsRequest("GET", url, token, signal);
     },
   });
 }
@@ -256,7 +256,8 @@ function listLabelsTool(
       "filtering list_specs or for adding to a Spec. Returns a JSON array " +
       "of label strings.",
     input: emptyObject(),
-    fn: () => specsRequest("GET", `${base}/labels`, token),
+    fn: (_fields, { signal }) =>
+      specsRequest("GET", `${base}/labels`, token, signal),
   });
 }
 
@@ -269,7 +270,8 @@ function readSpecTool(base: string, token: string): Tool<ReturnType<typeof specI
       "including description (Markdown), type, status, labels, and all " +
       "tasks with their acceptance criteria, priority, and status.",
     input: specIdInput(),
-    fn: ({ spec_id }) => specsRequest("GET", `${base}/specs/${spec_id}`, token),
+    fn: ({ spec_id }, { signal }) =>
+      specsRequest("GET", `${base}/specs/${spec_id}`, token, signal),
   });
 }
 
@@ -281,8 +283,8 @@ function listSpecRunsTool(base: string, token: string): Tool<ReturnType<typeof s
       "List the Runs associated with a Spec. Returns an array of run " +
       "summaries with id, status, and association created_at, newest first.",
     input: specIdInput(),
-    fn: ({ spec_id }) =>
-      specsRequest("GET", `${base}/specs/${spec_id}/runs`, token),
+    fn: ({ spec_id }, { signal }) =>
+      specsRequest("GET", `${base}/specs/${spec_id}/runs`, token, signal),
   });
 }
 
@@ -295,7 +297,7 @@ function updateSpecTool(base: string, token: string): Tool<ReturnType<typeof upd
       "least one field must be provided. Returns the updated spec with all " +
       "tasks.",
     input: updateSpecInput(),
-    fn: (fields) => {
+    fn: (fields, { signal }) => {
       const body = pickDefined(fields, [
         "title",
         "description_markdown",
@@ -303,7 +305,13 @@ function updateSpecTool(base: string, token: string): Tool<ReturnType<typeof upd
         "status",
       ]);
       requireAtLeastOne(body, "update_spec");
-      return specsRequest("PATCH", `${base}/specs/${fields.spec_id}`, token, body);
+      return specsRequest(
+        "PATCH",
+        `${base}/specs/${fields.spec_id}`,
+        token,
+        signal,
+        body,
+      );
     },
   });
 }
@@ -321,8 +329,8 @@ function addSpecLabelTool(
       "trimmed, must not be empty, and a Spec carries at most 10 labels. " +
       "Returns the updated Spec with all its tasks.",
     input: specLabelInput(),
-    fn: ({ spec_id, label }) =>
-      specsRequest("POST", `${base}/specs/${spec_id}/labels`, token, {
+    fn: ({ spec_id, label }, { signal }) =>
+      specsRequest("POST", `${base}/specs/${spec_id}/labels`, token, signal, {
         label: normalizeLabel(label, "add_spec_label"),
       }),
   });
@@ -343,13 +351,14 @@ function removeSpecLabelTool(
       "label is trimmed, must not be empty, and is URL-encoded in the " +
       "request path. Returns the updated Spec with all its tasks.",
     input: specLabelInput(),
-    fn: ({ spec_id, label }) =>
+    fn: ({ spec_id, label }, { signal }) =>
       specsRequest(
         "DELETE",
         `${base}/specs/${spec_id}/labels/${
           encodeURIComponent(normalizeLabel(label, "remove_spec_label"))
         }`,
         token,
+        signal,
       ),
   });
 }
@@ -363,14 +372,14 @@ function createSpecTool(base: string, token: string): Tool<ReturnType<typeof cre
       "description (Markdown), type, and status. Returns the created spec " +
       "with its tasks (initially empty).",
     input: createSpecInput(),
-    fn: (fields) => {
+    fn: (fields, { signal }) => {
       const body = pickDefined(fields, [
         "title",
         "description_markdown",
         "type",
         "status",
       ]);
-      return specsRequest("POST", `${base}/specs`, token, body);
+      return specsRequest("POST", `${base}/specs`, token, signal, body);
     },
   });
 }
@@ -388,8 +397,8 @@ function associateSpecTool(base: string, token: string): Tool<ReturnType<typeof 
       "associating an already-associated pair returns the existing " +
       "association with spec_id, run_id, and created_at.",
     input: specIdInput(),
-    fn: ({ spec_id }) =>
-      specsRequest("POST", `${base}/specs/${spec_id}/runs`, token, {}),
+    fn: ({ spec_id }, { signal }) =>
+      specsRequest("POST", `${base}/specs/${spec_id}/runs`, token, signal, {}),
   });
 }
 
@@ -403,8 +412,8 @@ function disassociateSpecTool(base: string, token: string): Tool<ReturnType<type
       "removing an absent association is a no-op that returns " +
       "{ removed: false }; removing an existing one returns { removed: true }.",
     input: specIdInput(),
-    fn: ({ spec_id }) =>
-      specsRequest("DELETE", `${base}/specs/${spec_id}/runs`, token),
+    fn: ({ spec_id }, { signal }) =>
+      specsRequest("DELETE", `${base}/specs/${spec_id}/runs`, token, signal),
   });
 }
 
@@ -417,8 +426,8 @@ function listTasksTool(base: string, token: string): Tool<ReturnType<typeof spec
       "with id, number, title, description (Markdown), acceptance criteria, " +
       "priority, status, and spec_id.",
     input: specIdInput(),
-    fn: ({ spec_id }) =>
-      specsRequest("GET", `${base}/specs/${spec_id}/tasks`, token),
+    fn: ({ spec_id }, { signal }) =>
+      specsRequest("GET", `${base}/specs/${spec_id}/tasks`, token, signal),
   });
 }
 
@@ -430,7 +439,8 @@ function readTaskTool(base: string, token: string): Tool<ReturnType<typeof taskI
       "Read a single Task. Returns the task's full details including " +
       "description (Markdown), acceptance criteria, priority, and status.",
     input: taskIdInput(),
-    fn: ({ task_id }) => specsRequest("GET", `${base}/tasks/${task_id}`, token),
+    fn: ({ task_id }, { signal }) =>
+      specsRequest("GET", `${base}/tasks/${task_id}`, token, signal),
   });
 }
 
@@ -444,7 +454,7 @@ function updateTaskTool(base: string, token: string): Tool<ReturnType<typeof upd
       "priority, or status. At least one field must be provided. Returns the " +
       "updated task.",
     input: updateTaskInput(),
-    fn: (fields) => {
+    fn: (fields, { signal }) => {
       const body = pickDefined(fields, [
         "title",
         "description_markdown",
@@ -453,7 +463,13 @@ function updateTaskTool(base: string, token: string): Tool<ReturnType<typeof upd
         "status",
       ]);
       requireAtLeastOne(body, "update_task");
-      return specsRequest("PATCH", `${base}/tasks/${fields.task_id}`, token, body);
+      return specsRequest(
+        "PATCH",
+        `${base}/tasks/${fields.task_id}`,
+        token,
+        signal,
+        body,
+      );
     },
   });
 }
@@ -467,7 +483,7 @@ function createTaskTool(base: string, token: string): Tool<ReturnType<typeof cre
       "description (Markdown), priority, and status. Acceptance criteria are " +
       "optional. Returns the created task.",
     input: createTaskInput(),
-    fn: (fields) => {
+    fn: (fields, { signal }) => {
       const body = pickDefined(fields, [
         "title",
         "description_markdown",
@@ -479,6 +495,7 @@ function createTaskTool(base: string, token: string): Tool<ReturnType<typeof cre
         "POST",
         `${base}/specs/${fields.spec_id}/tasks`,
         token,
+        signal,
         body,
       );
     },
@@ -503,7 +520,7 @@ function createCommentTool(
       "comment appears in Studio as a system (Huuma Bot) comment attributed " +
       "to the Run. Returns the created comment.",
     input: createCommentInput(),
-    fn: async ({ spec_id, body_markdown }) => {
+    fn: async ({ spec_id, body_markdown }, { signal }) => {
       requireNonBlankComment(body_markdown);
       const identity = JSON.stringify({
         spec_id,
@@ -519,6 +536,7 @@ function createCommentTool(
         "POST",
         `${base}/specs/${spec_id}/comments`,
         token,
+        signal,
         { body_markdown },
         idempotencyKey,
       );
@@ -643,12 +661,14 @@ const BODY_METHODS = new Set(["PATCH", "POST", "PUT"]);
  * parsed JSON body on success. On a non-2xx response it throws an Error whose
  * message is the API's `{ error }` body when present, otherwise a status-based
  * summary — so the model can decide whether to retry (RUNNER-CONTRACT,
- * "Error Handling"). The token placeholder is passed verbatim; it is never
- * logged. */
+ * "Error Handling"). The tool-call signal is forwarded to `fetch`, so a
+ * managed deadline stops the underlying request rather than only abandoning
+ * its result. The token placeholder is passed verbatim; it is never logged. */
 async function specsRequest(
   method: string,
   url: string,
   token: string,
+  signal: AbortSignal,
   body?: Record<string, unknown>,
   idempotencyKey?: string,
 ): Promise<unknown> {
@@ -658,7 +678,7 @@ async function specsRequest(
   if (idempotencyKey !== undefined) {
     headers["Idempotency-Key"] = idempotencyKey;
   }
-  const init: RequestInit = { method, headers };
+  const init: RequestInit = { method, headers, signal };
   if (BODY_METHODS.has(method) && body !== undefined) {
     headers["Content-Type"] = "application/json";
     init.body = JSON.stringify(body);

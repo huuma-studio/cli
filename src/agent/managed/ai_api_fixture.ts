@@ -1,14 +1,16 @@
 /**
- * Compile-only type-level fixture for the exact `@huuma/ai@0.2.6` managed-turn
+ * Compile-only type-level fixture for the exact `@huuma/ai@0.2.7` managed-turn
  * contract (T1).
  *
  * The file is intentionally never executed. It exists so `deno task check`
  * proves the pinned published release exposes:
  *  - `agent({ ..., finishTurn: true })` (the built-in `finish_turn` control
  *    tool, registered when `finishTurn: true` is set);
- *  - `agent.run(prompt, history, { onMessage, onMessageError: "throw" })`
- *    where the awaited `onMessage` rejection propagates from `run` when
- *    `onMessageError: "throw"` is set (so a delivery failure aborts the loop);
+ *  - `agent.run(prompt, history, { onMessage, onMessageError: "throw",
+ *    maxModelCalls, signal })`, including the 100-call default and cancellation
+ *    contract added in 0.2.7;
+ *  - awaited `onMessage` rejection propagation when `onMessageError: "throw"`
+ *    is set (so a delivery failure aborts the loop);
  *  - the returned native `Message[]`, including tool messages whose
  *    `toolResult.name === "finish_turn"` and whose `output` carries the
  *    `"question" | "completion"` outcome (typed as `FinishTurnOutput`).
@@ -18,7 +20,7 @@
  * deliberately rather than silently. See
  * `docs/specs/add-huuma-studio-support/PLAN.md` and ADRs 0007 / 0010.
  */
-import { agent } from "@huuma/ai/agent";
+import { agent, DEFAULT_MAX_MODEL_CALLS } from "@huuma/ai/agent";
 import { anthropic } from "@huuma/ai/models/anthropic";
 import type {
   FinishTurnOutput,
@@ -64,7 +66,13 @@ function callRun(
   history: History,
   onMessage: OnMessage,
 ): Promise<Message[]> {
-  const options: RunOptions = { onMessage, onMessageError: "throw" };
+  const controller = new AbortController();
+  const options: RunOptions = {
+    onMessage,
+    onMessageError: "throw",
+    maxModelCalls: DEFAULT_MAX_MODEL_CALLS,
+    signal: controller.signal,
+  };
   return assistant.run(prompt, history, options);
 }
 
@@ -100,8 +108,8 @@ function decodeFinishTurnOutcome(
 }
 
 // Compile-only exports: nothing is exercised at runtime. The function bodies
-// exist purely to anchor the type contract to the public `@huuma/ai@0.2.6`
-// surface.
+// exist purely to anchor the type contract to the public `@huuma/ai@0.2.7`
+// surface, including bounded and cancellable runs.
 export const __typeCheck = {
   buildManagedAgent,
   callRun,

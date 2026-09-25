@@ -57,8 +57,9 @@
  * transient model failure (bounded by `--retries`), but the callback
  * contract is preserved on every attempt — single terminal event, monotonic
  * `turn_sequence`, and echo suppression via the re-armed first-emission
- * check. Callback/delivery errors and the first-emission protocol failure
- * are never classified as model failures and keep their existing paths.
+ * check. Callback/delivery errors, the first-emission protocol failure, the
+ * 0.2.7 model-call guard, and terminal-reserve cancellation are permanent and
+ * keep their existing single-failure path.
  */
 import type {
   FileContent,
@@ -81,7 +82,12 @@ import {
 import type { ManagedConfig } from "./config.ts";
 import { loadManagedInput } from "./input.ts";
 import { ManagedUsageTracker, type UsageSampler } from "./usage.ts";
-import { ProtocolError, type RetryDeps, runWithRetries } from "../retry.ts";
+import {
+  ManagedTurnDeadlineError,
+  ProtocolError,
+  type RetryDeps,
+  runWithRetries,
+} from "../retry.ts";
 
 /** Injectable dependencies for {@link runManagedTurn}. */
 export interface ManagedTurnDeps {
@@ -92,10 +98,17 @@ export interface ManagedTurnDeps {
    * `--history` path resolves against the CLI invocation cwd. Returns a
    * {@link SetupResult} so the runner can close MCP connections after the
    * turn. */
-  agentFactory: (config: ManagedConfig) => Promise<SetupResult>;
+  agentFactory: (
+    config: ManagedConfig,
+    signal: AbortSignal,
+  ) => Promise<SetupResult>;
   /** Injectable callback deps (fetch/now/sleep/random) for deterministic
    * delivery behavior. T6 injects production deps; T7 injects fakes. */
   callbackDeps: CallbackDeps;
+  /** Schedules cancellation at the start of the terminal-delivery reserve and
+   * returns a disposer. Tests inject a captured callback; production uses a
+   * normal timer. */
+  scheduleDeadline?: (abort: () => void, delayMs: number) => () => void;
   /** Optional process telemetry sampler. The production entrypoint supplies the
    * Linux/Deno sampler; tests can omit it or inject deterministic snapshots. */
   usageSampler?: UsageSampler;
@@ -114,8 +127,24 @@ export async function runManagedTurn(
   deps: ManagedTurnDeps,
 ): Promise<void> {
   const logError = deps.logError ?? console.error;
+  const deadlineController = new AbortController();
+  const deadlineError = new ManagedTurnDeadlineError();
+  const executionCutoffMs = config.turnDeadline.getTime() - TERMINAL_RESERVE_MS;
+  const deadlineDelayMs = executionCutoffMs - deps.callbackDeps.now().getTime();
+  let cancelDeadline = () => {};
+  if (deadlineDelayMs <= 0) {
+    deadlineController.abort(deadlineError);
+  } else {
+    cancelDeadline = (deps.scheduleDeadline ?? scheduleDeadline)(
+      () => deadlineController.abort(deadlineError),
+      deadlineDelayMs,
+    );
+  }
   const reportError = (stage: string, error: unknown): string =>
     reportAgentError("managed", stage, error, logError);
+  // The deadline signal is passed through setup (including MCP connection
+  // and listing) and every agent.run attempt. Callback delivery deliberately
+  // uses its own deadline handling so turn.failed retains the final reserve.
   // MCP connections opened by the agent factory. Tracked so the `finally`
   // block can close them on every exit path (success, failure, early return).
   let mcpConnections: McpConnection[] = [];
@@ -196,7 +225,10 @@ export async function runManagedTurn(
     let assistant: Assistant;
     let beginAttempt: (() => void) | undefined;
     try {
-      const result = await deps.agentFactory(config);
+      const result = await deps.agentFactory(
+        config,
+        deadlineController.signal,
+      );
       assistant = result.assistant;
       mcpConnections = result.mcpConnections;
       beginAttempt = result.beginAttempt;
@@ -283,6 +315,7 @@ export async function runManagedTurn(
         return await assistant.run(input.prompt, input.history, {
           onMessage,
           onMessageError: "throw",
+          signal: deadlineController.signal,
         });
       } finally {
         // Include usage observed before a failed model attempt in the successful
@@ -378,12 +411,35 @@ export async function runManagedTurn(
       Deno.exitCode = 1;
     }
   } finally {
+    cancelDeadline();
     // Close all MCP connections on every exit path — success, failure, and
     // all early returns. `closeMcpConnections` is best-effort: individual
     // `close()` failures are logged but never throw, so cleanup never
     // interferes with the already-decided exit code or terminal callback.
     await closeMcpConnections(mcpConnections);
   }
+}
+
+/** Uses disposable, bounded timer chunks so a far-future RFC3339 deadline
+ * cannot overflow the platform's 32-bit timeout range. Completed Turns cancel
+ * the active chunk. The scheduler is injectable through
+ * {@link ManagedTurnDeps}. */
+function scheduleDeadline(abort: () => void, delayMs: number): () => void {
+  const maxDelayMs = 2_147_483_647;
+  let remainingMs = delayMs;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let cancelled = false;
+  const scheduleNext = () => {
+    if (cancelled) return;
+    const chunkMs = Math.min(remainingMs, maxDelayMs);
+    remainingMs -= chunkMs;
+    timer = setTimeout(remainingMs === 0 ? abort : scheduleNext, chunkMs);
+  };
+  scheduleNext();
+  return () => {
+    cancelled = true;
+    if (timer !== undefined) clearTimeout(timer);
+  };
 }
 
 /** Returns `true` when `error` is a `CallbackError` with kind `auth-stop`

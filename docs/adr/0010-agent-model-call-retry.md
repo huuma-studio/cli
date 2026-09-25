@@ -27,6 +27,8 @@ without status codes:
 | `401`, `403`, `unauthorized`, `forbidden`, `invalid api key`, `invalid request`, `api key`, `permission` | permanent |
 | `CallbackError` (any kind)                                                           | permanent |
 | `ProtocolError` (the managed runner's first-emission mismatch)                        | permanent |
+| `ManagedTurnDeadlineError` (execution reached the terminal reserve)                   | permanent |
+| `Agent run exceeded maxModelCalls (N) without finishing` (`@huuma/ai` guard)          | permanent |
 | anything else (unknown)                                                              | transient |
 
 Transient patterns are checked before permanent ones: a rate-limit message
@@ -35,7 +37,7 @@ bias is toward retrying. **Unknown errors classify as transient** — attempts
 are bounded (see below), so a wasted retry is cheaper than an avoidable
 failure.
 
-Two failures are never retried regardless of their text:
+Three typed failures are never retried regardless of their text:
 
 - **`CallbackError`** — a callback *delivery* failure, not a model failure.
   Retrying `run()` would re-drive the callback path; delivery has its own
@@ -44,6 +46,14 @@ Two failures are never retried regardless of their text:
   `ProtocolError` when the first message emitted by `agent.run` does not
   match the triggering user message. The mismatch is deterministic; a retry
   would repeat it.
+- **The managed execution deadline** — `ManagedTurnDeadlineError` means the
+  Turn entered its terminal-delivery reserve. The same signal is already
+  aborted, and retrying would consume time reserved for `turn.failed`.
+
+The exact `@huuma/ai` `maxModelCalls` exhaustion message is also permanent.
+Version 0.2.7 bounds every `Agent.run` to 100 model calls by default; allowing
+the CLI's whole-run retry loop to restart it would multiply that cost and could
+replay tool side effects.
 
 ### Retry loop
 
@@ -128,12 +138,14 @@ attempt —
   first-emission protocol failure are classified permanent by
   `classifyModelError` and follow their existing paths (auth-stop, conflict,
   fatal-failable turn.failed) unchanged.
-- **Deadline-aware**: no retry attempt starts when less than
-  `TERMINAL_RESERVE_MS` (15 s) remains before `--turn-deadline`
-  (`cutoffMs = turnDeadline − TERMINAL_RESERVE_MS`), mirroring the
-  non-terminal callback delivery cutoff, so the final 15 seconds stay
-  reserved for terminal delivery. Retry timing reuses the injected
-  `CallbackDeps` sources, keeping tests deterministic.
+- **Deadline-aware and actively cancellable**: the runner schedules an abort at
+  `turnDeadline − TERMINAL_RESERVE_MS` (15 s). The same signal reaches managed
+  setup and every `agent.run` attempt. Through `@huuma/ai` 0.2.7 it propagates
+  to provider requests, built-in tools, sub-agents, and MCP operations; the
+  CLI-owned Specs tools forward it to their HTTP requests. Callback delivery
+  does not use this signal, so the final window stays available for
+  `turn.failed`. No retry starts after the cutoff, and a cancellation already
+  in flight is permanent. Timing and scheduling remain injectable for tests.
 
 Studio's whole-Turn `awaiting_retry` re-run (spec #27) remains the outer
 safety net for non-transient and exhausted failures.
@@ -141,9 +153,10 @@ safety net for non-transient and exhausted failures.
 ## Consequences
 
 - `src/agent/retry.ts` exports `classifyModelError`, `runWithRetries`,
-  `RetryDeps`/`productionRetryDeps`, `ProtocolError`, and the
-  `BACKOFF_BASE_MS`/`BACKOFF_CAP_MS` constants. `TERMINAL_RESERVE_MS` is now
-  exported from `managed/callback.ts` so the retry cutoff shares the reserve.
+  `RetryDeps`/`productionRetryDeps`, `ProtocolError`,
+  `ManagedTurnDeadlineError`, and the `BACKOFF_BASE_MS`/`BACKOFF_CAP_MS`
+  constants. `TERMINAL_RESERVE_MS` is exported from `managed/callback.ts` so
+  the retry cutoff and active cancellation share the reserve.
 - `chat()`/`respond()` accept `{ retries, retryDeps }`; `agent.ts` threads
   the parsed flag through. `ManagedConfig` gains a `retries` field threaded
   from `parseAgentArgs` via `resolveManagedConfig`.

@@ -332,7 +332,9 @@ export function buildManagedAgent<T extends string>(
 // `async` — the body awaits `resolveMcpServers` for MCP tool resolution.
 export async function managedSetup(
   config: ManagedConfig,
+  signal?: AbortSignal,
 ): Promise<SetupResult> {
+  signal?.throwIfAborted();
   // Enter the workspace before tool setup so the default `.agents/skills`
   // and any relative `--skills-path` resolve inside it (PLAN, "Related
   // upstream work"). The caller (T5) is responsible for having already read
@@ -345,7 +347,7 @@ export async function managedSetup(
     ? await resolveMcpConfig(config.mcpConfig, config.mcpServers ?? [])
     : [];
   const { connections: mcpConnections, tools: mcpTools } =
-    await resolveMcpServers(mcpServerConfigs);
+    await resolveMcpServers(mcpServerConfigs, signal);
 
   // Resolve tools and the always-on skills baseline first so a bad tool name
   // or config fails before any provider credential is read. Same fail-early
