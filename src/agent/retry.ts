@@ -145,6 +145,10 @@ export interface RetryNotice {
 export interface RetryOptions {
   /** Additional attempts after the initial call. `0` disables retrying. */
   retries: number;
+  /** Cancels the current attempt boundary and any retry backoff sleep. Managed
+   * mode passes its terminal-reserve signal so `turn.failed` can start as soon
+   * as the execution budget ends. */
+  signal?: AbortSignal;
   /** Epoch-ms cutoff: no retry attempt starts at or after it. The managed
    * runner passes `turnDeadline - TERMINAL_RESERVE_MS` so the final 15
    * seconds stay reserved for terminal callback delivery. */
@@ -163,19 +167,21 @@ export interface RetryOptions {
  * permanent failure short-circuits immediately with the original error, and
  * exhaustion rethrows the last error unchanged — the caller's failure paths
  * are identical to an un-retried run. When `cutoffMs` is set, no retry
- * attempt starts at or after the cutoff (checked both before committing to
- * the backoff sleep and after it, since the sleep may consume the reserve). */
+ * attempt starts at or after the cutoff. When `signal` is set, cancellation
+ * interrupts an in-progress backoff so the caller can use its reserved time. */
 export async function runWithRetries<T>(
   fn: () => Promise<T>,
   options: RetryOptions,
   deps: RetryDeps = productionRetryDeps,
 ): Promise<T> {
-  const { retries, cutoffMs, onRetry } = options;
+  const { retries, signal, cutoffMs, onRetry } = options;
   let attempt = 0;
   while (true) {
+    throwIfRetryAborted(signal);
     try {
       return await fn();
     } catch (error) {
+      throwIfRetryAborted(signal);
       if (classifyModelError(error) === "permanent") throw error;
       if (attempt >= retries) throw error;
       if (cutoffMs !== undefined && deps.now().getTime() >= cutoffMs) {
@@ -183,13 +189,52 @@ export async function runWithRetries<T>(
       }
       const backoffMs = backoffForAttempt(attempt, deps.random());
       onRetry?.({ attempt: attempt + 1, backoffMs, error });
-      await deps.sleep(backoffMs);
+      await sleepWithSignal(() => deps.sleep(backoffMs), signal);
       if (cutoffMs !== undefined && deps.now().getTime() >= cutoffMs) {
         throw error;
       }
       attempt += 1;
     }
   }
+}
+
+/** Rejects with the caller's abort reason at retry boundaries. */
+function throwIfRetryAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw signal.reason ?? new DOMException("Retry aborted", "AbortError");
+}
+
+/** Races an injected sleep against cancellation. The underlying sleep may
+ * settle later, but it no longer delays the retry caller or terminal delivery. */
+function sleepWithSignal(
+  sleep: () => Promise<void>,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (signal === undefined) return sleep();
+  if (signal.aborted) {
+    return Promise.reject(
+      signal.reason ?? new DOMException("Retry aborted", "AbortError"),
+    );
+  }
+  const pending = sleep();
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason ?? new DOMException("Retry aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    pending.then(
+      () => {
+        cleanup();
+        resolve();
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
 }
 
 /** `min(BACKOFF_CAP_MS, BACKOFF_BASE_MS × 2^attempt)` scaled by the same

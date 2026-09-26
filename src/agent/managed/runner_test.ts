@@ -1811,6 +1811,53 @@ Deno.test("managed deadline aborts an in-flight run without retrying and preserv
   });
 });
 
+Deno.test("managed deadline interrupts retry backoff before terminal delivery", async () => {
+  await withExitCode(async () => {
+    const cb = makeCallbackDeps();
+    let markSleepStarted: (() => void) | undefined;
+    const sleepStarted = new Promise<void>((resolve) => markSleepStarted = resolve);
+    cb.deps.sleep = () => {
+      markSleepStarted?.();
+      return new Promise<void>(() => {});
+    };
+
+    let triggerDeadline: (() => void) | undefined;
+    let disposeCalls = 0;
+    const agent = makeFakeAgentFactory({
+      failFirstRuns: 99,
+      throwError: new Error("429 Too Many Requests"),
+    });
+    const { config, cleanup } = await makeConfig({ retries: 2 });
+    const errors: string[] = [];
+    try {
+      const pending = runManagedTurn(config, {
+        agentFactory: agent.factory,
+        callbackDeps: cb.deps,
+        scheduleDeadline: (abort) => {
+          triggerDeadline = abort;
+          return () => disposeCalls += 1;
+        },
+        logError: (message) => errors.push(message),
+      });
+      await sleepStarted;
+      triggerDeadline?.();
+      await pending;
+
+      assertEquals(Deno.exitCode, 1);
+      assertEquals(agent.runCallCount(), 1);
+      assertEquals(eventKinds(cb.fetchCalls), ["turn.running", "turn.failed"]);
+      assertEquals(terminalKeyCount(cb.fetchCalls), 1);
+      assertEquals(disposeCalls, 1);
+      assertEquals(
+        errors[0]?.includes("managed turn execution deadline reached"),
+        true,
+      );
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Model-call retry (ADR 0010): transient agent.run failures are retried in
 // place while the callback contract — single terminal, monotonic sequences,

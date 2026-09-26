@@ -206,7 +206,7 @@ to 100 model calls. Reaching that guard is a permanent failure for the Turn and
 is never retried, so retries cannot multiply the loop or cost bound.
 
 At `--turn-deadline` minus the 15-second terminal reserve, the runner cancels
-setup or the in-flight agent run. The cancellation signal reaches provider
+setup, retry backoff, or the in-flight agent run. The cancellation signal reaches provider
 requests, built-in cancellable tools, sub-agents, MCP calls, and Specs API
 requests. Callback delivery is not cancelled by that signal, leaving the final
 window available for `turn.failed`. Studio may separately retry a failed

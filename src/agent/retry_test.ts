@@ -250,6 +250,42 @@ Deno.test("runWithRetries never retries callback, protocol, or managed deadline 
   }
 });
 
+Deno.test("runWithRetries aborts an in-flight backoff sleep", async () => {
+  const controller = new AbortController();
+  const reason = new ManagedTurnDeadlineError();
+  let calls = 0;
+  let markSleepStarted: (() => void) | undefined;
+  const sleepStarted = new Promise<void>((resolve) => markSleepStarted = resolve);
+  const deps: RetryDeps = {
+    now: () => new Date(0),
+    random: () => 0,
+    sleep: () => {
+      markSleepStarted?.();
+      return new Promise<void>(() => {});
+    },
+  };
+
+  const pending = runWithRetries(
+    () => {
+      calls += 1;
+      return Promise.reject(new Error("429 retry me"));
+    },
+    { retries: 3, signal: controller.signal },
+    deps,
+  );
+  await sleepStarted;
+  controller.abort(reason);
+
+  let thrown: unknown;
+  try {
+    await pending;
+  } catch (error) {
+    thrown = error;
+  }
+  assertEquals(calls, 1);
+  assertEquals(thrown, reason);
+});
+
 Deno.test("runWithRetries caps the backoff at BACKOFF_CAP_MS with jitter", async () => {
   // random() = 0 → the jitter factor is exactly 0.5, so the sleep sequence
   // exposes the base backoff: 125, 250, 500, 1000, 2000, then capped at

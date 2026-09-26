@@ -340,6 +340,7 @@ export async function runManagedTurn(
         runAttempt,
         {
           retries: config.retries,
+          signal: deadlineController.signal,
           cutoffMs: config.turnDeadline.getTime() - TERMINAL_RESERVE_MS,
         },
         retryDeps,

@@ -57,8 +57,8 @@ replay tool side effects.
 
 ### Retry loop
 
-`runWithRetries(fn, { retries, cutoffMs?, onRetry? }, deps)` performs at most
-`retries` additional attempts after the initial call, retrying only transient
+`runWithRetries(fn, { retries, signal?, cutoffMs?, onRetry? }, deps)` performs
+at most `retries` additional attempts after the initial call, retrying only transient
 errors. Backoff is `min(5_000, 250 × 2^attempt)` ms scaled by the same
 `[0.5, 1.0)` jitter factor callback delivery uses
 (`base × (0.5 + random() × 0.5)`); the constants are shared with
@@ -71,9 +71,10 @@ All timing flows through injected `now`/`sleep`/`random` sources
 (`RetryDeps`), mirroring `CallbackDeps` minus `fetch`, so tests are fully
 deterministic with fake recorders.
 
-When `cutoffMs` is set, no retry attempt starts at or after it (checked both
-before committing to the backoff sleep and after it, since the sleep may
-consume the remaining budget).
+When `cutoffMs` is set, no retry attempt starts at or after it. Managed mode
+also passes the terminal-reserve signal: an in-progress backoff sleep races
+that signal and returns immediately on cancellation, rather than consuming
+part of the terminal-delivery window.
 
 ### Configuration: `--retries <n>`, flag only
 
@@ -144,8 +145,9 @@ attempt —
   to provider requests, built-in tools, sub-agents, and MCP operations; the
   CLI-owned Specs tools forward it to their HTTP requests. Callback delivery
   does not use this signal, so the final window stays available for
-  `turn.failed`. No retry starts after the cutoff, and a cancellation already
-  in flight is permanent. Timing and scheduling remain injectable for tests.
+  `turn.failed`. No retry starts after the cutoff, an in-progress retry backoff
+  stops promptly when the signal aborts, and cancellation is permanent. Timing
+  and scheduling remain injectable for tests.
 
 Studio's whole-Turn `awaiting_retry` re-run (spec #27) remains the outer
 safety net for non-transient and exhausted failures.
@@ -162,8 +164,8 @@ safety net for non-transient and exhausted failures.
   from `parseAgentArgs` via `resolveManagedConfig`.
 - The unknown-flag error, `--help`, and the parser's validation all name
   `--retries`.
-- Tests: classification table and deterministic backoff sequencing in
-  `retry_test.ts`; fake-Assistant retry/resume/exhaustion/notice tests in
+- Tests: classification, deterministic backoff sequencing, and cancellation
+  during backoff in `retry_test.ts`; fake-Assistant retry/resume/exhaustion/notice tests in
   `chat_test.ts`; retry-then-finished, mid-loop resume, exhaustion,
   permanent-failure, and deadline-cutoff tests in `runner_test.ts` (existing
   runner/integration tests pin `retries: 0` so today's no-retry paths stay
