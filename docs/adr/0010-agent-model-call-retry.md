@@ -27,6 +27,8 @@ without status codes:
 | `401`, `403`, `unauthorized`, `forbidden`, `invalid api key`, `invalid request`, `api key`, `permission` | permanent |
 | `CallbackError` (any kind)                                                           | permanent |
 | `ProtocolError` (the managed runner's first-emission mismatch)                        | permanent |
+| `ManagedTurnDeadlineError` (execution reached the terminal reserve)                   | permanent |
+| `Agent run exceeded maxModelCalls (N) without finishing` (`@huuma/ai` guard)          | permanent |
 | anything else (unknown)                                                              | transient |
 
 Transient patterns are checked before permanent ones: a rate-limit message
@@ -35,7 +37,7 @@ bias is toward retrying. **Unknown errors classify as transient** — attempts
 are bounded (see below), so a wasted retry is cheaper than an avoidable
 failure.
 
-Two failures are never retried regardless of their text:
+Three typed failures are never retried regardless of their text:
 
 - **`CallbackError`** — a callback *delivery* failure, not a model failure.
   Retrying `run()` would re-drive the callback path; delivery has its own
@@ -44,11 +46,19 @@ Two failures are never retried regardless of their text:
   `ProtocolError` when the first message emitted by `agent.run` does not
   match the triggering user message. The mismatch is deterministic; a retry
   would repeat it.
+- **The managed execution deadline** — `ManagedTurnDeadlineError` means the
+  Turn entered its terminal-delivery reserve. The same signal is already
+  aborted, and retrying would consume time reserved for `turn.failed`.
+
+The exact `@huuma/ai` `maxModelCalls` exhaustion message is also permanent.
+Version 0.2.7 bounds every `Agent.run` to 100 model calls by default; allowing
+the CLI's whole-run retry loop to restart it would multiply that cost and could
+replay tool side effects.
 
 ### Retry loop
 
-`runWithRetries(fn, { retries, cutoffMs?, onRetry? }, deps)` performs at most
-`retries` additional attempts after the initial call, retrying only transient
+`runWithRetries(fn, { retries, signal?, cutoffMs?, onRetry? }, deps)` performs
+at most `retries` additional attempts after the initial call, retrying only transient
 errors. Backoff is `min(5_000, 250 × 2^attempt)` ms scaled by the same
 `[0.5, 1.0)` jitter factor callback delivery uses
 (`base × (0.5 + random() × 0.5)`); the constants are shared with
@@ -59,11 +69,15 @@ unchanged, so every caller's existing failure path (sanitized error display,
 
 All timing flows through injected `now`/`sleep`/`random` sources
 (`RetryDeps`), mirroring `CallbackDeps` minus `fetch`, so tests are fully
-deterministic with fake recorders.
+deterministic with fake recorders. Sleep accepts the optional execution signal:
+the production implementation clears its timer on abort, while the retry loop
+also races injected sleeps so a custom implementation cannot delay terminal
+delivery by ignoring cancellation.
 
-When `cutoffMs` is set, no retry attempt starts at or after it (checked both
-before committing to the backoff sleep and after it, since the sleep may
-consume the remaining budget).
+When `cutoffMs` is set, no retry attempt starts at or after it. Managed mode
+also passes the terminal-reserve signal: an in-progress backoff sleep races
+that signal and returns immediately on cancellation, rather than consuming
+part of the terminal-delivery window.
 
 ### Configuration: `--retries <n>`, flag only
 
@@ -128,12 +142,18 @@ attempt —
   first-emission protocol failure are classified permanent by
   `classifyModelError` and follow their existing paths (auth-stop, conflict,
   fatal-failable turn.failed) unchanged.
-- **Deadline-aware**: no retry attempt starts when less than
-  `TERMINAL_RESERVE_MS` (15 s) remains before `--turn-deadline`
-  (`cutoffMs = turnDeadline − TERMINAL_RESERVE_MS`), mirroring the
-  non-terminal callback delivery cutoff, so the final 15 seconds stay
-  reserved for terminal delivery. Retry timing reuses the injected
-  `CallbackDeps` sources, keeping tests deterministic.
+- **Deadline-aware and actively cancellable**: the runner schedules an abort at
+  `turnDeadline − TERMINAL_RESERVE_MS` (15 s). The same signal reaches managed
+  setup and every `agent.run` attempt. Through `@huuma/ai` 0.2.7 it propagates
+  to provider requests, built-in tools, sub-agents, and MCP operations; the
+  CLI-owned Specs tools forward it to their HTTP requests. Callback delivery
+  does not use this signal, so the final window stays available for
+  `turn.failed`. No retry starts after the cutoff, an in-progress retry backoff
+  stops promptly and clears its production timer when the signal aborts, and
+  cancellation is permanent. A permanent error already returned by the attempt
+  takes precedence over simultaneous cancellation—especially callback 401/403,
+  whose auth-stop contract forbids any terminal callback. Timing and scheduling
+  remain injectable for tests.
 
 Studio's whole-Turn `awaiting_retry` re-run (spec #27) remains the outer
 safety net for non-transient and exhausted failures.
@@ -141,16 +161,18 @@ safety net for non-transient and exhausted failures.
 ## Consequences
 
 - `src/agent/retry.ts` exports `classifyModelError`, `runWithRetries`,
-  `RetryDeps`/`productionRetryDeps`, `ProtocolError`, and the
-  `BACKOFF_BASE_MS`/`BACKOFF_CAP_MS` constants. `TERMINAL_RESERVE_MS` is now
-  exported from `managed/callback.ts` so the retry cutoff shares the reserve.
+  `RetryDeps`/`productionRetryDeps`, `ProtocolError`,
+  `ManagedTurnDeadlineError`, and the `BACKOFF_BASE_MS`/`BACKOFF_CAP_MS`
+  constants. `TERMINAL_RESERVE_MS` is exported from `managed/callback.ts` so
+  the retry cutoff and active cancellation share the reserve.
 - `chat()`/`respond()` accept `{ retries, retryDeps }`; `agent.ts` threads
   the parsed flag through. `ManagedConfig` gains a `retries` field threaded
   from `parseAgentArgs` via `resolveManagedConfig`.
 - The unknown-flag error, `--help`, and the parser's validation all name
   `--retries`.
-- Tests: classification table and deterministic backoff sequencing in
-  `retry_test.ts`; fake-Assistant retry/resume/exhaustion/notice tests in
+- Tests: classification, deterministic backoff sequencing, permanent-error
+  precedence during cancellation, timer cleanup, and cancellation during
+  backoff in `retry_test.ts`; fake-Assistant retry/resume/exhaustion/notice tests in
   `chat_test.ts`; retry-then-finished, mid-loop resume, exhaustion,
   permanent-failure, and deadline-cutoff tests in `runner_test.ts` (existing
   runner/integration tests pin `retries: 0` so today's no-retry paths stay

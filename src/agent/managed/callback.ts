@@ -53,8 +53,10 @@ export interface CallbackDeps {
   fetch: (url: string, init: CallbackFetchInit) => Promise<ResponseLike>;
   /** Returns the current time. Used for deadline and retry calculations. */
   now: () => Date;
-  /** Sleeps for the given milliseconds. Tests inject a no-op or recorder. */
-  sleep: (ms: number) => Promise<void>;
+  /** Sleeps for the given milliseconds. The optional signal is used by the
+   * managed model-retry loop; callback delivery itself does not pass one.
+   * Tests inject a no-op or recorder. */
+  sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** Returns a uniform random number in `[0, 1)` for jitter. */
   random: () => number;
 }
@@ -93,8 +95,9 @@ export class CallbackError extends Error {
 /** The final 15 seconds before `--turn-deadline` are reserved for
  * `turn.failed` delivery (PLAN, "Reserve terminal-delivery time").
  * Non-terminal events retry only until `turnDeadline - TERMINAL_RESERVE_MS`.
- * Exported so the model-call retry loop (ADR 0010) applies the same reserve:
- * no `agent.run` retry starts inside the terminal window. */
+ * Exported so the managed runner (ADR 0010) applies the same reserve: setup
+ * and in-flight `agent.run` work are cancelled at its start, and no retry
+ * begins inside the terminal window. */
 export const TERMINAL_RESERVE_MS = 15_000;
 /** Each HTTP attempt times out after at most 10 s, reduced when less time
  * remains before the applicable cutoff. */

@@ -723,6 +723,28 @@ Deno.test("resolveMcpServers returns empty connections and tools for no servers"
   assertEquals(tools, []);
 });
 
+Deno.test("resolveMcpServers does not swallow managed cancellation for optional servers", async () => {
+  const controller = new AbortController();
+  controller.abort(new Error("managed deadline"));
+  await assertRejects(
+    () =>
+      resolveMcpServers(
+        [{
+          name: "optional",
+          transport: {
+            type: "stdio",
+            command: "does-not-run-after-abort",
+            args: [],
+          },
+          optional: true,
+        }],
+        controller.signal,
+      ),
+    Error,
+    "managed deadline",
+  );
+});
+
 Deno.test("resolveMcpServers fail-fast on connection error", async () => {
   const servers: McpServerConfig[] = [{
     name: "bad-server",

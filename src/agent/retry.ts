@@ -31,13 +31,26 @@ export class ProtocolError extends Error {
   }
 }
 
+/** Raised when a managed Turn reaches the start of its terminal-delivery
+ * reserve. It is permanent for the current Turn: retrying with the same
+ * already-aborted signal would only repeat the cancellation and consume time
+ * reserved for `turn.failed`. */
+export class ManagedTurnDeadlineError extends Error {
+  constructor() {
+    super("managed turn execution deadline reached");
+    this.name = "ManagedTurnDeadlineError";
+  }
+}
+
 /** Injectable timing sources for {@link runWithRetries}, mirroring
  * `CallbackDeps` minus `fetch` (model retry performs no HTTP of its own). */
 export interface RetryDeps {
   /** Returns the current time. Used for deadline-cutoff checks. */
   now: () => Date;
-  /** Sleeps for the given milliseconds. Tests inject a recorder. */
-  sleep: (ms: number) => Promise<void>;
+  /** Sleeps for the given milliseconds. When a signal is supplied, production
+   * sleep clears its timer and rejects with the abort reason. Tests may inject
+   * a recorder or deterministic implementation. */
+  sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** Returns a uniform random number in `[0, 1)` for jitter. */
   random: () => number;
 }
@@ -45,7 +58,23 @@ export interface RetryDeps {
 /** Production timing sources. */
 export const productionRetryDeps: RetryDeps = {
   now: () => new Date(),
-  sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  sleep: (ms, signal) => {
+    if (signal?.aborted) {
+      return Promise.reject(retryAbortReason(signal));
+    }
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        reject(retryAbortReason(signal!));
+      };
+      const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  },
   random: () => Math.random(),
 };
 
@@ -80,6 +109,7 @@ const TRANSIENT_RE = new RegExp(
 
 const PERMANENT_RE = new RegExp(
   [
+    "^Agent run exceeded maxModelCalls \\(\\d+\\) without finishing",
     "\\b401\\b",
     "\\b403\\b",
     "unauthorized",
@@ -101,12 +131,17 @@ const PERMANENT_RE = new RegExp(
  * patterns are permanent. Unknown errors classify as transient — attempts
  * are bounded, so a wasted retry is cheaper than an avoidable failure.
  *
- * Two failures are never retried regardless of their text: `CallbackError`
+ * Three failures are never retried regardless of their text: `CallbackError`
  * (a callback *delivery* failure — retrying `run()` would re-drive the
- * callback path) and the managed runner's first-emission protocol failure
- * ({@link ProtocolError} — deterministic, it would repeat). */
+ * callback path), the managed runner's first-emission protocol failure
+ * ({@link ProtocolError}), and its terminal-reserve cancellation
+ * ({@link ManagedTurnDeadlineError}). The exact `@huuma/ai` model-call-cap
+ * error is also permanent so retries cannot multiply the 100-call guard. */
 export function classifyModelError(error: unknown): ModelFailureKind {
-  if (error instanceof CallbackError || error instanceof ProtocolError) {
+  if (
+    error instanceof CallbackError || error instanceof ProtocolError ||
+    error instanceof ManagedTurnDeadlineError
+  ) {
     return "permanent";
   }
   const message = error instanceof Error ? error.message : String(error);
@@ -128,6 +163,10 @@ export interface RetryNotice {
 export interface RetryOptions {
   /** Additional attempts after the initial call. `0` disables retrying. */
   retries: number;
+  /** Cancels the current attempt boundary and any retry backoff sleep. Managed
+   * mode passes its terminal-reserve signal so `turn.failed` can start as soon
+   * as the execution budget ends. */
+  signal?: AbortSignal;
   /** Epoch-ms cutoff: no retry attempt starts at or after it. The managed
    * runner passes `turnDeadline - TERMINAL_RESERVE_MS` so the final 15
    * seconds stay reserved for terminal callback delivery. */
@@ -146,33 +185,81 @@ export interface RetryOptions {
  * permanent failure short-circuits immediately with the original error, and
  * exhaustion rethrows the last error unchanged — the caller's failure paths
  * are identical to an un-retried run. When `cutoffMs` is set, no retry
- * attempt starts at or after the cutoff (checked both before committing to
- * the backoff sleep and after it, since the sleep may consume the reserve). */
+ * attempt starts at or after the cutoff. When `signal` is set, cancellation
+ * interrupts an in-progress backoff so the caller can use its reserved time. */
 export async function runWithRetries<T>(
   fn: () => Promise<T>,
   options: RetryOptions,
   deps: RetryDeps = productionRetryDeps,
 ): Promise<T> {
-  const { retries, cutoffMs, onRetry } = options;
+  const { retries, signal, cutoffMs, onRetry } = options;
   let attempt = 0;
   while (true) {
+    throwIfRetryAborted(signal);
     try {
       return await fn();
     } catch (error) {
+      // Preserve permanent failures before applying cancellation. In
+      // particular, a callback 401/403 must retain its auth-stop semantics even
+      // when the execution deadline fires while that response is in flight.
       if (classifyModelError(error) === "permanent") throw error;
+      throwIfRetryAborted(signal);
       if (attempt >= retries) throw error;
       if (cutoffMs !== undefined && deps.now().getTime() >= cutoffMs) {
         throw error;
       }
       const backoffMs = backoffForAttempt(attempt, deps.random());
       onRetry?.({ attempt: attempt + 1, backoffMs, error });
-      await deps.sleep(backoffMs);
+      await sleepWithSignal(() => deps.sleep(backoffMs, signal), signal);
       if (cutoffMs !== undefined && deps.now().getTime() >= cutoffMs) {
         throw error;
       }
       attempt += 1;
     }
   }
+}
+
+/** The caller's abort reason, with the same fallback used at every retry
+ * boundary and by the production sleep. */
+function retryAbortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("Retry aborted", "AbortError");
+}
+
+/** Rejects with the caller's abort reason at retry boundaries. */
+function throwIfRetryAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw retryAbortReason(signal);
+}
+
+/** Races an injected sleep against cancellation. The underlying sleep may
+ * settle later, but it no longer delays the retry caller or terminal delivery. */
+function sleepWithSignal(
+  sleep: () => Promise<void>,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (signal === undefined) return sleep();
+  if (signal.aborted) {
+    return Promise.reject(retryAbortReason(signal));
+  }
+  const pending = sleep();
+  return new Promise<void>((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    const onAbort = () => {
+      cleanup();
+      reject(retryAbortReason(signal));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    pending.then(
+      () => {
+        cleanup();
+        resolve();
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
 }
 
 /** `min(BACKOFF_CAP_MS, BACKOFF_BASE_MS × 2^attempt)` scaled by the same

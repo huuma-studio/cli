@@ -4,6 +4,7 @@ import {
   BACKOFF_BASE_MS,
   BACKOFF_CAP_MS,
   classifyModelError,
+  ManagedTurnDeadlineError,
   productionRetryDeps,
   ProtocolError,
   runWithRetries,
@@ -70,6 +71,8 @@ const PERMANENT_MESSAGES = [
   "invalid_request_error: the request body is malformed",
   "Invalid request: unknown parameter",
   "missing API key",
+  "Agent run exceeded maxModelCalls (100) without finishing",
+  'Agent run exceeded maxModelCalls (7) without finishing; last tool called: "grep"',
 ];
 
 Deno.test("classifyModelError classifies transient message patterns", () => {
@@ -108,9 +111,13 @@ Deno.test("classifyModelError classifies every CallbackError kind permanent", ()
   }
 });
 
-Deno.test("classifyModelError classifies the first-emission protocol failure permanent", () => {
+Deno.test("classifyModelError classifies managed protocol and deadline failures permanent", () => {
   assertEquals(
     classifyModelError(new ProtocolError("protocol failure: role mismatch")),
+    "permanent",
+  );
+  assertEquals(
+    classifyModelError(new ManagedTurnDeadlineError()),
     "permanent",
   );
 });
@@ -214,11 +221,12 @@ Deno.test("runWithRetries short-circuits a permanent error immediately", async (
   assertEquals(thrown, permanent);
 });
 
-Deno.test("runWithRetries never retries CallbackError or ProtocolError", async () => {
+Deno.test("runWithRetries never retries callback, protocol, or managed deadline errors", async () => {
   for (
     const error of [
       new CallbackError("conflict", "409"),
       new ProtocolError("protocol failure: role mismatch"),
+      new ManagedTurnDeadlineError(),
     ]
   ) {
     const { deps, sleeps } = fakeDeps();
@@ -240,6 +248,81 @@ Deno.test("runWithRetries never retries CallbackError or ProtocolError", async (
     assertEquals(sleeps, []);
     assertEquals(thrown, error);
   }
+});
+
+Deno.test("runWithRetries preserves a permanent callback failure when cancellation races it", async () => {
+  const controller = new AbortController();
+  const deadline = new ManagedTurnDeadlineError();
+  const callbackError = new CallbackError("auth-stop", "401 unauthorized");
+  let calls = 0;
+
+  let thrown: unknown;
+  try {
+    await runWithRetries(
+      () => {
+        calls += 1;
+        controller.abort(deadline);
+        return Promise.reject(callbackError);
+      },
+      { retries: 3, signal: controller.signal },
+      fakeDeps().deps,
+    );
+  } catch (error) {
+    thrown = error;
+  }
+  assertEquals(calls, 1);
+  assertEquals(thrown, callbackError);
+});
+
+Deno.test("runWithRetries aborts an in-flight backoff sleep", async () => {
+  const controller = new AbortController();
+  const reason = new ManagedTurnDeadlineError();
+  let calls = 0;
+  let markSleepStarted: (() => void) | undefined;
+  const sleepStarted = new Promise<void>((resolve) => markSleepStarted = resolve);
+  const deps: RetryDeps = {
+    now: () => new Date(0),
+    random: () => 0,
+    sleep: () => {
+      markSleepStarted?.();
+      return new Promise<void>(() => {});
+    },
+  };
+
+  const pending = runWithRetries(
+    () => {
+      calls += 1;
+      return Promise.reject(new Error("429 retry me"));
+    },
+    { retries: 3, signal: controller.signal },
+    deps,
+  );
+  await sleepStarted;
+  controller.abort(reason);
+
+  let thrown: unknown;
+  try {
+    await pending;
+  } catch (error) {
+    thrown = error;
+  }
+  assertEquals(calls, 1);
+  assertEquals(thrown, reason);
+});
+
+Deno.test("production retry sleep clears its timer when cancelled", async () => {
+  const controller = new AbortController();
+  const reason = new ManagedTurnDeadlineError();
+  const pending = productionRetryDeps.sleep(60_000, controller.signal);
+  controller.abort(reason);
+
+  let thrown: unknown;
+  try {
+    await pending;
+  } catch (error) {
+    thrown = error;
+  }
+  assertEquals(thrown, reason);
 });
 
 Deno.test("runWithRetries caps the backoff at BACKOFF_CAP_MS with jitter", async () => {

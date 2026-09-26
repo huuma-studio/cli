@@ -91,6 +91,8 @@ Deno.test("the agent command returns help for --help without starting a chat", a
   assertStringIncludes(result, "--callback-url");
   assertStringIncludes(result, "--history");
   assertStringIncludes(result, "--turn-deadline");
+  assertStringIncludes(result, "cancelled 15 seconds before");
+  assertStringIncludes(result, "limited to 100 model calls");
 });
 
 Deno.test("the agent help states the skills tools are always enabled", async () => {

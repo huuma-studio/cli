@@ -2,6 +2,7 @@ import { red } from "../terminal.ts";
 import { parseAgentArgs } from "./args.ts";
 import { chat } from "./chat.ts";
 import { reportAgentError } from "./diagnostics.ts";
+import { productionRetryDeps } from "./retry.ts";
 import type { CallbackDeps, ResponseLike } from "./managed/callback.ts";
 import { resolveManagedConfig } from "./managed/config.ts";
 import { runManagedTurn } from "./managed/runner.ts";
@@ -24,7 +25,7 @@ const productionCallbackDeps: CallbackDeps = {
       signal: AbortSignal.timeout(init.timeoutMs),
     }) as Promise<ResponseLike>,
   now: () => new Date(),
-  sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  sleep: productionRetryDeps.sleep,
   random: () => Math.random(),
 };
 
@@ -217,7 +218,11 @@ MANAGED TURN MODE
 
   Passing any of --history, --cwd, --run-id, --turn-id, or --turn-deadline
   without --callback-url is a configuration error, not a local chat with
-  ignored options.
+  ignored options. Managed setup and execution are cancelled 15 seconds before
+  the deadline so turn.failed can still be delivered.
+
+  Every agent run is limited to 100 model calls. Exceeding the limit is a
+  permanent failure and is not retried by --retries.
 
   Credentials:
     HUUMA_AGENT_CALLBACK_SECRET  required, non-empty (env var only — never a
