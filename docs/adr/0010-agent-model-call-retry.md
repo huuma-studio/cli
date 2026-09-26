@@ -69,7 +69,10 @@ unchanged, so every caller's existing failure path (sanitized error display,
 
 All timing flows through injected `now`/`sleep`/`random` sources
 (`RetryDeps`), mirroring `CallbackDeps` minus `fetch`, so tests are fully
-deterministic with fake recorders.
+deterministic with fake recorders. Sleep accepts the optional execution signal:
+the production implementation clears its timer on abort, while the retry loop
+also races injected sleeps so a custom implementation cannot delay terminal
+delivery by ignoring cancellation.
 
 When `cutoffMs` is set, no retry attempt starts at or after it. Managed mode
 also passes the terminal-reserve signal: an in-progress backoff sleep races
@@ -146,8 +149,11 @@ attempt —
   CLI-owned Specs tools forward it to their HTTP requests. Callback delivery
   does not use this signal, so the final window stays available for
   `turn.failed`. No retry starts after the cutoff, an in-progress retry backoff
-  stops promptly when the signal aborts, and cancellation is permanent. Timing
-  and scheduling remain injectable for tests.
+  stops promptly and clears its production timer when the signal aborts, and
+  cancellation is permanent. A permanent error already returned by the attempt
+  takes precedence over simultaneous cancellation—especially callback 401/403,
+  whose auth-stop contract forbids any terminal callback. Timing and scheduling
+  remain injectable for tests.
 
 Studio's whole-Turn `awaiting_retry` re-run (spec #27) remains the outer
 safety net for non-transient and exhausted failures.
@@ -164,8 +170,9 @@ safety net for non-transient and exhausted failures.
   from `parseAgentArgs` via `resolveManagedConfig`.
 - The unknown-flag error, `--help`, and the parser's validation all name
   `--retries`.
-- Tests: classification, deterministic backoff sequencing, and cancellation
-  during backoff in `retry_test.ts`; fake-Assistant retry/resume/exhaustion/notice tests in
+- Tests: classification, deterministic backoff sequencing, permanent-error
+  precedence during cancellation, timer cleanup, and cancellation during
+  backoff in `retry_test.ts`; fake-Assistant retry/resume/exhaustion/notice tests in
   `chat_test.ts`; retry-then-finished, mid-loop resume, exhaustion,
   permanent-failure, and deadline-cutoff tests in `runner_test.ts` (existing
   runner/integration tests pin `retries: 0` so today's no-retry paths stay

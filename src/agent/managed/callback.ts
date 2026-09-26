@@ -53,8 +53,10 @@ export interface CallbackDeps {
   fetch: (url: string, init: CallbackFetchInit) => Promise<ResponseLike>;
   /** Returns the current time. Used for deadline and retry calculations. */
   now: () => Date;
-  /** Sleeps for the given milliseconds. Tests inject a no-op or recorder. */
-  sleep: (ms: number) => Promise<void>;
+  /** Sleeps for the given milliseconds. The optional signal is used by the
+   * managed model-retry loop; callback delivery itself does not pass one.
+   * Tests inject a no-op or recorder. */
+  sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** Returns a uniform random number in `[0, 1)` for jitter. */
   random: () => number;
 }

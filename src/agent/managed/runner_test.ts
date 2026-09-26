@@ -1858,6 +1858,54 @@ Deno.test("managed deadline interrupts retry backoff before terminal delivery", 
   });
 });
 
+Deno.test("callback auth-stop wins when the managed deadline fires in flight", async () => {
+  await withExitCode(async () => {
+    const messageKey = `${TURN_ID}:message.appended:1`;
+    const cb = makeCallbackDeps({
+      byKey: { [messageKey]: [response(401)] },
+    });
+    let triggerDeadline: (() => void) | undefined;
+    let disposeCalls = 0;
+    const fetch = cb.deps.fetch;
+    cb.deps.fetch = (url, init) => {
+      if (init.headers["Idempotency-Key"] === messageKey) {
+        triggerDeadline?.();
+      }
+      return fetch(url, init);
+    };
+
+    const agent = makeFakeAgentFactory({
+      extraEmissions: [modelMessage("deliver me")],
+    });
+    const { config, cleanup } = await makeConfig({ retries: 2 });
+    const errors: string[] = [];
+    try {
+      await runManagedTurn(config, {
+        agentFactory: agent.factory,
+        callbackDeps: cb.deps,
+        scheduleDeadline: (abort) => {
+          triggerDeadline = abort;
+          return () => disposeCalls += 1;
+        },
+        logError: (message) => errors.push(message),
+      });
+
+      assertEquals(Deno.exitCode, 1);
+      assertEquals(agent.runCallCount(), 1);
+      assertEquals(eventKinds(cb.fetchCalls), [
+        "turn.running",
+        "message.appended",
+      ]);
+      assertEquals(terminalKeyCount(cb.fetchCalls), 0);
+      assertEquals(disposeCalls, 1);
+      assertEquals(errors.length, 1);
+      assertEquals(errors[0]?.includes("callback.message_appended"), true);
+    } finally {
+      await cleanup();
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Model-call retry (ADR 0010): transient agent.run failures are retried in
 // place while the callback contract — single terminal, monotonic sequences,

@@ -47,8 +47,10 @@ export class ManagedTurnDeadlineError extends Error {
 export interface RetryDeps {
   /** Returns the current time. Used for deadline-cutoff checks. */
   now: () => Date;
-  /** Sleeps for the given milliseconds. Tests inject a recorder. */
-  sleep: (ms: number) => Promise<void>;
+  /** Sleeps for the given milliseconds. When a signal is supplied, production
+   * sleep clears its timer and rejects with the abort reason. Tests may inject
+   * a recorder or deterministic implementation. */
+  sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   /** Returns a uniform random number in `[0, 1)` for jitter. */
   random: () => number;
 }
@@ -56,7 +58,23 @@ export interface RetryDeps {
 /** Production timing sources. */
 export const productionRetryDeps: RetryDeps = {
   now: () => new Date(),
-  sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  sleep: (ms, signal) => {
+    if (signal?.aborted) {
+      return Promise.reject(retryAbortReason(signal));
+    }
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        reject(retryAbortReason(signal!));
+      };
+      const timer = setTimeout(() => {
+        signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, ms);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  },
   random: () => Math.random(),
 };
 
@@ -181,15 +199,18 @@ export async function runWithRetries<T>(
     try {
       return await fn();
     } catch (error) {
-      throwIfRetryAborted(signal);
+      // Preserve permanent failures before applying cancellation. In
+      // particular, a callback 401/403 must retain its auth-stop semantics even
+      // when the execution deadline fires while that response is in flight.
       if (classifyModelError(error) === "permanent") throw error;
+      throwIfRetryAborted(signal);
       if (attempt >= retries) throw error;
       if (cutoffMs !== undefined && deps.now().getTime() >= cutoffMs) {
         throw error;
       }
       const backoffMs = backoffForAttempt(attempt, deps.random());
       onRetry?.({ attempt: attempt + 1, backoffMs, error });
-      await sleepWithSignal(() => deps.sleep(backoffMs), signal);
+      await sleepWithSignal(() => deps.sleep(backoffMs, signal), signal);
       if (cutoffMs !== undefined && deps.now().getTime() >= cutoffMs) {
         throw error;
       }
@@ -198,10 +219,16 @@ export async function runWithRetries<T>(
   }
 }
 
+/** The caller's abort reason, with the same fallback used at every retry
+ * boundary and by the production sleep. */
+function retryAbortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("Retry aborted", "AbortError");
+}
+
 /** Rejects with the caller's abort reason at retry boundaries. */
 function throwIfRetryAborted(signal: AbortSignal | undefined): void {
   if (!signal?.aborted) return;
-  throw signal.reason ?? new DOMException("Retry aborted", "AbortError");
+  throw retryAbortReason(signal);
 }
 
 /** Races an injected sleep against cancellation. The underlying sleep may
@@ -212,16 +239,14 @@ function sleepWithSignal(
 ): Promise<void> {
   if (signal === undefined) return sleep();
   if (signal.aborted) {
-    return Promise.reject(
-      signal.reason ?? new DOMException("Retry aborted", "AbortError"),
-    );
+    return Promise.reject(retryAbortReason(signal));
   }
   const pending = sleep();
   return new Promise<void>((resolve, reject) => {
     const cleanup = () => signal.removeEventListener("abort", onAbort);
     const onAbort = () => {
       cleanup();
-      reject(signal.reason ?? new DOMException("Retry aborted", "AbortError"));
+      reject(retryAbortReason(signal));
     };
     signal.addEventListener("abort", onAbort, { once: true });
     pending.then(

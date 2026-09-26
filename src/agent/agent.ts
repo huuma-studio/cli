@@ -2,6 +2,7 @@ import { red } from "../terminal.ts";
 import { parseAgentArgs } from "./args.ts";
 import { chat } from "./chat.ts";
 import { reportAgentError } from "./diagnostics.ts";
+import { productionRetryDeps } from "./retry.ts";
 import type { CallbackDeps, ResponseLike } from "./managed/callback.ts";
 import { resolveManagedConfig } from "./managed/config.ts";
 import { runManagedTurn } from "./managed/runner.ts";
@@ -24,7 +25,7 @@ const productionCallbackDeps: CallbackDeps = {
       signal: AbortSignal.timeout(init.timeoutMs),
     }) as Promise<ResponseLike>,
   now: () => new Date(),
-  sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+  sleep: productionRetryDeps.sleep,
   random: () => Math.random(),
 };
 

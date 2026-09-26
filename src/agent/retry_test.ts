@@ -250,6 +250,30 @@ Deno.test("runWithRetries never retries callback, protocol, or managed deadline 
   }
 });
 
+Deno.test("runWithRetries preserves a permanent callback failure when cancellation races it", async () => {
+  const controller = new AbortController();
+  const deadline = new ManagedTurnDeadlineError();
+  const callbackError = new CallbackError("auth-stop", "401 unauthorized");
+  let calls = 0;
+
+  let thrown: unknown;
+  try {
+    await runWithRetries(
+      () => {
+        calls += 1;
+        controller.abort(deadline);
+        return Promise.reject(callbackError);
+      },
+      { retries: 3, signal: controller.signal },
+      fakeDeps().deps,
+    );
+  } catch (error) {
+    thrown = error;
+  }
+  assertEquals(calls, 1);
+  assertEquals(thrown, callbackError);
+});
+
 Deno.test("runWithRetries aborts an in-flight backoff sleep", async () => {
   const controller = new AbortController();
   const reason = new ManagedTurnDeadlineError();
@@ -283,6 +307,21 @@ Deno.test("runWithRetries aborts an in-flight backoff sleep", async () => {
     thrown = error;
   }
   assertEquals(calls, 1);
+  assertEquals(thrown, reason);
+});
+
+Deno.test("production retry sleep clears its timer when cancelled", async () => {
+  const controller = new AbortController();
+  const reason = new ManagedTurnDeadlineError();
+  const pending = productionRetryDeps.sleep(60_000, controller.signal);
+  controller.abort(reason);
+
+  let thrown: unknown;
+  try {
+    await pending;
+  } catch (error) {
+    thrown = error;
+  }
   assertEquals(thrown, reason);
 });
 
