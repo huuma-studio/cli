@@ -218,7 +218,6 @@ within either Turn reuse that Turn's idempotency keys.
 The optional managed-only `--log-url <url>` additionally sends the runner's
 diagnostics to a debug log sink, because a sandboxed runner's stdout and stderr
 are usually discarded. It is **best effort**, and delivery is not guaranteed.
-See [ADR 0012](docs/adr/0012-managed-turn-log-sink.md) for details.
 
 - The URL must be absolute `http(s)` without credentials, a query or a fragment.
   Any other value disables logging and prints one generic line that never echoes
