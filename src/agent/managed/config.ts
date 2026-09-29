@@ -71,6 +71,10 @@ export interface ManagedConfig {
    * `0` disables). The runner bounds retries with the shared backoff
    * constants and never starts one inside the terminal reserve (ADR 0010). */
   retries: number;
+  /** Best-effort diagnostic log sink from `--log-url`, or undefined when the
+   * flag is absent or invalid. Never fails validation (spec 111): an invalid
+   * value only disables logging. See {@link parseLogUrl}. */
+  logUrl: URL | undefined;
   /** SENSITIVE — per-turn callback secret from `$HUUMA_AGENT_CALLBACK_SECRET`.
    * Never log, print, or echo this value, and never include it in an error
    * message. T3 uses it once to set the `Authorization: Bearer` header;
@@ -214,6 +218,7 @@ export function resolveManagedConfig(parsed: ManagedAgentArgs): ManagedConfig {
     mcpConfig: parsed.mcpConfig,
     mcpServers: parsed.mcpServers,
     retries: parsed.retries,
+    logUrl: parseLogUrl(parsed.logUrl),
     callbackSecret,
   };
 }
@@ -231,6 +236,34 @@ function REQUIRED_FLAGS(parsed: ManagedAgentArgs): ReadonlyArray<
     ["--turn-id", parsed.turnId],
     ["--turn-deadline", parsed.turnDeadline],
   ];
+}
+
+/** Parses a `--log-url` value without throwing. Returns the URL only when it
+ * is an absolute http(s) URL without credentials, a query string, or a
+ * fragment; any other value (including undefined) yields undefined, which
+ * disables log shipping. Callers that report the invalid case must never echo
+ * the value. Used both by {@link resolveManagedConfig} and by the entrypoint's
+ * config-error path, before the rest of the managed config is validated. */
+export function parseLogUrl(value: string | undefined): URL | undefined {
+  if (value === undefined) return undefined;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+  // `URL` normalizes a bare `?`/`#` to empty search/hash, so check the raw
+  // value too: any query or fragment marker is rejected.
+  if (url.username || url.password || /[?#]/.test(value)) return undefined;
+  return url;
+}
+
+/** Returns `value` when it is a valid Studio UUID, otherwise undefined. Used to
+ * attach Run/Turn correlation IDs to log entries independently of each other
+ * and of the rest of the managed config. */
+export function optionalUuid(value: string | undefined): string | undefined {
+  return value !== undefined && isUuid(value) ? value : undefined;
 }
 
 /** Validates a Studio UUID (RFC 4122 form). The regex is the simple lowercase

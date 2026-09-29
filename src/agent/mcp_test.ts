@@ -849,3 +849,76 @@ Deno.test("closeMcpConnections logs but does not throw on close failure", async 
     console.warn = warn;
   }
 });
+
+Deno.test("closeMcpConnections reports close failures to the warning hook", async () => {
+  const { warn } = console;
+  const warnings: string[] = [];
+  console.warn = (msg: unknown) => warnings.push(String(msg));
+  try {
+    const hooked: [string, string][] = [];
+    let closed = 0;
+    const fakeConnections = [
+      { close: () => Promise.reject(new Error("close failed")) },
+      {
+        close: () => {
+          closed++;
+          return Promise.resolve();
+        },
+      },
+    ];
+    await closeMcpConnections(
+      fakeConnections as never,
+      (stage, warning) => hooked.push([stage, warning]),
+    );
+    // The console warning is unchanged; the hook sees the same text.
+    assertEquals(warnings, ["MCP connection close failed: close failed"]);
+    assertEquals(hooked, [[
+      "mcp.close",
+      "MCP connection close failed: close failed",
+    ]]);
+    assertEquals(closed, 1);
+
+    // A throwing hook never interrupts cleanup.
+    closed = 0;
+    await closeMcpConnections(fakeConnections as never, () => {
+      throw new Error("hook broken");
+    });
+    assertEquals(closed, 1);
+  } finally {
+    console.warn = warn;
+  }
+});
+
+Deno.test("resolveMcpServers reports skipped optional servers to the warning hook", async () => {
+  const { warn } = console;
+  console.warn = () => {};
+  try {
+    const hooked: [string, string][] = [];
+    const servers: McpServerConfig[] = [{
+      name: "bad-optional",
+      transport: {
+        type: "stdio",
+        command: "nonexistent-command-xyz",
+        args: [],
+      },
+      optional: true,
+    }];
+    const { connections } = await resolveMcpServers(
+      servers,
+      undefined,
+      (stage, warning) => hooked.push([stage, warning]),
+    );
+    assertEquals(connections, []);
+    assertEquals(hooked.length, 1);
+    assertEquals(hooked[0][0], "mcp.connect");
+    assertStringIncludes(hooked[0][1], 'MCP server "bad-optional" (optional)');
+
+    // A throwing hook does not turn the skip into a failure.
+    const again = await resolveMcpServers(servers, undefined, () => {
+      throw new Error("hook broken");
+    });
+    assertEquals(again.connections, []);
+  } finally {
+    console.warn = warn;
+  }
+});

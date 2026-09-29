@@ -59,6 +59,7 @@ function managed(
     runId: "11111111-1111-1111-1111-111111111111",
     turnId: "22222222-2222-2222-2222-222222222222",
     turnDeadline: "2099-01-01T00:00:00Z",
+    logUrl: undefined,
     ...overrides,
   };
 }
@@ -702,12 +703,61 @@ Deno.test("parseAgentArgs mentions the managed flags in the unknown-flag error",
       "--run-id",
       "--turn-id",
       "--turn-deadline",
+      "--log-url",
     ]
   ) {
     assertThrows(
       () => parseAgentArgs(["--bogus"]),
       Error,
       flag,
+    );
+  }
+});
+
+Deno.test("parseAgentArgs reads --log-url in managed mode, both forms, last wins", () => {
+  // The parser keeps the raw value; validation (which only ever disables
+  // logging) happens in the managed config.
+  assertEquals(
+    parseAgentArgs([
+      "--callback-url",
+      "https://x.invalid/cb",
+      "--log-url",
+      "https://logs.example/functions/v1/logs",
+    ]),
+    managed({
+      history: undefined,
+      cwd: undefined,
+      runId: undefined,
+      turnId: undefined,
+      turnDeadline: undefined,
+      model: undefined,
+      callbackUrl: "https://x.invalid/cb",
+      logUrl: "https://logs.example/functions/v1/logs",
+    }),
+  );
+  const result = parseAgentArgs([
+    "--callback-url=https://x.invalid/cb",
+    "--log-url=https://a.example/logs",
+    "--log-url=not a url",
+  ]);
+  assertEquals(result.help === false && result.mode, "managed");
+  assertEquals((result as ManagedAgentArgs).logUrl, "not a url");
+});
+
+Deno.test("parseAgentArgs rejects --log-url without --callback-url", () => {
+  assertThrows(
+    () => parseAgentArgs(["--log-url", "https://logs.example/logs", "hi"]),
+    Error,
+    "--log-url is a managed-turn flag and requires --callback-url",
+  );
+});
+
+Deno.test("parseAgentArgs rejects --log-url without a value", () => {
+  for (const args of [["--log-url"], ["--log-url="], ["--log-url", " "]]) {
+    assertThrows(
+      () => parseAgentArgs(["--callback-url", "https://x.invalid/cb", ...args]),
+      Error,
+      "Missing value for --log-url",
     );
   }
 });

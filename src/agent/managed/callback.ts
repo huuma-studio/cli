@@ -104,7 +104,7 @@ export const TERMINAL_RESERVE_MS = 15_000;
 const MAX_ATTEMPT_TIMEOUT_MS = 10_000;
 /** `turn.failed` error strings are truncated to at most 1024 UTF-8 bytes
  * without splitting a code point. */
-const MAX_ERROR_BYTES = 1024;
+export const MAX_ERROR_BYTES = 1024;
 /** `message.appended` bodies are kept strictly under 10^6 UTF-8 bytes —
  * under 1 MB whether that is counted decimally or as 1 MiB (2^20). The
  * endpoint rejects larger bodies with 413, which the delivery contract

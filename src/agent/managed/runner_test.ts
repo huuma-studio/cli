@@ -21,6 +21,7 @@ import type { CallbackDeps, ResponseLike } from "./callback.ts";
 import type { ManagedConfig } from "./config.ts";
 import type { Assistant } from "../chat.ts";
 import type { SetupResult } from "../setup.ts";
+import type { LogEntry } from "./log_shipper.ts";
 import { type ManagedTurnDeps, runManagedTurn } from "./runner.ts";
 import type {
   ManagedTokenUsage,
@@ -353,6 +354,7 @@ async function makeConfig(
     // Existing tests default to 0, pinning today's no-retry paths; retry
     // tests pass an explicit value (ADR 0010).
     retries: opts.retries ?? 0,
+    logUrl: undefined,
     callbackSecret: opts.callbackSecret ?? CALLBACK_SECRET,
   };
   return {
@@ -2167,4 +2169,194 @@ Deno.test("managed retry: no attempt starts once the terminal reserve is reached
       await cleanup();
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// Diagnostic sink (spec 111, --log-url)
+// ---------------------------------------------------------------------------
+
+/** Runs one managed turn and returns everything observable about it: the
+ * callback events and bodies, the exit code, and the sink entries. */
+async function runObserved(
+  options: {
+    factory?: ManagedTurnDeps["agentFactory"];
+    agentOptions?: FakeAgentOptions;
+    config?: MakeConfigOptions;
+    callbacks?: CallbackDepsOptions;
+    sink?: ManagedTurnDeps["diagnosticSink"] | "record";
+    logError?: (message: string) => void;
+  } = {},
+) {
+  return await withExitCode(async () => {
+    const cb = makeCallbackDeps(options.callbacks);
+    const agent = makeFakeAgentFactory(options.agentOptions);
+    const { config, cleanup } = await makeConfig(options.config);
+    const entries: LogEntry[] = [];
+    const sink = options.sink === "record"
+      ? (entry: LogEntry) => entries.push(entry)
+      : options.sink;
+    try {
+      await runManagedTurn(config, {
+        agentFactory: options.factory ?? agent.factory,
+        callbackDeps: cb.deps,
+        logError: options.logError ?? (() => {}),
+        diagnosticSink: sink,
+      });
+      return {
+        exitCode: Deno.exitCode,
+        events: eventKinds(cb.fetchCalls),
+        bodies: cb.fetchCalls.map((c) => decodeBody(c.body)),
+        sleeps: cb.sleepCalls,
+        runs: agent.runCallCount(),
+        entries,
+      };
+    } finally {
+      await cleanup();
+    }
+  });
+}
+
+const RETRY_EXHAUSTED = {
+  agentOptions: {
+    failFirstRuns: 99,
+    throwError: new Error("503 Service Unavailable token=abc"),
+  },
+  config: { retries: 2 },
+};
+
+Deno.test("diagnostic sink: model retry warnings and the final agent.run error are shipped once each", async () => {
+  const observed = await runObserved({ ...RETRY_EXHAUSTED, sink: "record" });
+  assertEquals(observed.exitCode, 1);
+  assertEquals(
+    observed.entries.map((e) => [e.level, e.stage, e.context]),
+    [
+      ["warn", "agent.run.retry", { attempt: 1 }],
+      ["warn", "agent.run.retry", { attempt: 2 }],
+      ["error", "agent.run", undefined],
+    ],
+  );
+  for (const entry of observed.entries) {
+    assertEquals(entry.scope, "managed");
+    assertEquals(entry.message, "503 Service Unavailable token=[redacted]");
+  }
+});
+
+Deno.test("diagnostic sink: callbacks, retries, and exit codes match the no-logging baseline", async () => {
+  const baseline = await runObserved(RETRY_EXHAUSTED);
+  const recorded = await runObserved({ ...RETRY_EXHAUSTED, sink: "record" });
+  const broken = await runObserved({
+    ...RETRY_EXHAUSTED,
+    sink: () => {
+      throw new Error("sink broken");
+    },
+    logError: () => {
+      throw new Error("console broken");
+    },
+  });
+  for (const observed of [recorded, broken]) {
+    assertEquals(observed.exitCode, baseline.exitCode);
+    assertEquals(observed.events, baseline.events);
+    assertEquals(observed.bodies, baseline.bodies);
+    assertEquals(observed.sleeps, baseline.sleeps);
+    assertEquals(observed.runs, baseline.runs);
+  }
+
+  const success = {
+    agentOptions: {
+      failFirstRuns: 1,
+      throwError: new Error("429 Too Many Requests"),
+      extraEmissions: [finishTurnMessage("completion")],
+    },
+    config: { retries: 2 },
+  };
+  const successBaseline = await runObserved(success);
+  const successBroken = await runObserved({
+    ...success,
+    sink: () => {
+      throw new Error("sink broken");
+    },
+  });
+  assertEquals(successBaseline.exitCode, 0);
+  assertEquals(successBroken.exitCode, 0);
+  assertEquals(successBroken.bodies, successBaseline.bodies);
+});
+
+Deno.test("diagnostic sink: input and setup failures are shipped with their stage", async () => {
+  const input = await runObserved({
+    config: { historyPath: "/nonexistent/history.json" },
+    sink: "record",
+  });
+  assertEquals(input.entries.map((e) => e.stage), ["input"]);
+
+  const setup = await runObserved({
+    factory: () => Promise.reject(new Error("setup blew up")),
+    sink: "record",
+  });
+  assertEquals(setup.entries.map((e) => [e.level, e.stage, e.message]), [
+    ["error", "setup", "setup blew up"],
+  ]);
+});
+
+Deno.test("diagnostic sink: callback failures carry their kind", async () => {
+  const authStop = await runObserved({
+    callbacks: { byKey: { [`${TURN_ID}:turn.running`]: [{ status: 401 }] } },
+    sink: "record",
+  });
+  assertEquals(authStop.exitCode, 1);
+  assertEquals(
+    authStop.entries.map((e) => [e.stage, e.context]),
+    [["callback.turn_running", { callback_kind: "auth-stop" }]],
+  );
+
+  const terminal = await runObserved({
+    agentOptions: { extraEmissions: [finishTurnMessage("completion")] },
+    callbacks: { byKey: { [`${TURN_ID}:terminal`]: [{ status: 409 }] } },
+    sink: "record",
+  });
+  assertEquals(
+    terminal.entries.map((e) => [e.stage, e.context]),
+    [["callback.turn_finished", { callback_kind: "conflict" }]],
+  );
+});
+
+Deno.test("diagnostic sink: MCP connect and close warnings are shipped as warnings", async () => {
+  const agent = makeFakeAgentFactory({
+    extraEmissions: [finishTurnMessage("completion")],
+  });
+  const failingConn = {
+    close: () => Promise.reject(new Error("close failed secret=s1")),
+  };
+  const originalWarn = console.warn;
+  console.warn = () => {};
+  try {
+    const observed = await runObserved({
+      factory: async (cfg, signal, onMcpWarning) => {
+        onMcpWarning?.(
+          "mcp.connect",
+          'MCP server "x" (optional) failed to connect and was skipped: boom',
+        );
+        const result = await agent.factory(cfg, signal);
+        return { ...result, mcpConnections: [failingConn] as never };
+      },
+      sink: "record",
+    });
+    assertEquals(observed.exitCode, 0);
+    assertEquals(
+      observed.entries.map((e) => [e.level, e.stage, e.message]),
+      [
+        [
+          "warn",
+          "mcp.connect",
+          'MCP server "x" (optional) failed to connect and was skipped: boom',
+        ],
+        [
+          "warn",
+          "mcp.close",
+          "MCP connection close failed: close failed secret=[redacted]",
+        ],
+      ],
+    );
+  } finally {
+    console.warn = originalWarn;
+  }
 });

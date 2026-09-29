@@ -87,6 +87,10 @@ export interface ManagedAgentArgs {
   runId: string | undefined;
   turnId: string | undefined;
   turnDeadline: string | undefined;
+  /** Optional best-effort diagnostic log sink from `--log-url`. Unlike the
+   * other managed flags, an invalid value never fails the Turn: the managed
+   * config disables logging instead (spec 111). */
+  logUrl: string | undefined;
 }
 
 /** `--help` / `-h` short-circuits before mode selection. The runner returns
@@ -113,12 +117,12 @@ export type ParsedAgentArgs =
  * {@link ManagedAgentArgs} and a positional prompt is rejected (the
  * triggering user message already exists at the end of `--history`). When
  * `--callback-url` is absent, supplying any other managed-turn-only flag
- * (`--history`, `--cwd`, `--run-id`, `--turn-id`, `--turn-deadline`) is a
- * configuration error rather than a local chat that ignores them. Value
- * validation of the managed flag group — required-together, UUID shape,
- * callback URL, RFC3339 deadline, secret, provider credentials — happens
- * later in `resolveManagedConfig`; this function only parses flag values and
- * selects the mode. */
+ * (`--history`, `--cwd`, `--run-id`, `--turn-id`, `--turn-deadline`,
+ * `--log-url`) is a configuration error rather than a local chat that
+ * ignores them. Value validation of the managed flag group —
+ * required-together, UUID shape, callback URL, RFC3339 deadline, secret,
+ * provider credentials — happens later in `resolveManagedConfig`; this
+ * function only parses flag values and selects the mode. */
 export function parseAgentArgs(args: string[]): ParsedAgentArgs {
   const tools: string[] = [];
   const cliCommands: string[] = [];
@@ -141,6 +145,7 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
   let runId: string | undefined;
   let turnId: string | undefined;
   let turnDeadline: string | undefined;
+  let logUrl: string | undefined;
   let i = 0;
   for (; i < args.length; i++) {
     const arg = args[i];
@@ -309,6 +314,14 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
       turnDeadline = turnDeadlineValue;
       continue;
     }
+    const logUrlValue = valueFlag(
+      "--log-url",
+      "--log-url https://example.supabase.co/functions/v1/logs",
+    );
+    if (logUrlValue !== undefined) {
+      logUrl = logUrlValue;
+      continue;
+    }
     if (arg.startsWith("--")) {
       throw new Error(
         `Unknown flag "${arg}". The agent accepts --model <provider/model>, ` +
@@ -318,7 +331,8 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
           "--specs-api-url <url>, --mcp-config <path>, " +
           "--mcp-server <name=spec>, and the managed-turn flags " +
           "--history <path>, --cwd <dir>, --callback-url <url>, " +
-          "--run-id <uuid>, --turn-id <uuid>, and --turn-deadline <RFC3339>.",
+          "--run-id <uuid>, --turn-id <uuid>, --turn-deadline <RFC3339>, " +
+          "and --log-url <url>.",
       );
     }
     break;
@@ -336,6 +350,7 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
       ["--run-id", runId] as const,
       ["--turn-id", turnId] as const,
       ["--turn-deadline", turnDeadline] as const,
+      ["--log-url", logUrl] as const,
     ].find(([, value]) => value !== undefined);
     if (orphaned !== undefined) {
       const [flag] = orphaned;
@@ -396,6 +411,7 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
     runId,
     turnId,
     turnDeadline,
+    logUrl,
   };
 }
 

@@ -419,6 +419,7 @@ async function pathExists(path: string): Promise<boolean> {
 export async function resolveMcpServers(
   servers: McpServerConfig[],
   signal?: AbortSignal,
+  onWarning?: McpWarningHook,
 ): Promise<ResolvedMcp> {
   const connections: McpConnection[] = [];
   const tools: AgentTools = [];
@@ -432,20 +433,20 @@ export async function resolveMcpServers(
       tools.push(...conn.tools());
     } catch (error) {
       if (signal?.aborted) {
-        await closeMcpConnections(connections);
+        await closeMcpConnections(connections, onWarning);
         throw signal.reason ?? error;
       }
       const message = error instanceof Error ? error.message : String(error);
       if (server.optional) {
-        console.warn(
-          `MCP server "${server.name}" (optional) failed to connect and ` +
-            `was skipped: ${message}`,
-        );
+        const warning = `MCP server "${server.name}" (optional) failed to ` +
+          `connect and was skipped: ${message}`;
+        console.warn(warning);
+        notifyWarning(onWarning, "mcp.connect", warning);
         continue;
       }
       // Fail-fast: close already-open connections before throwing so no
       // resources leak.
-      await closeMcpConnections(connections);
+      await closeMcpConnections(connections, onWarning);
       throw new Error(
         `MCP server "${server.name}" failed to connect: ${message}`,
       );
@@ -472,13 +473,38 @@ function toMcpToolsOptions(
  * logged but never throw. Safe to call on an empty array. */
 export async function closeMcpConnections(
   connections: McpConnection[],
+  onWarning?: McpWarningHook,
 ): Promise<void> {
   for (const conn of connections) {
     try {
       await conn.close();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`MCP connection close failed: ${message}`);
+      const warning = `MCP connection close failed: ${message}`;
+      console.warn(warning);
+      notifyWarning(onWarning, "mcp.close", warning);
     }
+  }
+}
+
+/** Optional structured hook for MCP warnings, in addition to the console
+ * warning. Managed mode routes it to the `--log-url` diagnostic sink, which
+ * sanitizes the text. The stage is static. */
+export type McpWarningHook = (
+  stage: "mcp.connect" | "mcp.close",
+  warning: string,
+) => void;
+
+/** Calls `hook`, swallowing failures so a broken hook never alters MCP
+ * setup or cleanup. */
+function notifyWarning(
+  hook: McpWarningHook | undefined,
+  stage: "mcp.connect" | "mcp.close",
+  warning: string,
+): void {
+  try {
+    hook?.(stage, warning);
+  } catch {
+    // Diagnostics are best-effort.
   }
 }

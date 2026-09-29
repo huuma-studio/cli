@@ -4,6 +4,8 @@ import { withEnv } from "../testing.ts";
 import {
   isUuid,
   MIN_DEADLINE_REMAINING_MS,
+  optionalUuid,
+  parseLogUrl,
   resolveManagedConfig,
 } from "./config.ts";
 
@@ -37,6 +39,7 @@ function validArgs(
     runId: "11111111-1111-1111-1111-111111111111",
     turnId: "22222222-2222-2222-2222-222222222222",
     turnDeadline: future,
+    logUrl: undefined,
     ...overrides,
   };
 }
@@ -600,4 +603,74 @@ Deno.test("resolveManagedConfig surfaces secret before provider-credential error
       );
     },
   );
+});
+
+Deno.test("parseLogUrl accepts absolute http(s) URLs", () => {
+  assertEquals(
+    parseLogUrl("https://project.supabase.co/functions/v1/logs"),
+    new URL("https://project.supabase.co/functions/v1/logs"),
+  );
+  assertEquals(
+    parseLogUrl("http://127.0.0.1:54321/functions/v1/logs"),
+    new URL("http://127.0.0.1:54321/functions/v1/logs"),
+  );
+});
+
+Deno.test("parseLogUrl disables logging for invalid values without throwing", () => {
+  for (
+    const value of [
+      undefined,
+      "not a url",
+      "/relative/logs",
+      "ftp://logs.example/logs",
+      "file:///tmp/logs",
+      "https://user:pass@logs.example/logs",
+      "https://user@logs.example/logs",
+      "https://logs.example/logs?token=abc",
+      "https://logs.example/logs?",
+      "https://logs.example/logs#frag",
+      "https://logs.example/logs#",
+    ]
+  ) {
+    assertEquals(parseLogUrl(value), undefined, String(value));
+  }
+});
+
+Deno.test("resolveManagedConfig threads a valid --log-url and ignores an invalid one", async () => {
+  await withEnv(REQUIRED_ENV, () => {
+    assertEquals(resolveManagedConfig(validArgs()).logUrl, undefined);
+    assertEquals(
+      resolveManagedConfig(
+        validArgs({ logUrl: "https://logs.example/functions/v1/logs" }),
+      ).logUrl,
+      new URL("https://logs.example/functions/v1/logs"),
+    );
+    // An invalid log URL never fails validation — it only disables logging.
+    const config = resolveManagedConfig(
+      validArgs({ logUrl: "https://user:secret@logs.example/?q=1" }),
+    );
+    assertEquals(config.logUrl, undefined);
+  });
+});
+
+Deno.test("resolveManagedConfig keeps its validation order with --log-url present", async () => {
+  await withEnv(REQUIRED_ENV, () => {
+    assertThrows(
+      () =>
+        resolveManagedConfig(
+          validArgs({ history: undefined, logUrl: "not a url" }),
+        ),
+      Error,
+      "--history is required in managed turn mode",
+    );
+  });
+});
+
+Deno.test("optionalUuid keeps valid UUIDs and drops everything else", () => {
+  assertEquals(
+    optionalUuid("11111111-1111-1111-1111-111111111111"),
+    "11111111-1111-1111-1111-111111111111",
+  );
+  assertEquals(optionalUuid("not-a-uuid"), undefined);
+  assertEquals(optionalUuid(undefined), undefined);
 });

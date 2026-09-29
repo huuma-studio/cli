@@ -258,6 +258,7 @@ function managedConfig(
     mcpServers: [],
     // Not read by managedSetup — a placeholder for the type.
     retries: 0,
+    logUrl: undefined,
     callbackSecret: "secret",
   };
 }

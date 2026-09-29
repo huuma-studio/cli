@@ -213,6 +213,34 @@ window available for `turn.failed`. Studio may separately retry a failed
 execution as a new managed Turn with a new `--turn-id`. Callback HTTP retries
 within either Turn reuse that Turn's idempotency keys.
 
+#### Diagnostic log shipping (`--log-url`)
+
+The optional managed-only `--log-url <url>` additionally sends the runner's
+diagnostics to a debug log sink, because a sandboxed runner's stdout and stderr
+are usually discarded. It is **best effort**, and delivery is not guaranteed.
+See [ADR 0012](docs/adr/0012-managed-turn-log-sink.md) for details.
+
+- The URL must be absolute `http(s)` without credentials, a query or a fragment.
+  Any other value disables logging and prints one generic line that never echoes
+  the value. It never fails the Turn. `--log-url` without `--callback-url` is a
+  configuration error, like the other managed-only flags.
+- Covered: managed config errors (stage `config`), every runner error stage,
+  final callback failures, model-retry warnings (`agent.run.retry`), and MCP
+  optional-connect and close warnings (`mcp.connect`, `mcp.close`). Entries
+  carry the Run and Turn IDs when they are valid UUIDs.
+- Not covered: argument-parser errors, Deno bootstrap and dependency failures,
+  crashes or forced termination, and individual callback retry attempts.
+- Each entry is one JSON `POST`. Its message is sanitized and bounded to
+  1,024 UTF-8 bytes, and its context is a typed allowlist. Redaction removes URL
+  credentials, queries and fragments, credential assignments, and the exact
+  values of the CLI's known credential env vars. It is defense in depth: no
+  sanitizer can guarantee that every secret is removed.
+- Sends are fire-and-forget. At most four requests are in flight, and excess
+  entries are dropped. Each request has a 2-second timeout and rejects redirects.
+  There is no queue, retry or flush. Callback events, Turn outcomes and exit
+  codes are unchanged whether logging is enabled, disabled or failing.
+  Process exit may be delayed by at most the 2-second request timeout.
+
 > **Why flags and not env vars?** With `cli` or file tools enabled the agent can
 > edit the files that set env vars (a shell rc, a `.env`), silently steering
 > which model — or whose server — its future runs talk to. Flags live in process

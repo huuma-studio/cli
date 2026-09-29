@@ -1,10 +1,16 @@
+import cliConfig from "../../deno.json" with { type: "json" };
 import { red } from "../terminal.ts";
 import { parseAgentArgs } from "./args.ts";
 import { chat } from "./chat.ts";
-import { reportAgentError } from "./diagnostics.ts";
+import { type DiagnosticSink, reportAgentError } from "./diagnostics.ts";
 import { productionRetryDeps } from "./retry.ts";
 import type { CallbackDeps, ResponseLike } from "./managed/callback.ts";
-import { resolveManagedConfig } from "./managed/config.ts";
+import {
+  optionalUuid,
+  parseLogUrl,
+  resolveManagedConfig,
+} from "./managed/config.ts";
+import { createLogShipper } from "./managed/log_shipper.ts";
 import { runManagedTurn } from "./managed/runner.ts";
 import { productionUsageSampler } from "./managed/usage.ts";
 import { managedSetup, setup } from "./setup.ts";
@@ -32,6 +38,7 @@ const productionCallbackDeps: CallbackDeps = {
 export default async (args: string[] = []): Promise<string> => {
   let diagnosticScope: "agent" | "managed" = "agent";
   let diagnosticStage = "arguments";
+  let diagnosticSink: DiagnosticSink | undefined;
   try {
     // A bad flag (--tools, --model, --cli-commands, ...) is rendered like a
     // turn error, not a crash. --help short-circuits before mode dispatch.
@@ -41,6 +48,14 @@ export default async (args: string[] = []): Promise<string> => {
     if (parsed.mode === "managed") {
       diagnosticScope = "managed";
       diagnosticStage = "config";
+      // Start best-effort log shipping before config validation so config
+      // failures can still be shipped (spec 111). Invalid --log-url values
+      // and invalid correlation IDs only disable logging / omit the ID.
+      diagnosticSink = managedDiagnosticSink(
+        parsed.logUrl,
+        parsed.runId,
+        parsed.turnId,
+      );
       // Managed turn mode: validate the atomic flag group, run one non-
       // interactive turn, and return. Never reads stdin, never falls through
       // to local chat. `resolveManagedConfig` throws on validation errors
@@ -55,6 +70,7 @@ export default async (args: string[] = []): Promise<string> => {
         agentFactory: managedSetup,
         callbackDeps: productionCallbackDeps,
         usageSampler: productionUsageSampler,
+        diagnosticSink,
       });
       return "";
     }
@@ -76,11 +92,43 @@ export default async (args: string[] = []): Promise<string> => {
       diagnosticStage,
       error,
       (message) => console.error(`${red("✖")} ${red(message)}\n`),
+      diagnosticSink,
+      { exit_code: 1 },
     );
     Deno.exitCode = 1;
     return "";
   }
 };
+
+/** Builds the `--log-url` diagnostic sink for managed mode, or undefined when
+ * logging is off. An invalid URL writes one generic line that never echoes
+ * the value. Never throws: logging must not prevent a Turn from running. */
+function managedDiagnosticSink(
+  logUrl: string | undefined,
+  runId: string | undefined,
+  turnId: string | undefined,
+): DiagnosticSink | undefined {
+  try {
+    if (logUrl === undefined) return undefined;
+    const url = parseLogUrl(logUrl);
+    if (url === undefined) {
+      console.error(
+        "--log-url is not a valid http(s) URL without credentials, query, " +
+          "or fragment; diagnostic log shipping is disabled.",
+      );
+      return undefined;
+    }
+    const shipper = createLogShipper({
+      url,
+      runId: optionalUuid(runId),
+      turnId: optionalUuid(turnId),
+      sourceVersion: cliConfig.version,
+    });
+    return (entry) => shipper.send(entry);
+  } catch {
+    return undefined;
+  }
+}
 
 /** Usage text shown for `huuma agent --help`. The tool list is derived from
  * {@link allToolNames} so it can't drift from what `--tools` accepts. */
@@ -216,8 +264,14 @@ MANAGED TURN MODE
                               15 seconds must remain when the turn starts
     --model <provider/model>  provider and model (managed mode never prompts)
 
-  Passing any of --history, --cwd, --run-id, --turn-id, or --turn-deadline
-  without --callback-url is a configuration error, not a local chat with
+  Optional:
+    --log-url <url>           best-effort diagnostic log sink (http or https,
+                              no credentials, query, or fragment). Sanitized
+                              diagnostics are POSTed fire-and-forget; an
+                              invalid value only disables logging
+
+  Passing any of --history, --cwd, --run-id, --turn-id, --turn-deadline, or
+  --log-url without --callback-url is a configuration error, not a local chat with
   ignored options. Managed setup and execution are cancelled 15 seconds before
   the deadline so turn.failed can still be delivered.
 
