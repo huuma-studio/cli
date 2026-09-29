@@ -128,6 +128,11 @@ huuma agent "What is the capital of France?"
 Run `huuma agent --help` for a quick reference of the options and environment
 variables described below.
 
+A model call that has not completed after **10 minutes** is aborted, whatever
+the provider (Google, Mistral, and Ollama apply no timeout of their own). A
+timed-out call counts as a transient failure, so it is retried like a rate
+limit or a `5xx` according to `--retries` (default 2).
+
 ### Providers
 
 On first run the agent asks which model provider to use and prompts for whatever
@@ -203,7 +208,8 @@ secrets and raw provider payloads are never sent or printed. Transient model
 failures may be retried within the same Turn according to `--retries`; emitted
 message sequences remain monotonic across attempts. Every agent run is bounded
 to 100 model calls. Reaching that guard is a permanent failure for the Turn and
-is never retried, so retries cannot multiply the loop or cost bound.
+is never retried, so retries cannot multiply the loop or cost bound. Each model
+call is bounded to 10 minutes; a timed-out call is transient and may be retried.
 
 At `--turn-deadline` minus the 15-second terminal reserve, the runner cancels
 setup, retry backoff, or the in-flight agent run. The cancellation signal reaches provider

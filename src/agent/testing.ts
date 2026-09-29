@@ -1,4 +1,5 @@
 /** Test-only helpers shared by the agent module's `_test.ts` files. */
+import type { BaseModel, ModelResult } from "@huuma/ai/agent";
 
 /** Runs `fn` with terminal output suppressed so the REPL chrome
  * ("Thinking...", colors, error lines) stays out of the test report. */
@@ -38,4 +39,38 @@ export async function withEnv(
       else Deno.env.set(key, value);
     }
   }
+}
+
+/** A model whose `generate` never responds — like a provider that accepted
+ * the connection but stalled — and only settles by rejecting with its
+ * signal's reason. Records every signal it receives so tests can assert the
+ * deadline reached the adapter. */
+export class HangingModel implements BaseModel<string> {
+  signals: (AbortSignal | undefined)[] = [];
+
+  generate(args: unknown): Promise<ModelResult<string>> {
+    const { signal } = args as { signal?: AbortSignal };
+    this.signals.push(signal);
+    return new Promise((_, reject) => {
+      if (signal?.aborted) reject(signal.reason);
+      signal?.addEventListener("abort", () => reject(signal.reason), {
+        once: true,
+      });
+    });
+  }
+
+  stream(): Promise<AsyncGenerator<ModelResult>> {
+    return Promise.reject(new Error("Not implemented"));
+  }
+}
+
+/** Tracks whether `promise` has settled, without letting a rejection go
+ * unhandled while a test advances fake time. */
+export function track<T>(
+  promise: Promise<T>,
+): { settled: () => boolean; result: Promise<T> } {
+  let settled = false;
+  const result = promise.finally(() => settled = true);
+  result.catch(() => {});
+  return { settled: () => settled, result };
 }
