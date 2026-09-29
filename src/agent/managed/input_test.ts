@@ -28,6 +28,7 @@ function configWithHistory(historyPath: string): ManagedConfig {
     mcpConfig: undefined,
     mcpServers: [],
     retries: 0,
+    logUrl: undefined,
     callbackSecret: "secret",
   };
 }

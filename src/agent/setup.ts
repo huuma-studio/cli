@@ -16,6 +16,7 @@ import { resolveSubagents, resolveTools, skillsTool } from "./tools.ts";
 import {
   closeMcpConnections,
   type McpConnection,
+  type McpWarningHook,
   resolveMcpConfig,
   resolveMcpServers,
 } from "./mcp.ts";
@@ -333,6 +334,7 @@ export function buildManagedAgent<T extends string>(
 export async function managedSetup(
   config: ManagedConfig,
   signal?: AbortSignal,
+  onMcpWarning?: McpWarningHook,
 ): Promise<SetupResult> {
   signal?.throwIfAborted();
   // Enter the workspace before tool setup so the default `.agents/skills`
@@ -347,7 +349,7 @@ export async function managedSetup(
     ? await resolveMcpConfig(config.mcpConfig, config.mcpServers ?? [])
     : [];
   const { connections: mcpConnections, tools: mcpTools } =
-    await resolveMcpServers(mcpServerConfigs, signal);
+    await resolveMcpServers(mcpServerConfigs, signal, onMcpWarning);
 
   // Resolve tools and the always-on skills baseline first so a bad tool name
   // or config fails before any provider credential is read. Same fail-early
@@ -436,7 +438,7 @@ export async function managedSetup(
         "one of: anthropic, openai, google, mistral, zai, ollama.",
     );
   } catch (error) {
-    await closeMcpConnections(mcpConnections);
+    await closeMcpConnections(mcpConnections, onMcpWarning);
     throw error;
   }
 }

@@ -70,9 +70,13 @@ import type {
 } from "@huuma/ai/agent";
 import type { McpConnection } from "@huuma/ai/tools";
 import type { Assistant } from "../chat.ts";
-import { reportAgentError } from "../diagnostics.ts";
+import {
+  type DiagnosticSink,
+  emitDiagnostic,
+  reportAgentError,
+} from "../diagnostics.ts";
 import type { SetupResult } from "../setup.ts";
-import { closeMcpConnections } from "../mcp.ts";
+import { closeMcpConnections, type McpWarningHook } from "../mcp.ts";
 import {
   type CallbackDeps,
   CallbackError,
@@ -97,10 +101,12 @@ export interface ManagedTurnDeps {
    * the runner calls `loadManagedInput` before this factory so a relative
    * `--history` path resolves against the CLI invocation cwd. Returns a
    * {@link SetupResult} so the runner can close MCP connections after the
-   * turn. */
+   * turn. `onMcpWarning` receives optional-connect and close warnings for the
+   * diagnostic sink. */
   agentFactory: (
     config: ManagedConfig,
     signal: AbortSignal,
+    onMcpWarning?: McpWarningHook,
   ) => Promise<SetupResult>;
   /** Injectable callback deps (fetch/now/sleep/random) for deterministic
    * delivery behavior. T6 injects production deps; T7 injects fakes. */
@@ -115,6 +121,11 @@ export interface ManagedTurnDeps {
   /** Error sink for sanitized managed-mode diagnostics. Defaults to
    * `console.error`; injectable so tests and embedders can capture output. */
   logError?: (message: string) => void;
+  /** Optional structured sink (the `--log-url` shipper). Receives every
+   * runner error stage once, plus MCP and model-retry warnings, with
+   * log-specific sanitization. Guarded: a throwing sink never alters the
+   * Turn. */
+  diagnosticSink?: DiagnosticSink;
 }
 
 /** Runs one managed turn: load input → build agent → turn.running →
@@ -140,8 +151,13 @@ export async function runManagedTurn(
       deadlineDelayMs,
     );
   }
+  const sink = deps.diagnosticSink;
   const reportError = (stage: string, error: unknown): string =>
-    reportAgentError("managed", stage, error, logError);
+    reportAgentError("managed", stage, error, logError, sink);
+  const onMcpWarning: McpWarningHook | undefined = sink === undefined
+    ? undefined
+    : (stage, warning) =>
+      emitDiagnostic(sink, "warn", "managed", stage, warning);
   // The deadline signal is passed through setup (including MCP connection
   // and listing) and every agent.run attempt. Callback delivery deliberately
   // uses its own deadline handling so turn.failed retains the final reserve.
@@ -228,6 +244,7 @@ export async function runManagedTurn(
       const result = await deps.agentFactory(
         config,
         deadlineController.signal,
+        onMcpWarning,
       );
       assistant = result.assistant;
       mcpConnections = result.mcpConnections;
@@ -342,6 +359,19 @@ export async function runManagedTurn(
           retries: config.retries,
           signal: deadlineController.signal,
           cutoffMs: config.turnDeadline.getTime() - TERMINAL_RESERVE_MS,
+          onRetry: sink === undefined
+            ? undefined
+            : ({ attempt, error }) =>
+              emitDiagnostic(
+                sink,
+                "warn",
+                "managed",
+                "agent.run.retry",
+                error,
+                {
+                  attempt,
+                },
+              ),
         },
         retryDeps,
       );
@@ -417,7 +447,7 @@ export async function runManagedTurn(
     // all early returns. `closeMcpConnections` is best-effort: individual
     // `close()` failures are logged but never throw, so cleanup never
     // interferes with the already-decided exit code or terminal callback.
-    await closeMcpConnections(mcpConnections);
+    await closeMcpConnections(mcpConnections, onMcpWarning);
   }
 }
 

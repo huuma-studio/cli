@@ -157,6 +157,7 @@ async function config(
       // Legacy integration tests pin no-retry semantics; retry behavior has
       // dedicated tests in `runner_test.ts` (ADR 0010).
       retries: 0,
+      logUrl: undefined,
     },
     cleanup: async () => {
       if (!opts.missingHistory) await Deno.remove(historyPath);
