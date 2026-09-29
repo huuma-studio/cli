@@ -155,7 +155,9 @@ OPTIONS
   --retries <n>             Additional model-call attempts after the initial
                             one when it fails transiently (rate limits, 5xx,
                             network blips); default 2, max 10, --retries 0
-                            disables. Available in local and managed turn mode
+                            disables. Available in local and managed turn mode.
+                            Each model call times out after 10 minutes; a
+                            timeout is retried like any transient failure
   --skills-path <dir>       Directory the skills tools scan (default:
                             .agents/skills); skills are always enabled
   --specs-permissions <list> Granted specs-tool permissions (comma-separated
