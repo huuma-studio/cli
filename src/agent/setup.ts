@@ -10,6 +10,7 @@ import type { ModelSelection } from "./args.ts";
 import type { Assistant } from "./chat.ts";
 import { envValue } from "./env.ts";
 import type { ManagedConfig } from "./managed/config.ts";
+import { MAX_MODEL_CALLS } from "./max_model_calls.ts";
 import { MODEL_TIMEOUT_MS } from "./model_timeout.ts";
 import { createSpecsAttemptScope, type SpecsAttemptScope } from "./specs.ts";
 import type { SubagentContext } from "./subagents/mod.ts";
@@ -156,6 +157,7 @@ export async function setup(options: SetupOptions = {}): Promise<SetupResult> {
           ...tools,
           ...resolveSubagents(subagentNames, ctx),
         ],
+        maxModelCalls: MAX_MODEL_CALLS,
         modelTimeout: MODEL_TIMEOUT_MS,
       }),
       mcpConnections,
@@ -308,6 +310,7 @@ export function buildManagedAgent<T extends string>(
       ...resolveSubagents(options.subagentNames, ctx),
     ],
     finishTurn: true,
+    maxModelCalls: MAX_MODEL_CALLS,
     modelTimeout: MODEL_TIMEOUT_MS,
   });
 }
