@@ -10,6 +10,7 @@ import { tool } from "@huuma/ai/tools";
 import { object } from "@huuma/validate";
 import { MAX_MODEL_CALLS } from "./max_model_calls.ts";
 import {
+  buildLocalAgent,
   buildManagedAgent,
   managedSetup,
   ollamaApiKey,
@@ -381,6 +382,28 @@ Deno.test("buildManagedAgent caps the run at MAX_MODEL_CALLS model calls", async
   // Run turn (spec 116 — the library's 100-call default stopped large tasks).
   const model = new LoopingToolCallModel();
   const assistant = buildManagedAgent(
+    { model, modelId: "stub" },
+    {
+      tools: [noop],
+      skillsBaseline: [],
+      subagentNames: [],
+      systemPrompt: "x",
+    },
+  );
+  await assertRejects(
+    () => assistant.run("hi", []),
+    Error,
+    `maxModelCalls (${MAX_MODEL_CALLS})`,
+  );
+  assertEquals(model.calls, MAX_MODEL_CALLS);
+});
+
+Deno.test("buildLocalAgent caps the run at MAX_MODEL_CALLS model calls", async () => {
+  // The local chat build tail sets the cap independently of the managed
+  // one, so it gets its own guard: a script that keeps requesting tools must
+  // hit the CLI's MAX_MODEL_CALLS cap, not the library's 100-call default.
+  const model = new LoopingToolCallModel();
+  const assistant = buildLocalAgent(
     { model, modelId: "stub" },
     {
       tools: [noop],

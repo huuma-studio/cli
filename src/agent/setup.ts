@@ -148,17 +148,11 @@ export async function setup(options: SetupOptions = {}): Promise<SetupResult> {
     // same model the parent agent is built with (ADR 0005). Skills go first so a
     // model that lists tools sees discovery before actions.
     const build = <T extends string>(ctx: SubagentContext<T>): SetupResult => ({
-      assistant: agent({
-        model: ctx.model,
-        modelId: ctx.modelId,
+      assistant: buildLocalAgent(ctx, {
+        tools,
+        skillsBaseline,
+        subagentNames,
         systemPrompt: resolvedSystemPrompt,
-        tools: [
-          ...skillsBaseline,
-          ...tools,
-          ...resolveSubagents(subagentNames, ctx),
-        ],
-        maxModelCalls: MAX_MODEL_CALLS,
-        modelTimeout: MODEL_TIMEOUT_MS,
       }),
       mcpConnections,
     });
@@ -277,28 +271,51 @@ export function ollamaApiKey(): string | undefined {
   return envValue("HUUMA_AGENT_API_KEY");
 }
 
-/** Inputs to {@link buildManagedAgent}: the eager action tools, preset
- * sub-agent names (construction is deferred until the provider model exists),
- * the always-on skills baseline, and the resolved system prompt. Mirrors the
- * local {@link setup} build tail, but with `finishTurn: true` so the built-in
- * `finish_turn` control tool is registered (T1 / PLAN, "Execution flow"
- * step 3). Exported so tests can verify the `finishTurn` invariant with a
- * fake model, without constructing a real provider adapter. */
-export interface ManagedAgentBuildOptions {
+/** Inputs to the build tails: the eager action tools, preset sub-agent names
+ * (construction is deferred until the provider model exists), the always-on
+ * skills baseline, and the resolved system prompt. Exported so tests can
+ * verify build invariants — the `finishTurn: true` registration and the
+ * `maxModelCalls` cap — with a fake model, without constructing a real
+ * provider adapter. */
+export interface AgentBuildOptions {
   tools: ReturnType<typeof resolveTools>["tools"];
   skillsBaseline: ReturnType<typeof resolveTools>["tools"];
   subagentNames: string[];
   systemPrompt: string;
 }
 
+/** Builds the local-chat Agent from a resolved provider model and the shared
+ * tool/skills/sub-agent composition. Identical to the managed
+ * {@link buildManagedAgent} build tail except the built-in `finish_turn`
+ * control tool is NOT registered: a local chat ends when the model stops
+ * calling tools. Exported so tests can verify this build's `maxModelCalls`
+ * cap with a fake model, without constructing a real provider adapter. */
+export function buildLocalAgent<T extends string>(
+  ctx: SubagentContext<T>,
+  options: AgentBuildOptions,
+): Assistant {
+  return agent({
+    model: ctx.model,
+    modelId: ctx.modelId,
+    systemPrompt: options.systemPrompt,
+    tools: [
+      ...options.skillsBaseline,
+      ...options.tools,
+      ...resolveSubagents(options.subagentNames, ctx),
+    ],
+    maxModelCalls: MAX_MODEL_CALLS,
+    modelTimeout: MODEL_TIMEOUT_MS,
+  });
+}
+
 /** Builds the managed-turn Agent from a resolved provider model and the
  * shared tool/skills/sub-agent composition. Identical to the local
- * {@link setup} build tail except for `finishTurn: true`: the managed runner
- * never registers a custom `finish_turn` tool — the built-in one is the only
- * outcome channel (PLAN, "Non-goals"). */
+ * {@link buildLocalAgent} build tail except for `finishTurn: true`: the
+ * managed runner never registers a custom `finish_turn` tool — the built-in
+ * one is the only outcome channel (PLAN, "Non-goals"). */
 export function buildManagedAgent<T extends string>(
   ctx: SubagentContext<T>,
-  options: ManagedAgentBuildOptions,
+  options: AgentBuildOptions,
 ): Assistant {
   return agent({
     model: ctx.model,
