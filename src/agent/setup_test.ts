@@ -1,7 +1,16 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
-import type { BaseModel, Message, ModelResult } from "@huuma/ai/agent";
+import type {
+  BaseModel,
+  JSONSchema,
+  Message,
+  ModelResult,
+} from "@huuma/ai/agent";
+import { tool } from "@huuma/ai/tools";
+import { object } from "@huuma/validate";
+import { MAX_MODEL_CALLS } from "./max_model_calls.ts";
 import {
+  buildLocalAgent,
   buildManagedAgent,
   managedSetup,
   ollamaApiKey,
@@ -216,6 +225,43 @@ function modelReply(text: string): Message {
   return { role: "model", contents: [{ text }], toolCalls: [] };
 }
 
+/** Tool that the looping scripted model keeps requesting so the run never
+ * finishes on its own and the maxModelCalls cap rejects it. */
+const noop = tool({
+  name: "noop",
+  description: "Does nothing.",
+  input: object({}),
+  fn: () => "ok",
+});
+
+/** A model that answers every call with a `noop` tool call, driving the agent
+ * loop until the cap rejects. Used to prove the CLI's maxModelCalls contract
+ * behaviorally. */
+class LoopingToolCallModel implements BaseModel<string> {
+  calls = 0;
+
+  generate(_args: unknown): Promise<ModelResult<string>> {
+    this.calls += 1;
+    const toolCall = {
+      id: "call-loop",
+      name: "noop",
+      props: {} as unknown as JSONSchema,
+    };
+    return Promise.resolve({
+      modelId: "stub",
+      messages: [{
+        role: "model",
+        contents: [{ toolCall }],
+        toolCalls: [toolCall],
+      }],
+    });
+  }
+
+  stream(): Promise<AsyncGenerator<ModelResult>> {
+    return Promise.reject(new Error("Not implemented"));
+  }
+}
+
 /** Builds a {@link ManagedConfig} with the given overrides. Only the fields
  * `managedSetup` actually reads are surfaced; the rest are valid-shaped
  * placeholders so the object satisfies the type. */
@@ -327,9 +373,58 @@ Deno.test("managedSetup sets finishTurn: true (the built-in finish_turn tool is 
   assertEquals(toolNames, ["finish_turn"]);
 });
 
+Deno.test("buildManagedAgent caps the run at MAX_MODEL_CALLS model calls", async () => {
+  // Like the `finishTurn` invariant above, the cap is proven behaviorally:
+  // the option is not visible on the agent, so a model that keeps requesting
+  // tools must drive the loop until @huuma/ai rejects with the maxModelCalls
+  // error after exactly MAX_MODEL_CALLS model calls. Studio's managed runner
+  // passes no run-level maxModelCalls, so this is the effective cap for every
+  // Run turn (spec 116 — the library's 100-call default stopped large tasks).
+  const model = new LoopingToolCallModel();
+  const assistant = buildManagedAgent(
+    { model, modelId: "stub" },
+    {
+      tools: [noop],
+      skillsBaseline: [],
+      subagentNames: [],
+      systemPrompt: "x",
+    },
+  );
+  await assertRejects(
+    () => assistant.run("hi", []),
+    Error,
+    `maxModelCalls (${MAX_MODEL_CALLS})`,
+  );
+  assertEquals(model.calls, MAX_MODEL_CALLS);
+});
+
+Deno.test("buildLocalAgent caps the run at MAX_MODEL_CALLS model calls", async () => {
+  // The local chat build tail sets the cap independently of the managed
+  // one, so it gets its own guard: a script that keeps requesting tools must
+  // hit the CLI's MAX_MODEL_CALLS cap, not the library's 100-call default.
+  const model = new LoopingToolCallModel();
+  const assistant = buildLocalAgent(
+    { model, modelId: "stub" },
+    {
+      tools: [noop],
+      skillsBaseline: [],
+      subagentNames: [],
+      systemPrompt: "x",
+    },
+  );
+  await assertRejects(
+    () => assistant.run("hi", []),
+    Error,
+    `maxModelCalls (${MAX_MODEL_CALLS})`,
+  );
+  assertEquals(model.calls, MAX_MODEL_CALLS);
+});
+
 Deno.test("managedSetup rejects --host for non-ollama providers", async () => {
   await withEnv({ HUUMA_AGENT_API_KEY: "key" }, async () => {
-    for (const provider of ["anthropic", "openai", "google", "mistral", "zai"]) {
+    for (
+      const provider of ["anthropic", "openai", "google", "mistral", "zai"]
+    ) {
       const originalCwd = Deno.cwd();
       const dir = await Deno.makeTempDir();
       try {

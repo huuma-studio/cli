@@ -1,5 +1,6 @@
 import { agent } from "@huuma/ai/agent";
 import { grep, readFile, subagent } from "@huuma/ai/tools";
+import { MAX_MODEL_CALLS } from "../max_model_calls.ts";
 import { MODEL_TIMEOUT_MS } from "../model_timeout.ts";
 import {
   type AgentTools,
@@ -33,6 +34,7 @@ export function explorer<T extends string>(
       systemPrompt: EXPLORER_SYSTEM_PROMPT,
       tools: [readFile(), grep()],
       onMessage: announceDelegation("explorer"),
+      maxModelCalls: MAX_MODEL_CALLS,
       modelTimeout: MODEL_TIMEOUT_MS,
     }),
   });

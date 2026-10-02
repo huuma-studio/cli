@@ -136,7 +136,8 @@ const PERMANENT_RE = new RegExp(
  * callback path), the managed runner's first-emission protocol failure
  * ({@link ProtocolError}), and its terminal-reserve cancellation
  * ({@link ManagedTurnDeadlineError}). The exact `@huuma/ai` model-call-cap
- * error is also permanent so retries cannot multiply the 100-call guard. */
+ * error is also permanent so retries cannot multiply the maxModelCalls
+ * guard. */
 export function classifyModelError(error: unknown): ModelFailureKind {
   if (
     error instanceof CallbackError || error instanceof ProtocolError ||
