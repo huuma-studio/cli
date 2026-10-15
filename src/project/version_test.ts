@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import { latest, latestUI03 } from "./version.ts";
+import { latest, latestNpm, latestUI03 } from "./version.ts";
 
 const metadata =
   (versions: Record<string, { yanked: boolean }>): typeof fetch => () =>
@@ -151,6 +151,59 @@ Deno.test("route skips a yanked latest and falls back when no supported version 
         () => Promise.resolve(Response.json({ latest: "0.3.2", versions })),
       ),
       "0.3.1",
+    );
+  }
+});
+
+Deno.test("npm resolver selects the newest stable, non-deprecated release in the fallback's major", async () => {
+  let request: Request | undefined;
+  const fetcher: typeof fetch = (input, init) => {
+    request = new Request(input, init);
+    return Promise.resolve(Response.json({
+      "dist-tags": { latest: "2.0.0" },
+      versions: {
+        "1.1.0": {},
+        "1.2.0": {},
+        "1.10.0": {},
+        "1.11.0": { deprecated: "broken release" },
+        "1.12.0-beta.1": {},
+        "0.1.21-alpha.7": {},
+        "2.0.0": {},
+        "not a version": {},
+      },
+    }));
+  };
+  assertEquals(await latestNpm("vite-plus", "1.2.0", fetcher), "1.10.0");
+  assertEquals(request?.url, "https://registry.npmjs.org/vite-plus");
+  assertEquals(
+    request?.headers.get("Accept"),
+    "application/vnd.npm.install-v1+json",
+  );
+});
+
+Deno.test("npm resolver falls back for offline, HTTP errors, malformed and unsupported metadata", async () => {
+  const fallback = (fetcher: typeof fetch) =>
+    latestNpm("vite-plus", "1.2.0", fetcher);
+  assertEquals(
+    await fallback(() => Promise.reject(new Error("offline"))),
+    "1.2.0",
+  );
+  assertEquals(
+    await fallback(() => Promise.resolve(new Response("{}", { status: 503 }))),
+    "1.2.0",
+  );
+  assertEquals(
+    await fallback(() => Promise.resolve(new Response("invalid JSON"))),
+    "1.2.0",
+  );
+  for (
+    const body of [null, {}, { versions: [] }, { versions: null }, {
+      versions: { "1.1.0": {}, "2.0.0": {}, "1.3.0": { deprecated: "no" } },
+    }]
+  ) {
+    assertEquals(
+      await fallback(() => Promise.resolve(Response.json(body))),
+      "1.2.0",
     );
   }
 });

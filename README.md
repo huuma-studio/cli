@@ -56,8 +56,10 @@ The CLI will prompt you for:
 
 #### Website
 
-Creates a Huuma UI 0.3 application with Vite 8, an interactive counter island,
-and a Node.js 24+ production server:
+Creates a Huuma UI 0.3 application on [Vite+](https://viteplus.dev) (Vite,
+Oxlint, Oxfmt and type checking in one `vite-plus` dev dependency), an
+interactive counter island, editor settings for the Oxc language server, and a
+Node.js 24.11+ production server:
 
 ```
 your-project-name/
@@ -67,10 +69,14 @@ your-project-name/
 │   ├── counter.client.tsx
 │   └── root.tsx
 ├── src/
+├── .vscode/
+│   ├── extensions.json
+│   └── settings.json
+├── .zed/
+│   └── settings.json
 ├── server.ts
 ├── vite.config.ts
 ├── tsconfig.json
-├── .oxlintrc.json
 ├── .gitignore
 └── package.json
 ```
@@ -79,9 +85,25 @@ your-project-name/
 - `app/` - Pages, the HTML document, and the counter island
 - `src/` - Application source code, available through the `@/` alias
 - `server.ts` - Creates the application with `createUIApp(Root)`
-- `vite.config.ts` - Configures the `@huuma/ui/vite` plugin
+- `vite.config.ts` - Imports `defineConfig` from `vite-plus`, configures the
+  `@huuma/ui/vite` plugin, and holds the `lint` (Huuma's remote, hook and
+  island rules, plus type-aware checks) and `fmt` settings
 - `tsconfig.json` - TypeScript and Huuma JSX configuration
-- `.oxlintrc.json` - Oxlint configuration for Huuma's remote, hook and island rules
+- `.vscode/` - Recommends the Vite+ extension pack and formats and fixes on
+  save with the Oxc extension
+- `.zed/settings.json` - Runs the `oxlint` and `oxfmt` language servers and
+  formats on save; install Zed's **Oxc** extension (Zed 0.205+)
+
+Both editors start the language servers through the project's `vite-plus`, so
+they read the same `vite.config.ts` as `vp check`. These files match what
+`vp create` writes.
+
+`vite` itself is aliased to `@voidzero-dev/vite-plus-core` at the same exact
+version as `vite-plus`. The CLI pins the newest stable `vite-plus` 1.x and
+falls back to `1.2.0` if npm cannot be reached. The alias is applied through
+`pnpm-workspace.yaml` with pnpm, `resolutions` with Yarn, and `overrides` with
+npm and Bun. To upgrade later, run `vp migrate` or update both versions
+together.
 
 Choose **pnpm 10.9+** (recommended), **npm**, **Yarn 4.9+**, or **Bun** at the
 package-manager prompt, or set `--package-manager`. Without a terminal, pnpm
@@ -103,7 +125,8 @@ commands. If installation fails, the files stay in place, the exit code is 1,
 and the CLI prints the manual install command.
 
 The previous editor flags (`--zed`, `--no-zed`, `--vscode`, `--no-vscode`) have
-been removed. New projects have no Deno entry points or editor settings.
+been removed. New projects have no Deno entry points and always include the
+VS Code and Zed settings above.
 Existing UI 0.2 projects are unchanged; see the
 [UI migration guide](https://github.com/huuma-studio/ui/tree/next#migrating-from-the-deno-setup)
 to migrate one manually. The CLI itself still runs on Deno.
@@ -111,8 +134,10 @@ to migrate one manually. The CLI itself still runs on Deno.
 The scaffolder also asks whether to **add Tailwind CSS**. If you opt in, it adds
 the Tailwind v4 CLI and `concurrently` to `package.json` and creates
 `src/styles.css` (`@import "tailwindcss";`). The dev script first compiles
-`public/styles.css`, then watches it alongside Vite; the build script compiles
-it before `vite build`. The document links `/styles.css` in both environments.
+`public/styles.css`, then watches it alongside `vp dev`; the build script
+compiles it before `vp build`. The document links `/styles.css` in both
+environments. The generated `public/styles.css` is git-ignored, which also
+keeps it out of `vp check`.
 Use `--tailwind` or `--no-tailwind` to skip this prompt.
 With pnpm and Tailwind, `pnpm-workspace.yaml` permits the build script of
 `@parcel/watcher`, the Tailwind CLI's native watcher dependency.
@@ -141,16 +166,21 @@ pnpm build
 
 # Start the production server
 pnpm start
+
+# Format, lint (including Huuma's rules) and type check
+pnpm check
 ```
 
 With npm or Bun use `npm run dev` / `bun run dev` (and `run build`, `run start`);
-with Yarn use `yarn dev`, `yarn build`, and `yarn start`. The `lint` script runs
-Oxlint. The production entry is `node dist/server/server.js`; set `HOST` and
+with Yarn use `yarn dev`, `yarn build`, and `yarn start`. `lint` and `fmt`
+run `vp lint` and `vp fmt` on their own; `vp check --fix` applies formatting
+and safe lint fixes. A global `vp` install is optional; the scripts use the
+project-local one. The production entry is `node dist/server/server.js`; set `HOST` and
 `PORT` to choose its interface and port.
 
 To run the CLI's network-gated scaffold integration tests, which install the
-published dependencies with both pnpm and npm and verify the development and
-production servers (including Tailwind):
+published dependencies with both pnpm and npm, run `vp check`, and verify the
+development and production servers (including Tailwind):
 
 ```bash
 HUUMA_SCAFFOLD_E2E=1 deno test -A src/project/types/website_e2e_test.ts
