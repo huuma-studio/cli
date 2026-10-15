@@ -3,9 +3,11 @@ import { join } from "@std/path";
 import website, {
   type BundleFn,
   installBundleForWebsite,
+  json,
   PACKAGE_MANAGERS,
   packageContent,
   resolvePackageManager,
+  resolveVersions,
   rootTsContent,
   type WebsiteDeps,
   type WebsiteOptions,
@@ -14,10 +16,14 @@ import { BundleValidationError } from "../../skills/bundle.ts";
 
 const fetchMetadata: typeof fetch = (input) =>
   Promise.resolve(Response.json(
-    String(input).includes("/ui/")
+    String(input).includes("registry.npmjs.org")
+      ? { versions: { "1.2.0": {}, "1.3.0": {}, "2.0.0": {} } }
+      : String(input).includes("/ui/")
       ? { latest: "0.2.11", versions: { "0.3.0-beta.2": { yanked: false } } }
       : { latest: "0.3.1" },
   ));
+
+const core = "npm:@voidzero-dev/vite-plus-core@1.3.0";
 
 async function scaffold(
   options: WebsiteOptions,
@@ -64,18 +70,23 @@ async function paths(dir: string, prefix = ""): Promise<string[]> {
   return result.sort();
 }
 
-Deno.test("website writes the Vite 0.3 scaffold, aliases, lint rules and island", async () => {
+Deno.test("website writes the Vite+ 0.3 scaffold, aliases, lint rules and island", async () => {
   await scaffold({}, async (dir) => {
     assertEquals(
       await paths(dir),
       [
         ".gitignore",
-        ".oxlintrc.json",
+        ".vscode/",
+        ".vscode/extensions.json",
+        ".vscode/settings.json",
+        ".zed/",
+        ".zed/settings.json",
         "app/",
         "app/counter.client.tsx",
         "app/page.tsx",
         "app/root.tsx",
         "package.json",
+        "pnpm-workspace.yaml",
         "public/",
         "server.ts",
         "src/",
@@ -86,30 +97,40 @@ Deno.test("website writes the Vite 0.3 scaffold, aliases, lint rules and island"
     const read = (name: string) => Deno.readTextFile(join(dir, name));
     const pkg = JSON.parse(await read("package.json"));
     assertEquals(pkg.type, "module");
-    assertEquals(pkg.engines.node, ">=24");
+    assertEquals(pkg.engines.node, "^24.11.0 || >=26.0.0");
     assertEquals(pkg.dependencies["@huuma/ui"], "jsr:^0.3.0-beta.2");
     assertEquals(pkg.dependencies["@huuma/route"], "jsr:^0.3.1");
     assertEquals(pkg.scripts, {
-      dev: "vite",
-      build: "vite build",
+      dev: "vp dev",
+      build: "vp build",
       start: "node dist/server/server.js",
-      lint: "oxlint",
+      check: "vp check",
+      lint: "vp lint",
+      fmt: "vp fmt",
     });
-    assertEquals(pkg.devDependencies.vite, "^8");
-    assertEquals(pkg.devDependencies["@types/node"], "^24");
+    assertEquals(pkg.devDependencies, {
+      "@types/node": "^24",
+      vite: core,
+      "vite-plus": "1.3.0",
+    });
     const config = await read("vite.config.ts");
+    assertStringIncludes(config, 'import { defineConfig } from "vite-plus";');
     assertStringIncludes(config, "plugins: [huuma()]");
     assertStringIncludes(
       config,
       'fileURLToPath(new URL("./src", import.meta.url))',
     );
-    assertEquals(
-      JSON.parse(await read("tsconfig.json")).compilerOptions.paths,
-      { "@/*": ["./src/*"] },
-    );
-    const lint = JSON.parse(await read(".oxlintrc.json"));
-    assertEquals(lint.jsPlugins, ["@huuma/ui/lint"]);
-    assertEquals(Object.values(lint.rules), ["error", "error", "error"]);
+    const tsconfig = JSON.parse(await read("tsconfig.json"));
+    assertEquals(tsconfig.compilerOptions.paths, { "@/*": ["./src/*"] });
+    assertEquals(tsconfig.compilerOptions.types, ["vite/client", "node"]);
+    assertStringIncludes(config, 'jsPlugins: ["@huuma/ui/lint", {');
+    for (
+      const rule of [
+        "async-remote-functions",
+        "no-async-hook-calling",
+        "no-async-client-jsx",
+      ]
+    ) assertStringIncludes(config, `"huuma/${rule}": "error"`);
     assertStringIncludes(
       await read("server.ts"),
       "export default createUIApp(Root)",
@@ -122,6 +143,62 @@ Deno.test("website writes the Vite 0.3 scaffold, aliases, lint rules and island"
     assertEquals(await read(".gitignore"), "node_modules/\ndist/\n");
     assertEquals(Deno.exitCode, 0);
   });
+});
+
+Deno.test("website configures the Oxc language server for VS Code and Zed", async () => {
+  await scaffold({}, async (dir) => {
+    const read = async (name: string) =>
+      JSON.parse(await Deno.readTextFile(join(dir, name)));
+    assertEquals(await read(".vscode/extensions.json"), {
+      recommendations: ["VoidZero.vite-plus-extension-pack"],
+    });
+    const vscode = await read(".vscode/settings.json");
+    assertEquals(vscode["npm.scriptRunner"], "vp");
+    assertEquals(vscode["editor.defaultFormatter"], "oxc.oxc-vscode");
+    assertEquals(vscode["[typescriptreact]"], {
+      "editor.defaultFormatter": "oxc.oxc-vscode",
+    });
+    assertEquals(vscode["editor.codeActionsOnSave"], {
+      "source.fixAll.oxc": "explicit",
+    });
+    const zed = await read(".zed/settings.json");
+    assertEquals(
+      zed.lsp.oxfmt.initialization_options.settings["fmt.configPath"],
+      "./vite.config.ts",
+    );
+    assertEquals(
+      zed.lsp.oxlint.initialization_options.settings.typeAware,
+      true,
+    );
+    assertEquals(zed.languages.TSX, {
+      format_on_save: "on",
+      prettier: { allowed: false },
+      formatter: [{ language_server: { name: "oxfmt" } }],
+    });
+    assertEquals(zed.languages.JavaScript.formatter[1], {
+      code_action: "source.fixAll.oxc",
+    });
+  });
+});
+
+Deno.test("json collapses primitive arrays only when they fit oxfmt's width", () => {
+  const long = Array.from({ length: 12 }, (_, i) => `entry-${i}`);
+  assertEquals(
+    json({ short: ["a", 1, true], long, nested: [{ a: 1 }], empty: [] }),
+    `{
+  "short": ["a", 1, true],
+  "long": [
+${long.map((item) => `    "${item}"`).join(",\n")}
+  ],
+  "nested": [
+    {
+      "a": 1
+    }
+  ],
+  "empty": []
+}
+`,
+  );
 });
 
 for (const pm of PACKAGE_MANAGERS) {
@@ -140,6 +217,22 @@ for (const pm of PACKAGE_MANAGERS) {
         native ? "jsr:^0.3.1" : "npm:@jsr/huuma__route@^0.3.1",
       );
       assertEquals((await paths(dir)).includes(".npmrc"), !native);
+      assertEquals(
+        (await paths(dir)).includes("pnpm-workspace.yaml"),
+        pm === "pnpm",
+      );
+      // Every package manager must resolve transitive `vite` to the Vite+ core.
+      if (pm === "pnpm") {
+        assertStringIncludes(
+          await Deno.readTextFile(join(dir, "pnpm-workspace.yaml")),
+          `overrides:\n  vite: ${core}\n`,
+        );
+      }
+      assertEquals(pkg.resolutions, pm === "yarn" ? { vite: core } : undefined);
+      assertEquals(
+        pkg.overrides,
+        pm === "npm" || pm === "bun" ? { vite: core } : undefined,
+      );
       if (!native) {
         assertEquals(
           await Deno.readTextFile(join(dir, ".npmrc")),
@@ -198,9 +291,14 @@ Deno.test("Tailwind adds the entry, watch/build scripts and stylesheet link", as
       pkg.scripts["dev:css"],
       "-o public/styles.css --watch",
     );
+    assertStringIncludes(pkg.scripts.dev, '"vp dev"');
     assertStringIncludes(
       pkg.scripts.build,
-      "-o public/styles.css && vite build",
+      "-o public/styles.css && vp build",
+    );
+    assertEquals(
+      await Deno.readTextFile(join(dir, ".gitignore")),
+      "node_modules/\ndist/\npublic/styles.css\n",
     );
     assertEquals(
       await Deno.readTextFile(join(dir, "src/styles.css")),
@@ -211,7 +309,7 @@ Deno.test("Tailwind adds the entry, watch/build scripts and stylesheet link", as
       '<link rel="stylesheet" href="/styles.css" />',
     );
     assertEquals((await paths(dir)).includes("static/"), false);
-    assertEquals(
+    assertStringIncludes(
       await Deno.readTextFile(join(dir, "pnpm-workspace.yaml")),
       'allowBuilds:\n  "@parcel/watcher": true\n',
     );
@@ -219,7 +317,11 @@ Deno.test("Tailwind adds the entry, watch/build scripts and stylesheet link", as
 });
 
 Deno.test("Tailwind off omits all its dependencies, styles and scripts", async () => {
-  const pkg = await packageContent(false, "pnpm", fetchMetadata);
+  const pkg = packageContent(
+    false,
+    "pnpm",
+    await resolveVersions(fetchMetadata),
+  );
   assertEquals(pkg.includes("tailwind"), false);
   assertEquals(pkg.includes("concurrently"), false);
   assertEquals(pkg.includes("dev:css"), false);

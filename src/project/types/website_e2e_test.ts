@@ -188,6 +188,19 @@ for (
           "--no-skills",
         ]);
         assertEquals(Deno.exitCode, 0, "dependency installation must succeed");
+        // A fresh project passes Vite+ formatting, Huuma lint rules and type
+        // checking before the dev server rewrites vite.config.ts below.
+        const check = await new Deno.Command(pm, {
+          args: ["run", "check"],
+          cwd: dir,
+          stdout: "piped",
+          stderr: "piped",
+        }).output();
+        assert(
+          check.success,
+          new TextDecoder().decode(check.stderr) +
+            new TextDecoder().decode(check.stdout),
+        );
         await server(dir, false, tailwind, pm);
         const build = await new Deno.Command(pm, {
           args: ["run", "build"],

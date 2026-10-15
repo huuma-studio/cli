@@ -150,9 +150,13 @@ Deno.test("project scaffolds non-interactively with flags", async () => {
       "tailwindcss -i src/styles.css -o public/styles.css --watch",
     );
 
-    // --no-skills and no --zed/--vscode: these dirs should not exist
-    assert(!await dirExists(join(tmpDir, "my-app", ".zed")));
-    assert(!await dirExists(join(tmpDir, "my-app", ".vscode")));
+    // Editor settings for the Oxc language server need no flags.
+    assert(await fileExists(join(tmpDir, "my-app", ".zed", "settings.json")));
+    assert(
+      await fileExists(join(tmpDir, "my-app", ".vscode", "settings.json")),
+    );
+    // --no-skills: no skills directory
+    assert(!await dirExists(join(tmpDir, "my-app", ".agents")));
   } finally {
     Deno.chdir(originalCwd);
     Deno.exitCode = originalExitCode;

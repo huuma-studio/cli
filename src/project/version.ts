@@ -57,6 +57,53 @@ export async function latest(
   }
 }
 
+/** Latest stable, non-deprecated npm release within the fallback's major line.
+ * Vite+ requires `vite` aliased to its core at the exact same version, so new
+ * projects pin one resolved version rather than a range. */
+export async function latestNpm(
+  name: string,
+  fallback: string,
+  fetcher: typeof fetch = fetch,
+): Promise<string> {
+  try {
+    const response = await fetcher(`https://registry.npmjs.org/${name}`, {
+      headers: { Accept: "application/vnd.npm.install-v1+json" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      return fallback;
+    }
+    const metadata = await response.json();
+    if (
+      !metadata || typeof metadata.versions !== "object" ||
+      metadata.versions === null || Array.isArray(metadata.versions)
+    ) return fallback;
+    const minimum = parse(fallback);
+    const versions = Object.entries(metadata.versions).flatMap(
+      ([version, info]) => {
+        if (
+          !info || typeof info !== "object" || Array.isArray(info) ||
+          (info as { deprecated?: unknown }).deprecated
+        ) return [];
+        try {
+          const semver = parse(version);
+          return semver.major === minimum.major && !semver.prerelease?.length &&
+              compare(semver, minimum) >= 0
+            ? [{ version, semver }]
+            : [];
+        } catch {
+          return [];
+        }
+      },
+    );
+    versions.sort((a, b) => compare(b.semver, a.semver));
+    return versions[0]?.version ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 /** JSR's `latest` excludes prereleases. New projects need the newest usable
  * UI 0.3 release even while `latest` still points at the Deno-based 0.2 line. */
 export async function latestUI03(
