@@ -20,14 +20,38 @@ export async function latest(
       await response.body?.cancel();
       return fallback;
     }
-    const version = jsrMetaSchema.parse(await response.json()).latest;
-    const candidate = parse(version);
+    const metadata = await response.json();
+    const version = jsrMetaSchema.parse(metadata).latest;
     const minimum = parse(fallback);
-    return candidate.major === minimum.major &&
-        candidate.minor === minimum.minor &&
-        !candidate.prerelease?.length && compare(candidate, minimum) >= 0
-      ? version
-      : fallback;
+    // Registry latest may already target the next breaking minor. Select the
+    // newest supported release from versions, also respecting yanked records.
+    // If a registry omits the index, validate its advertised latest release.
+    if (
+      metadata.versions !== undefined &&
+      (!metadata.versions || typeof metadata.versions !== "object" ||
+        Array.isArray(metadata.versions))
+    ) return fallback;
+    const entries = metadata.versions === undefined
+      ? [[version, {}]] as [string, unknown][]
+      : Object.entries(metadata.versions);
+    const versions = entries.flatMap(([version, info]) => {
+      if (
+        !info || typeof info !== "object" || Array.isArray(info) ||
+        (info as { yanked?: unknown }).yanked === true
+      ) return [];
+      try {
+        const candidate = parse(version);
+        return candidate.major === minimum.major &&
+            candidate.minor === minimum.minor &&
+            !candidate.prerelease?.length && compare(candidate, minimum) >= 0
+          ? [{ version, semver: candidate }]
+          : [];
+      } catch {
+        return [];
+      }
+    });
+    versions.sort((a, b) => compare(b.semver, a.semver));
+    return versions[0]?.version ?? fallback;
   } catch {
     return fallback;
   }

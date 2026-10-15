@@ -113,16 +113,26 @@ async function server(
       assertEquals(css.status, 200, text);
       assertStringIncludes(text, ".text-3xl");
       if (!production) {
+        assertEquals(text.includes(".text-red-500"), false);
+        const page = join(cwd, "app/page.tsx");
+        const original = await Deno.readTextFile(page);
+        const edited = original.replace(
+          "text-3xl font-bold",
+          "text-3xl font-bold text-red-500",
+        );
+        assert(
+          edited !== original,
+          "the page edit must introduce a new Tailwind class",
+        );
         await Deno.writeTextFile(
-          join(cwd, "src/styles.css"),
-          "\n.watch-probe { --huuma-watch-probe: 139; }\n",
-          { append: true },
+          page,
+          edited,
         );
         let rebuilt = false;
         for (let attempt = 0; attempt < 100; attempt++) {
           const response = await fetch(url + "/styles.css");
           const updated = await response.text();
-          if (response.ok && updated.includes("--huuma-watch-probe")) {
+          if (response.ok && updated.includes(".text-red-500")) {
             rebuilt = true;
             break;
           }
@@ -130,7 +140,7 @@ async function server(
         }
         assert(
           rebuilt,
-          "generated dev script must rebuild edited CSS without a production build",
+          "generated dev script must rebuild CSS for an edited Tailwind class without a production build",
         );
       }
     }

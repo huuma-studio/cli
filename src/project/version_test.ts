@@ -118,3 +118,39 @@ Deno.test("route latest stays in 0.3 at or above 0.3.1 and rejects malformed rel
     );
   }
 });
+
+Deno.test("route selects the newest supported non-yanked stable release when latest is 0.4", async () => {
+  const fetcher: typeof fetch = () =>
+    Promise.resolve(Response.json({
+      latest: "0.4.0",
+      versions: {
+        "0.2.11": { yanked: false },
+        "0.3.0": { yanked: false },
+        "0.3.1": { createdAt: "2026-10-13T16:06:55Z" },
+        "0.3.2": { yanked: false },
+        "0.3.9": { yanked: false },
+        "0.3.10": { yanked: true },
+        "0.3.11-beta.1": { yanked: false },
+        "0.4.0": { yanked: false },
+      },
+    }));
+  assertEquals(await latest("@huuma/route", "0.3.1", fetcher), "0.3.9");
+});
+
+Deno.test("route skips a yanked latest and falls back when no supported version exists", async () => {
+  for (
+    const versions of [
+      { "0.3.2": { yanked: true }, "0.3.1": { yanked: false } },
+      { "0.4.0": { yanked: false } },
+    ]
+  ) {
+    assertEquals(
+      await latest(
+        "@huuma/route",
+        "0.3.1",
+        () => Promise.resolve(Response.json({ latest: "0.3.2", versions })),
+      ),
+      "0.3.1",
+    );
+  }
+});
