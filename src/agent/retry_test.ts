@@ -30,11 +30,6 @@ function fakeDeps(
   return { deps, sleeps, clock: () => clockMs };
 }
 
-/** A transient-looking provider error. */
-function transientError(): Error {
-  return new Error("429 Too Many Requests");
-}
-
 // ---------------------------------------------------------------------------
 // classifyModelError — the classification table (ADR 0010)
 // ---------------------------------------------------------------------------

@@ -131,10 +131,10 @@ export function parseAgentArgs(args: string[]): ParsedAgentArgs {
   let host: string | undefined;
   let searchEngine: string | undefined;
   let skillsPath: string | undefined;
-  let specsPermissions: string[] = [];
+  const specsPermissions: string[] = [];
   let specsApiUrl: string | undefined;
   let mcpConfig: string | undefined;
-  let mcpServers: string[] = [];
+  const mcpServers: string[] = [];
   // Additional model-call attempts on transient failure (ADR 0010). Default 2,
   // at most 10; --retries 0 disables. Validated as a non-negative integer at
   // parse time.

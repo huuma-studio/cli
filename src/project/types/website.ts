@@ -1,8 +1,8 @@
 import { join } from "@std/path";
 import { create as createFile } from "../file.ts";
 import { create as createDir } from "../directory.ts";
-import { latest } from "../version.ts";
-import { confirm } from "../../input.ts";
+import { latest, latestUI03 } from "../version.ts";
+import { choose, confirm } from "../../input.ts";
 import { green, red, yellow } from "../../terminal.ts";
 import { parsePath } from "../../skills/path.ts";
 import {
@@ -12,60 +12,47 @@ import {
   installBundle,
 } from "../../skills/bundle.ts";
 
-const modules = ["@huuma/route", "@huuma/ui"] as const;
-
-export async function denoConfigContent(tailwind: boolean): Promise<string> {
-  const routeVersion = await latest(modules[0], "^0.2");
-  const uiVersion = await latest(modules[1], "^0.2");
-
-  // Tailwind needs its own deps (the `tailwindcss()` helper lives in
-  // `@huuma/theme`) and `nodeModulesDir: "auto"` so `@tailwindcss/cli` can
-  // resolve `@import "tailwindcss"` from a materialized `node_modules`.
-  const tailwindImports = tailwind
-    ? `
-    "@huuma/theme": "jsr:@huuma/theme@^${await latest("@huuma/theme", "^0.2")}",
-    "tailwindcss": "npm:tailwindcss@^4",
-    "@tailwindcss/cli": "npm:@tailwindcss/cli@^4",`
-    : "";
-  const nodeModulesDir = tailwind
-    ? `
-  "nodeModulesDir": "auto",`
-    : "";
-
-  return `{
-  "imports": {
-    "${modules[0]}": "jsr:${modules[0]}@^${routeVersion}",
-    "${modules[1]}": "jsr:${modules[1]}@^${uiVersion}",${tailwindImports}
-    "@/": "./src/",
-    "@app/": "./app/",
-    "@manifest/": "./.huuma/"
-  },${nodeModulesDir}
-  "lint": {
-    "plugins": ["jsr:@huuma/ui/lint"]
-  },
-  "compilerOptions": {
-    "jsx": "precompile",
-    "jsxImportSource": "@huuma/ui",
-    "lib": ["dom", "dom.iterable", "dom.asynciterable", "deno.ns"]
-  },
-  "tasks": {
-    "dev": "deno -ERWN --allow-run --watch dev.ts",
-    "bundle": "deno -ERWN --allow-run dev.ts --bundle",
-    "start": "deno -ERN app.ts"
-  }
-}`;
-}
+export const PACKAGE_MANAGERS = ["pnpm", "npm", "yarn", "bun"] as const;
+export type PackageManager = typeof PACKAGE_MANAGERS[number];
 
 export interface WebsiteOptions {
-  zed?: boolean;
-  vscode?: boolean;
   tailwind?: boolean;
   skills?: boolean;
+  packageManager?: PackageManager;
+  install?: boolean;
 }
 
-/** Resolves a boolean option: if explicitly set, use it directly; if
- * undefined, fall back to the interactive `confirm` prompt in a terminal,
- * or `false` when stdin is not a terminal (non-interactive/agent context). */
+export type InstallFn = (
+  packageManager: PackageManager,
+  cwd: string,
+) => Promise<{ success: boolean; code: number }>;
+
+export interface WebsiteDeps {
+  fetch?: typeof fetch;
+  install?: InstallFn;
+}
+
+/** Explicit flags bypass prompts; piped/agent invocations default to pnpm. */
+export async function resolvePackageManager(
+  value?: PackageManager,
+  isTerminal = Deno.stdin.isTerminal(),
+  select = choose,
+): Promise<PackageManager> {
+  if (value) return value;
+  if (!isTerminal) return "pnpm";
+  return await select(
+    PACKAGE_MANAGERS.map((label) => ({
+      label,
+      description: label === "pnpm"
+        ? "Recommended (10.9+)"
+        : label === "yarn"
+        ? "Requires Yarn 4.9+"
+        : undefined,
+    })),
+    "Select a package manager:",
+  ) as PackageManager;
+}
+
 async function resolveOption(
   value: boolean | undefined,
   prompt: string,
@@ -75,49 +62,110 @@ async function resolveOption(
   return await confirm(prompt);
 }
 
-export default async (projectName: string, options?: WebsiteOptions) => {
-  const addZedSettings = await resolveOption(
-    options?.zed,
-    "Add .zed/settings.json for Deno?",
-  );
-  const addVscodeSettings = await resolveOption(
-    options?.vscode,
-    "Add .vscode/settings.json for Deno?",
-  );
+export async function packageContent(
+  tailwind: boolean,
+  packageManager: PackageManager,
+  fetcher: typeof fetch = fetch,
+): Promise<string> {
+  const [routeVersion, uiVersion] = await Promise.all([
+    latest("@huuma/route", "0.3.1", fetcher),
+    latestUI03(fetcher),
+  ]);
+  const dependency = (name: string, version: string) =>
+    packageManager === "pnpm" || packageManager === "yarn"
+      ? `jsr:^${version}`
+      : `npm:@jsr/huuma__${name}@^${version}`;
+  const css = "tailwindcss -i src/styles.css -o public/styles.css";
+  return JSON.stringify(
+    {
+      private: true,
+      type: "module",
+      engines: { node: ">=24" },
+      scripts: {
+        dev: tailwind
+          ? `${css} && concurrently -k "${css} --watch" "vite"`
+          : "vite",
+        ...(tailwind ? { "dev:css": `${css} --watch` } : {}),
+        build: tailwind ? `${css} && vite build` : "vite build",
+        start: "node dist/server/server.js",
+        lint: "oxlint",
+      },
+      dependencies: {
+        "@huuma/ui": dependency("ui", uiVersion),
+        "@huuma/route": dependency("route", routeVersion),
+      },
+      devDependencies: {
+        vite: "^8",
+        oxlint: "^1",
+        ...(tailwind
+          ? {
+            tailwindcss: "^4",
+            "@tailwindcss/cli": "^4",
+            concurrently: "^9",
+          }
+          : {}),
+      },
+    },
+    null,
+    2,
+  ) + "\n";
+}
+
+const install: InstallFn = (packageManager, cwd) =>
+  new Deno.Command(packageManager, {
+    args: ["install"],
+    cwd,
+    stdin: "inherit",
+    stdout: "inherit",
+    stderr: "inherit",
+  }).output();
+
+export default async (
+  projectName: string,
+  options: WebsiteOptions = {},
+  deps: WebsiteDeps = {},
+) => {
+  const packageManager = await resolvePackageManager(options.packageManager);
   const addTailwind = await resolveOption(
-    options?.tailwind,
+    options.tailwind,
     "Add Tailwind CSS?",
   );
 
-  await createDir(join(projectName, "src"));
-  await createDir(join(projectName, "static"));
-  await createDir(join(projectName, "app"));
-  await denoConfig(projectName, addTailwind);
-  await rootTs(projectName, addTailwind);
-  await appTs(projectName, addTailwind);
-  await indexPage(projectName);
-
-  if (addTailwind) {
-    await tailwindStyles(projectName);
+  for (const dir of ["src", "public", "app"]) {
+    await createDir(join(projectName, dir));
+  }
+  const files: Record<string, string> = {
+    "package.json": await packageContent(
+      addTailwind,
+      packageManager,
+      deps.fetch,
+    ),
+    "vite.config.ts": viteConfigContent,
+    "server.ts": serverContent,
+    "tsconfig.json": tsConfigContent,
+    ".oxlintrc.json": lintConfigContent,
+    ".gitignore": "node_modules/\ndist/\n",
+    "app/root.tsx": rootTsContent(addTailwind),
+    "app/page.tsx": indexPageContent,
+    "app/counter.client.tsx": counterContent,
+  };
+  if (packageManager === "npm" || packageManager === "bun") {
+    files[".npmrc"] = "@jsr:registry=https://npm.jsr.io\n";
+  }
+  if (addTailwind) files["src/styles.css"] = '@import "tailwindcss";\n';
+  if (addTailwind && packageManager === "pnpm") {
+    // pnpm 11+ fails installation for unreviewed dependency builds. Tailwind
+    // uses Parcel's native watcher; allow that package rather than all scripts.
+    files["pnpm-workspace.yaml"] = 'allowBuilds:\n  "@parcel/watcher": true\n';
+  }
+  for (const [path, content] of Object.entries(files)) {
+    await createFile(join(projectName, path), content);
   }
 
-  if (addZedSettings) {
-    await zedSettings(projectName);
-  }
-
-  if (addVscodeSettings) {
-    await vscodeSettings(projectName);
-  }
-
-  const addSkillsBundle = await resolveOption(
-    options?.skills,
-    "Add skills bundle from @huuma/ui?",
-  );
-  if (addSkillsBundle) {
+  if (
+    await resolveOption(options.skills, "Add skills bundle from @huuma/ui?")
+  ) {
     const outcome = await installBundleForWebsite(projectName);
-    // Skip the empty/installed messaging when the bundle failed — the helper
-    // already printed a red `✖` for the failure. Only the success path owns
-    // the yellow "no skills found" / green "installed" messaging.
     if (!outcome.failed) {
       if (outcome.members.length === 0) {
         console.log(
@@ -138,39 +186,50 @@ export default async (projectName: string, options?: WebsiteOptions) => {
     }
   }
 
+  let installed = false;
+  if (options.install) {
+    try {
+      const result = await (deps.install ?? install)(
+        packageManager,
+        projectName,
+      );
+      if (!result.success) throw new Error(`exit code ${result.code}`);
+      installed = true;
+    } catch (cause) {
+      console.error(
+        red(
+          `✖ Dependency installation failed: ${
+            cause instanceof Error ? cause.message : String(cause)
+          }`,
+        ),
+      );
+      Deno.exitCode = 1;
+    }
+  }
+  const run = packageManager === "pnpm" || packageManager === "yarn"
+    ? ""
+    : "run ";
+  const quotedName = "'" + projectName.replaceAll("'", "'\\''") + "'";
+  console.log(`\nNext steps:\n  cd ${quotedName}`);
+  if (!installed) console.log(`  ${packageManager} install`);
+  console.log(`  ${packageManager} ${run}dev`);
+
   return "Website application created!";
 };
 
-/** Seam type for `installBundleForWebsite`'s optional bundle injection. Mirrors
- * `installBundle`'s signature so tests can stub the network-bound call. */
 export type BundleFn = (opts: BundleOptions) => Promise<BundleResult>;
 
-/** Outcome of a website bundle install. `failed` distinguishes a genuine empty
- * source (`members: []`, `failed: false`) from an install failure
- * (`members: []`, `failed: true`) so the caller doesn't print a misleading
- * "No skills found" message after a network error. */
 export interface WebsiteBundleOutcome {
   members: BundleResult["members"];
   failed: boolean;
 }
 
-/** Installs the @huuma/ui skill bundle into the scaffolded project. The bundle
- * is non-fatal: on any failure (network, validation, atomicity abort) the
- * helper logs a red error, sets `Deno.exitCode = 1`, and returns
- * `{ members: [], failed: true }` — the scaffold itself still succeeds. Skills
- * are an enhancement, not a project requirement (see the ADR's "Failure
- * severity" section). On success returns `{ members, failed: false }`.
- *
- * The optional `bundle` seam is for unit-testing (inject a stub that returns a
- * fixed `BundleResult` or throws). The default export calls this with no
- * seam, using the real `installBundle`. Mirrors `add.ts`'s `AddDeps` pattern. */
+/** Skills are optional: a bundle failure preserves the generated project and
+ * reports a partial failure through the exit code (ADR 0002). */
 export async function installBundleForWebsite(
   projectName: string,
   bundle: BundleFn = installBundle,
 ): Promise<WebsiteBundleOutcome> {
-  // Hard-coded ref `main` — huuma-studio/ui publishes no git tags. parsePath
-  // is inside the try/catch so the non-fatal contract holds even if the URL
-  // ever becomes dynamic (e.g. a future --skills-ref flag) and starts throwing.
   try {
     const parsed = parsePath(
       "https://github.com/huuma-studio/ui/tree/main/skills",
@@ -187,200 +246,104 @@ export async function installBundleForWebsite(
   }
 }
 
+const viteConfigContent = `import { fileURLToPath } from "node:url";
+import { defineConfig } from "vite";
+import { huuma } from "@huuma/ui/vite";
+
+export default defineConfig({
+  resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
+  plugins: [huuma()],
+});
+`;
+
+const serverContent = `import { createUIApp } from "@huuma/ui/server";
+import Root from "./app/root.tsx";
+
+// Apply additional tasks or middleware to the app here.
+export default createUIApp(Root);
+`;
+
+const tsConfigContent = JSON.stringify(
+  {
+    compilerOptions: {
+      target: "ESNext",
+      module: "ESNext",
+      moduleResolution: "bundler",
+      jsx: "react-jsx",
+      jsxImportSource: "@huuma/ui",
+      types: ["vite/client"],
+      allowImportingTsExtensions: true,
+      noEmit: true,
+      strict: true,
+      paths: { "@/*": ["./src/*"] },
+    },
+    include: ["app", "src", "server.ts", "vite.config.ts"],
+  },
+  null,
+  2,
+) + "\n";
+
+const lintConfigContent = JSON.stringify(
+  {
+    jsPlugins: ["@huuma/ui/lint"],
+    rules: {
+      "huuma/async-remote-functions": "error",
+      "huuma/no-async-hook-calling": "error",
+      "huuma/no-async-client-jsx": "error",
+    },
+  },
+  null,
+  2,
+) + "\n";
+
 export function rootTsContent(tailwind: boolean): string {
-  // `loadStaticFiles` serves `static/styles.css` at `/styles.css`, where the
-  // `tailwindcss()` helper writes its compiled output.
   const stylesheet = tailwind
-    ? `\n          <link rel="stylesheet" href="/styles.css" />`
+    ? '\n        <link rel="stylesheet" href="/styles.css" />'
     : "";
+  return `import { Launch, Meta, type RootPageProps, Scripts } from "@huuma/ui/server";
 
-  return `import { createUIApp, Launch, Scripts, Meta } from "@huuma/ui/server";
-import { loadStaticFiles } from "@huuma/route/http/tasks/static-files";
-
-const app = createUIApp(
-  ({ children, scripts, islands, metadata, transferState }) => {
-    return (
-      <html lang="en">
-        <head>
-          <Meta metadata={metadata} />
-          <Scripts nonce={scripts?.nonce} scripts={scripts?.head} />
-          <title>Hello Huuma</title>${stylesheet}
-        </head>
-        <body>
-          {children}
-          <Scripts nonce={scripts?.nonce} scripts={scripts?.body} />
-          <Launch
-            nonce={scripts?.nonce}
-            body={scripts?.body}
-            islands={islands}
-            transferState={transferState}
-          />
-        </body>
-      </html>
-    );
-  },
-);
-
-// Apply additional tasks or middleware here.
-await loadStaticFiles(app);
-
-export default app;
-
-`;
-}
-
-async function rootTs(projectName: string, tailwind: boolean) {
-  await createFile(
-    join(projectName, "app", "root.tsx"),
-    rootTsContent(tailwind),
-  );
-}
-
-const appTsContent = `import { pack } from "@huuma/ui/server/pack";
-import app from "@app/root.tsx";
-import List from "@manifest/list.ts";
-
-await pack(app, List);
-Deno.serve(app.deliver());
-`;
-
-export function devTsContent(tailwind: boolean): string {
-  // `await tailwindcss()` compiles `src/styles.css` → `static/styles.css` on
-  // each dev/bundle run (both run `dev.ts` with `--allow-run`).
-  const tailwindImport = tailwind
-    ? `import { tailwindcss } from "@huuma/theme/tailwind";\n`
-    : "";
-  const tailwindCall = tailwind ? `await tailwindcss();\n\n` : "";
-
-  return `${tailwindImport}import { prepare } from "@huuma/ui/server/pack/list";
-import app from "@app/root.tsx";
-
-${tailwindCall}const handler = (await prepare(app))?.deliver();
-if (handler) Deno.serve(handler);
-`;
-}
-
-async function appTs(projectName: string, tailwind: boolean) {
-  await createFile(join(projectName, "app.ts"), appTsContent);
-  await createFile(join(projectName, "dev.ts"), devTsContent(tailwind));
-}
-
-const indexPageContent = `export default () => {
+export default function Root({
+  children, scripts, islands, metadata, transferState,
+}: RootPageProps<unknown>) {
   return (
-    <>
-      <main>
-        <h2>Hello Huuma</h2>
-      </main>
-    </>
-  );
-};
-`;
-async function indexPage(projectName: string) {
-  await createFile(join(projectName, "app", "page.tsx"), indexPageContent);
-}
-
-// Tailwind entrypoint. `@tailwindcss/cli` reads this and emits the compiled
-// stylesheet listed below.
-const stylesCssContent = `@import "tailwindcss";
-`;
-// Placeholder so `loadStaticFiles` registers the `/styles.css` route on the
-// first `deno task dev`; `tailwindcss()` overwrites it with the compiled output.
-const compiledStylesContent = `/* Generated by tailwindcss(); do not edit. */
-`;
-async function tailwindStyles(projectName: string) {
-  await createFile(join(projectName, "src", "styles.css"), stylesCssContent);
-  await createFile(
-    join(projectName, "static", "styles.css"),
-    compiledStylesContent,
+    <html lang="en">
+      <head>
+        <Meta metadata={metadata} />
+        <Scripts nonce={scripts?.nonce} scripts={scripts?.head} />
+        <title>Hello Huuma</title>${stylesheet}
+      </head>
+      <body>
+        {children}
+        <Scripts nonce={scripts?.nonce} scripts={scripts?.body} />
+        <Launch
+          nonce={scripts?.nonce}
+          body={scripts?.body}
+          islands={islands}
+          transferState={transferState}
+        />
+      </body>
+    </html>
   );
 }
-
-async function denoConfig(projectName: string, tailwind: boolean) {
-  await createFile(
-    join(projectName, "deno.json"),
-    await denoConfigContent(tailwind),
-  );
+`;
 }
 
-const zedSettingsContent = `{
-  "lsp": {
-    "deno": {
-      "settings": {
-        "deno": {
-          "enable": true
-        }
-      }
-    }
-  },
-  "languages": {
-    "JavaScript": {
-      "language_servers": [
-        "deno",
-        "!typescript-language-server",
-        "!vtsls",
-        "!eslint",
-        "..."
-      ],
-      "formatter": "language_server"
-    },
-    "TypeScript": {
-      "language_servers": [
-        "deno",
-        "!typescript-language-server",
-        "!vtsls",
-        "!eslint",
-        "..."
-      ],
-      "formatter": "language_server"
-    },
-    "TSX": {
-      "language_servers": [
-        "deno",
-        "!typescript-language-server",
-        "!vtsls",
-        "!eslint",
-        "..."
-      ],
-      "formatter": "language_server"
-    }
-  }
+const indexPageContent = `import Counter from "./counter.client.tsx";
+
+export default function HomePage() {
+  return (
+    <main>
+      <h2 class="text-3xl font-bold">Hello Huuma</h2>
+      <Counter />
+    </main>
+  );
 }
 `;
 
-async function zedSettings(projectName: string) {
-  await createDir(join(projectName, ".zed"));
-  await createFile(
-    join(projectName, ".zed", "settings.json"),
-    zedSettingsContent,
-  );
-}
+const counterContent = `import { $signal } from "@huuma/ui/hooks/signal";
 
-const vscodeSettingsContent = `{
-  "deno.enable": true,
-  "deno.lint": true,
-  "editor.defaultFormatter": "denoland.vscode-deno",
-  "[typescript]": {
-    "editor.defaultFormatter": "denoland.vscode-deno"
-  },
-  "[typescriptreact]": {
-    "editor.defaultFormatter": "denoland.vscode-deno"
-  },
-  "[javascript]": {
-    "editor.defaultFormatter": "denoland.vscode-deno"
-  },
-  "[javascriptreact]": {
-    "editor.defaultFormatter": "denoland.vscode-deno"
-  },
-  "[json]": {
-    "editor.defaultFormatter": "denoland.vscode-deno"
-  }
+export default function Counter() {
+  const count = $signal(0);
+  return <button on-click={() => count.set(count.get() + 1)}>Count: {count}</button>;
 }
 `;
-
-async function vscodeSettings(projectName: string) {
-  await createDir(join(projectName, ".vscode"));
-  await createFile(
-    join(projectName, ".vscode", "settings.json"),
-    vscodeSettingsContent,
-  );
-}
