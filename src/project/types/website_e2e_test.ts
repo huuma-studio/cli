@@ -2,7 +2,10 @@
  * JSR/npm. Run with HUUMA_SCAFFOLD_E2E=1 deno test -A src/project/types/website_e2e_test.ts */
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
+import { spawn } from "node:child_process";
+import process from "node:process";
 import project from "../project.ts";
+import type { PackageManager } from "./website.ts";
 
 function freePort(): number {
   const listener = Deno.listen({ hostname: "127.0.0.1", port: 0 });
@@ -15,31 +18,55 @@ async function server(
   cwd: string,
   production: boolean,
   tailwind: boolean,
+  packageManager: PackageManager,
 ) {
   const port = freePort();
-  const child = new Deno.Command("node", {
-    cwd,
-    args: production ? ["dist/server/server.js"] : [
-      "node_modules/vite/bin/vite.js",
-      "--host",
-      "127.0.0.1",
-      "--port",
-      String(port),
-      "--strictPort",
-    ],
-    env: {
-      HOST: "127.0.0.1",
-      PORT: String(port),
-      ...(production ? { HUUMA_ENV: "PROD" } : {}),
+  if (!production) {
+    const config = join(cwd, "vite.config.ts");
+    await Deno.writeTextFile(
+      config,
+      (await Deno.readTextFile(config)).replace(
+        "export default defineConfig({",
+        `export default defineConfig({ server: { host: "127.0.0.1", port: ${port}, strictPort: true },`,
+      ),
+    );
+  }
+  const child = spawn(
+    production ? "node" : packageManager,
+    production ? ["dist/server/server.js"] : ["run", "dev"],
+    {
+      cwd,
+      env: {
+        ...Deno.env.toObject(),
+        HOST: "127.0.0.1",
+        PORT: String(port),
+        ...(production ? { HUUMA_ENV: "PROD" } : {}),
+      },
+      detached: Deno.build.os !== "windows",
+      stdio: ["ignore", "pipe", "pipe"],
     },
-    stdout: "piped",
-    stderr: "piped",
-  }).spawn();
-  const output = child.output();
+  );
+  let diagnostics = "";
+  const record = (chunk: Uint8Array) => {
+    diagnostics = (diagnostics + new TextDecoder().decode(chunk)).slice(
+      -32_000,
+    );
+  };
+  child.stdout?.on("data", record);
+  child.stderr?.on("data", record);
+  let startupError: Error | undefined;
+  child.once("error", (error) => {
+    startupError = error;
+  });
+  const closed = new Promise<void>((resolve) =>
+    child.once("close", () => resolve())
+  );
   const url = `http://127.0.0.1:${port}`;
   try {
     let response: Response | undefined;
     for (let attempt = 0; attempt < 150; attempt++) {
+      if (startupError) throw startupError;
+      if (child.exitCode !== null) throw new Error(diagnostics);
       try {
         response = await fetch(url, { signal: AbortSignal.timeout(1000) });
         break;
@@ -85,22 +112,39 @@ async function server(
       const text = await css.text();
       assertEquals(css.status, 200, text);
       assertStringIncludes(text, ".text-3xl");
+      if (!production) {
+        await Deno.writeTextFile(
+          join(cwd, "src/styles.css"),
+          "\n.watch-probe { --huuma-watch-probe: 139; }\n",
+          { append: true },
+        );
+        let rebuilt = false;
+        for (let attempt = 0; attempt < 100; attempt++) {
+          const response = await fetch(url + "/styles.css");
+          const updated = await response.text();
+          if (response.ok && updated.includes("--huuma-watch-probe")) {
+            rebuilt = true;
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        assert(
+          rebuilt,
+          "generated dev script must rebuild edited CSS without a production build",
+        );
+      }
     }
   } catch (error) {
-    try {
-      child.kill("SIGTERM");
-    } catch { /* already exited */ }
-    const result = await output;
     throw new Error(
-      `${production ? "production" : "dev"} server: ${error}\n${
-        new TextDecoder().decode(result.stderr)
-      }\n${new TextDecoder().decode(result.stdout)}`,
+      `${production ? "production" : "dev"} server: ${error}\n${diagnostics}`,
     );
   } finally {
     try {
-      child.kill("SIGTERM");
+      if (Deno.build.os !== "windows" && child.pid) {
+        process.kill(-child.pid, "SIGTERM");
+      } else child.kill("SIGTERM");
     } catch { /* already exited */ }
-    await output;
+    await closed;
   }
 }
 
@@ -134,6 +178,7 @@ for (
           "--no-skills",
         ]);
         assertEquals(Deno.exitCode, 0, "dependency installation must succeed");
+        await server(dir, false, tailwind, pm);
         const build = await new Deno.Command(pm, {
           args: ["run", "build"],
           cwd: dir,
@@ -145,8 +190,7 @@ for (
           new TextDecoder().decode(build.stderr) +
             new TextDecoder().decode(build.stdout),
         );
-        await server(dir, false, tailwind);
-        await server(dir, true, tailwind);
+        await server(dir, true, tailwind, pm);
       } finally {
         Deno.exitCode = exitCode;
         await Deno.remove(root, { recursive: true });

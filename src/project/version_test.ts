@@ -96,3 +96,25 @@ Deno.test("latest uses a bare fallback and retries after a failed request", asyn
     "0.3.2",
   );
 });
+
+Deno.test("route latest stays in 0.3 at or above 0.3.1 and rejects malformed releases", async () => {
+  for (
+    const version of [
+      "0.2.11",
+      "0.3.0",
+      "0.3.2-beta.1",
+      "0.4.0",
+      "1.0.0",
+      "garbage",
+      "",
+    ]
+  ) {
+    const fetcher: typeof fetch = () =>
+      Promise.resolve(Response.json({ latest: version }));
+    assertEquals(
+      await latest("@huuma/route", "0.3.1", fetcher),
+      "0.3.1",
+      version,
+    );
+  }
+});

@@ -5,6 +5,7 @@ const jsrMetaSchema = object({
   latest: string(),
 });
 
+/** Latest stable release within the fallback's supported minor line. */
 export async function latest(
   module: string,
   fallback: string,
@@ -19,7 +20,14 @@ export async function latest(
       await response.body?.cancel();
       return fallback;
     }
-    return jsrMetaSchema.parse(await response.json()).latest;
+    const version = jsrMetaSchema.parse(await response.json()).latest;
+    const candidate = parse(version);
+    const minimum = parse(fallback);
+    return candidate.major === minimum.major &&
+        candidate.minor === minimum.minor &&
+        !candidate.prerelease?.length && compare(candidate, minimum) >= 0
+      ? version
+      : fallback;
   } catch {
     return fallback;
   }
@@ -49,7 +57,7 @@ export async function latestUI03(
     const versions = Object.entries(metadata.versions).flatMap(
       ([version, info]) => {
         if (
-          !info || typeof info !== "object" ||
+          !info || typeof info !== "object" || Array.isArray(info) ||
           (info as { yanked?: unknown }).yanked === true
         ) return [];
         try {
