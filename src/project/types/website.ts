@@ -95,6 +95,7 @@ export async function packageContent(
         "@huuma/route": dependency("route", routeVersion),
       },
       devDependencies: {
+        "@types/node": "^24",
         vite: "^8",
         oxlint: "^1",
         ...(tailwind

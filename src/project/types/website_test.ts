@@ -96,6 +96,7 @@ Deno.test("website writes the Vite 0.3 scaffold, aliases, lint rules and island"
       lint: "oxlint",
     });
     assertEquals(pkg.devDependencies.vite, "^8");
+    assertEquals(pkg.devDependencies["@types/node"], "^24");
     const config = await read("vite.config.ts");
     assertStringIncludes(config, "plugins: [huuma()]");
     assertStringIncludes(
