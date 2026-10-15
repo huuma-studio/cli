@@ -327,7 +327,7 @@ Deno.test("managed integration reports setup and input initialization failures",
   try {
     const setupExit = await withExitCode(() =>
       runManagedTurn(setupConfig.value, {
-        agentFactory: async () =>
+        agentFactory: () =>
           Promise.reject(new Error("setup failed")),
         callbackDeps: setup.deps,
       })

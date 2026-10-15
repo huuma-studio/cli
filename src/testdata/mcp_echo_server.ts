@@ -14,9 +14,6 @@ function send(msg: unknown): void {
   Deno.stdout.writeSync(encoder.encode(JSON.stringify(msg) + "\n"));
 }
 
-// Track whether we've received the initialize request.
-let initialized = false;
-
 while (true) {
   const n = await Deno.stdin.read(buf);
   if (n === null) break;
@@ -42,7 +39,6 @@ while (true) {
         },
       });
       send({ jsonrpc: "2.0", method: "notifications/initialized" });
-      initialized = true;
       continue;
     }
 

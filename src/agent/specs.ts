@@ -764,6 +764,8 @@ function normalizeLabel(label: string, toolName: string): string {
         "UTF-16 code units after trimming.",
     );
   }
+  // Labels deliberately reject both ASCII and C1 control characters.
+  // deno-lint-ignore no-control-regex
   if (/[\u0000-\u001F\u007F-\u009F]/.test(trimmed)) {
     throw new Error(
       `${toolName} requires a label without control characters after ` +

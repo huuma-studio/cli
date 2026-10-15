@@ -56,32 +56,66 @@ The CLI will prompt you for:
 
 #### Website
 
-Creates a basic Huuma website application with the following structure:
+Creates a Huuma UI 0.3 application with Vite 8, an interactive counter island,
+and a Node.js 24+ production server:
 
 ```
 your-project-name/
-├── static/
+├── public/
 ├── app/
 │   ├── page.tsx
+│   ├── counter.client.tsx
 │   └── root.tsx
 ├── src/
-├── app.ts
-├── dev.ts
-└── deno.json
+├── server.ts
+├── vite.config.ts
+├── tsconfig.json
+├── .oxlintrc.json
+├── .gitignore
+└── package.json
 ```
 
-- `static/` - Directory for static assets served at the URL root
-- `app/` - Directory for page components
-- `src/` - Directory for application source code
-- `app.ts` - Main application entry point
-- `dev.ts` - Development server entry point
-- `deno.json` - Deno configuration file
+- `public/` - Static assets served at the URL root in development and production
+- `app/` - Pages, the HTML document, and the counter island
+- `src/` - Application source code, available through the `@/` alias
+- `server.ts` - Creates the application with `createUIApp(Root)`
+- `vite.config.ts` - Configures the `@huuma/ui/vite` plugin
+- `tsconfig.json` - TypeScript and Huuma JSX configuration
+- `.oxlintrc.json` - Oxlint configuration for Huuma's remote, hook and island rules
+
+Choose **pnpm 10.9+** (recommended), **npm**, **Yarn 4.9+**, or **Bun** at the
+package-manager prompt, or set `--package-manager`. Without a terminal, pnpm
+is the default. pnpm and Yarn use native `jsr:` dependencies; npm and Bun use
+JSR's npm compatibility layer and get an `.npmrc` with its registry setting.
+The template selects the newest non-yanked UI **0.3.x**, including prereleases,
+and falls back to `0.3.0-beta.1` if metadata cannot be fetched. It uses
+`@huuma/route` 0.3.1 or later in the 0.3 line.
+
+For a noninteractive invocation:
+
+```bash
+huuma project my-app --type website --package-manager pnpm --no-tailwind --no-skills
+```
+
+Add `--install` to install dependencies immediately in the generated directory.
+Otherwise, the CLI prints the chosen package manager's install and development
+commands. If installation fails, the files stay in place, the exit code is 1,
+and the CLI prints the manual install command.
+
+The previous editor flags (`--zed`, `--no-zed`, `--vscode`, `--no-vscode`) have
+been removed. New projects have no Deno entry points or editor settings.
+Existing UI 0.2 projects are unchanged; see the
+[UI migration guide](https://github.com/huuma-studio/ui/tree/next#migrating-from-the-deno-setup)
+to migrate one manually. The CLI itself still runs on Deno.
 
 The scaffolder also asks whether to **add Tailwind CSS**. If you opt in, it adds
-the Tailwind v4 dependencies (and `"nodeModulesDir": "auto"`) to `deno.json`,
-creates `src/styles.css` (`@import "tailwindcss";`), links it from the page head
-as `/styles.css`, and wires `await tailwindcss()` into `dev.ts` so styles
-compile to `static/styles.css` on every `deno task dev` / `deno task bundle`.
+the Tailwind v4 CLI and `concurrently` to `package.json` and creates
+`src/styles.css` (`@import "tailwindcss";`). The dev script first compiles
+`public/styles.css`, then watches it alongside Vite; the build script compiles
+it before `vite build`. The document links `/styles.css` in both environments.
+Use `--tailwind` or `--no-tailwind` to skip this prompt.
+With pnpm and Tailwind, `pnpm-workspace.yaml` permits the build script of
+`@parcel/watcher`, the Tailwind CLI's native watcher dependency.
 
 The scaffolder also asks whether to **add a skills bundle from @huuma/ui**. If
 you opt in, every valid skill from
@@ -100,13 +134,26 @@ directory:
 
 ```bash
 # Start development server with hot reloading
-deno task dev
+pnpm dev
 
 # Bundle the application for production
-deno task bundle
+pnpm build
 
 # Start the production server
-deno task start
+pnpm start
+```
+
+With npm or Bun use `npm run dev` / `bun run dev` (and `run build`, `run start`);
+with Yarn use `yarn dev`, `yarn build`, and `yarn start`. The `lint` script runs
+Oxlint. The production entry is `node dist/server/server.js`; set `HOST` and
+`PORT` to choose its interface and port.
+
+To run the CLI's network-gated scaffold integration tests, which install the
+published dependencies with both pnpm and npm and verify the development and
+production servers (including Tailwind):
+
+```bash
+HUUMA_SCAFFOLD_E2E=1 deno test -A src/project/types/website_e2e_test.ts
 ```
 
 ## AI Agent

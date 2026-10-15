@@ -1,8 +1,11 @@
 {
   "name": "@huuma/cli",
-  "version": "0.0.54",
+  "version": "0.0.55",
   "exports": {
     ".": "./src/mod.ts"
+  },
+  "publish": {
+    "include": ["src", "README.md", "LICENSE"]
   },
   "imports": {
     "@huuma/ai": "jsr:@huuma/ai@^0.2.8",
@@ -10,6 +13,7 @@
     "@std/assert": "jsr:@std/assert@^1.0.19",
     "@std/testing": "jsr:@std/testing@^1.0.21",
     "@std/path": "jsr:@std/path@^1.1.6",
+    "@std/semver": "jsr:@std/semver@^1.0.8",
     "@std/cli": "jsr:@std/cli@^1.0.32",
     "@std/tar": "jsr:@std/tar@^0.1.10",
     "@std/front-matter": "jsr:@std/front-matter@^1.0.9",

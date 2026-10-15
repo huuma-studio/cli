@@ -73,11 +73,11 @@ const ASSOCIATED_AT = "2026-09-01T12:00:00.000Z";
  * returns its base URL plus a shutdown handle. The handler records every
  * request's method, path, Authorization header, and parsed body so tests can
  * assert what the runner sent. */
-async function startServer(): Promise<{
+function startServer(): {
   base: string;
   requests: RequestLog[];
   shutdown: () => Promise<void>;
-}> {
+} {
   const requests: RequestLog[] = [];
   const handler = async (req: Request): Promise<Response> => {
     const url = new URL(req.url);

@@ -1,224 +1,317 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
-import { create as createDir } from "../directory.ts";
 import website, {
   type BundleFn,
-  denoConfigContent,
-  devTsContent,
   installBundleForWebsite,
+  PACKAGE_MANAGERS,
+  packageContent,
+  resolvePackageManager,
   rootTsContent,
-  type WebsiteBundleOutcome,
+  type WebsiteDeps,
+  type WebsiteOptions,
 } from "./website.ts";
 import { BundleValidationError } from "../../skills/bundle.ts";
 
-// `denoConfigContent` resolves dep versions through `latest()`, which falls back
-// gracefully when offline — so these run with net denied to stay hermetic. The
-// assertions check structure, not the resolved version numbers.
+const fetchMetadata: typeof fetch = (input) =>
+  Promise.resolve(Response.json(
+    String(input).includes("/ui/")
+      ? { latest: "0.2.11", versions: { "0.3.0-beta.2": { yanked: false } } }
+      : { latest: "0.3.1" },
+  ));
 
-Deno.test(
-  "deno.json adds Tailwind deps and nodeModulesDir when enabled",
-  { permissions: { net: false } },
-  async () => {
-    const content = await denoConfigContent(true);
-    assertStringIncludes(content, `"@huuma/theme": "jsr:@huuma/theme@^`);
-    assertStringIncludes(content, `"tailwindcss": "npm:tailwindcss@^4"`);
-    assertStringIncludes(
-      content,
-      `"@tailwindcss/cli": "npm:@tailwindcss/cli@^4"`,
+async function scaffold(
+  options: WebsiteOptions,
+  inspect: (
+    dir: string,
+    logs: string[],
+    errors: string[],
+  ) => void | Promise<void>,
+  deps: WebsiteDeps = {},
+) {
+  const dir = await Deno.makeTempDir({ prefix: "huuma website " });
+  const originalLog = console.log;
+  const originalError = console.error;
+  const exitCode = Deno.exitCode;
+  const logs: string[] = [];
+  const errors: string[] = [];
+  console.log = (...args) => logs.push(args.join(" "));
+  console.error = (...args) => errors.push(args.join(" "));
+  Deno.exitCode = 0;
+  try {
+    assertEquals(
+      await website(dir, { tailwind: false, skills: false, ...options }, {
+        fetch: fetchMetadata,
+        ...deps,
+      }),
+      "Website application created!",
     );
-    assertStringIncludes(content, `"nodeModulesDir": "auto"`);
-  },
-);
+    await inspect(dir, logs, errors);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+    Deno.exitCode = exitCode;
+    await Deno.remove(dir, { recursive: true });
+  }
+}
 
-Deno.test(
-  "deno.json omits Tailwind config when disabled",
-  { permissions: { net: false } },
-  async () => {
-    const content = await denoConfigContent(false);
-    assertEquals(content.includes("tailwindcss"), false);
-    assertEquals(content.includes("@huuma/theme"), false);
-    assertEquals(content.includes("nodeModulesDir"), false);
-  },
-);
+async function paths(dir: string, prefix = ""): Promise<string[]> {
+  const result: string[] = [];
+  for await (const entry of Deno.readDir(join(dir, prefix))) {
+    const path = prefix + entry.name;
+    result.push(path + (entry.isDirectory ? "/" : ""));
+    if (entry.isDirectory) result.push(...await paths(dir, path + "/"));
+  }
+  return result.sort();
+}
 
-Deno.test("root.tsx links /styles.css when Tailwind is enabled", () => {
-  const content = rootTsContent(true);
-  assertStringIncludes(content, `<link rel="stylesheet" href="/styles.css" />`);
+Deno.test("website writes the Vite 0.3 scaffold, aliases, lint rules and island", async () => {
+  await scaffold({}, async (dir) => {
+    assertEquals(
+      await paths(dir),
+      [
+        ".gitignore",
+        ".oxlintrc.json",
+        "app/",
+        "app/counter.client.tsx",
+        "app/page.tsx",
+        "app/root.tsx",
+        "package.json",
+        "public/",
+        "server.ts",
+        "src/",
+        "tsconfig.json",
+        "vite.config.ts",
+      ].sort(),
+    );
+    const read = (name: string) => Deno.readTextFile(join(dir, name));
+    const pkg = JSON.parse(await read("package.json"));
+    assertEquals(pkg.type, "module");
+    assertEquals(pkg.engines.node, ">=24");
+    assertEquals(pkg.dependencies["@huuma/ui"], "jsr:^0.3.0-beta.2");
+    assertEquals(pkg.dependencies["@huuma/route"], "jsr:^0.3.1");
+    assertEquals(pkg.scripts, {
+      dev: "vite",
+      build: "vite build",
+      start: "node dist/server/server.js",
+      lint: "oxlint",
+    });
+    assertEquals(pkg.devDependencies.vite, "^8");
+    const config = await read("vite.config.ts");
+    assertStringIncludes(config, "plugins: [huuma()]");
+    assertStringIncludes(
+      config,
+      'fileURLToPath(new URL("./src", import.meta.url))',
+    );
+    assertEquals(
+      JSON.parse(await read("tsconfig.json")).compilerOptions.paths,
+      { "@/*": ["./src/*"] },
+    );
+    const lint = JSON.parse(await read(".oxlintrc.json"));
+    assertEquals(lint.jsPlugins, ["@huuma/ui/lint"]);
+    assertEquals(Object.values(lint.rules), ["error", "error", "error"]);
+    assertStringIncludes(
+      await read("server.ts"),
+      "export default createUIApp(Root)",
+    );
+    assertStringIncludes(await read("app/page.tsx"), "<Counter />");
+    assertStringIncludes(
+      await read("app/counter.client.tsx"),
+      "count.set(count.get() + 1)",
+    );
+    assertEquals(await read(".gitignore"), "node_modules/\ndist/\n");
+    assertEquals(Deno.exitCode, 0);
+  });
 });
 
-Deno.test("root.tsx omits the stylesheet link when disabled", () => {
-  assertEquals(rootTsContent(false).includes("styles.css"), false);
+for (const pm of PACKAGE_MANAGERS) {
+  Deno.test(`${pm} writes the correct dependency forms, registry and next steps`, async () => {
+    await scaffold({ packageManager: pm }, async (dir, logs) => {
+      const pkg = JSON.parse(
+        await Deno.readTextFile(join(dir, "package.json")),
+      );
+      const native = pm === "pnpm" || pm === "yarn";
+      assertEquals(
+        pkg.dependencies["@huuma/ui"],
+        native ? "jsr:^0.3.0-beta.2" : "npm:@jsr/huuma__ui@^0.3.0-beta.2",
+      );
+      assertEquals(
+        pkg.dependencies["@huuma/route"],
+        native ? "jsr:^0.3.1" : "npm:@jsr/huuma__route@^0.3.1",
+      );
+      assertEquals((await paths(dir)).includes(".npmrc"), !native);
+      if (!native) {
+        assertEquals(
+          await Deno.readTextFile(join(dir, ".npmrc")),
+          "@jsr:registry=https://npm.jsr.io\n",
+        );
+      }
+      assertStringIncludes(logs.join("\n"), `${pm} install`);
+      assertStringIncludes(logs.join("\n"), `${pm} ${native ? "" : "run "}dev`);
+    });
+  });
+}
+
+Deno.test("package manager prompts only when omitted in a terminal", async () => {
+  let prompts = 0;
+  const select: Parameters<typeof resolvePackageManager>[2] = (
+    choices,
+    prompt,
+  ) => {
+    prompts++;
+    assertEquals(typeof choices[0], "object");
+    assertStringIncludes(JSON.stringify(choices[0]), "pnpm");
+    assertStringIncludes(JSON.stringify(choices[0]), "Recommended");
+    assertStringIncludes(prompt!, "package manager");
+    return Promise.resolve("npm");
+  };
+  assertEquals(await resolvePackageManager(undefined, false, select), "pnpm");
+  assertEquals(await resolvePackageManager("bun", true, select), "bun");
+  assertEquals(prompts, 0);
+  assertEquals(await resolvePackageManager(undefined, true, select), "npm");
+  assertEquals(prompts, 1);
 });
 
-Deno.test("dev.ts imports and runs tailwindcss when enabled", () => {
-  const content = devTsContent(true);
+Deno.test("root keeps metadata, both script positions and nonce on Launch", () => {
+  const content = rootTsContent(false);
+  assertStringIncludes(content, "<Meta metadata={metadata} />");
   assertStringIncludes(
     content,
-    `import { tailwindcss } from "@huuma/theme/tailwind";`,
+    "<Scripts nonce={scripts?.nonce} scripts={scripts?.head} />",
   );
-  assertStringIncludes(content, `await tailwindcss();`);
+  assertStringIncludes(
+    content,
+    "<Scripts nonce={scripts?.nonce} scripts={scripts?.body} />",
+  );
+  assertStringIncludes(content, "<Launch\n          nonce={scripts?.nonce}");
+  assertEquals(content.includes("loadStaticFiles"), false);
+  assertEquals(content.includes("styles.css"), false);
 });
 
-Deno.test("dev.ts omits tailwindcss when disabled", () => {
-  assertEquals(devTsContent(false).includes("tailwindcss"), false);
-});
-
-Deno.test("installBundleForWebsite propagates the bundle result on success", async () => {
-  const fixed: WebsiteBundleOutcome = {
-    members: [
-      {
-        name: "mcp-builder",
-        target: "/demo/.agents/skills/mcp-builder",
-        warnings: [],
-      },
-      {
-        name: "domain-modeling",
-        target: "/demo/.agents/skills/domain-modeling",
-        warnings: ["a warning"],
-      },
-    ],
-    failed: false,
-  };
-  const stub: BundleFn = (_opts) => Promise.resolve({ members: fixed.members });
-  const outcome = await installBundleForWebsite("demo", stub);
-  assertEquals(outcome.members, fixed.members);
-  assertEquals(outcome.failed, false);
-  assertEquals(Deno.exitCode === 1, false);
-});
-
-Deno.test("installBundleForWebsite swallows bundle errors, sets exit 1, and marks failed", async () => {
-  const errs: string[] = [];
-  const originalError = console.error;
-  console.error = (msg: string) => errs.push(String(msg));
-  try {
-    const throwing: BundleFn = (_opts) =>
-      Promise.reject(
-        new BundleValidationError(
-          "Bundle member 'bad' failed validation: bad name",
-        ),
-      );
-    const outcome = await installBundleForWebsite("demo", throwing);
-    assertEquals(outcome.members.length, 0);
-    assertEquals(outcome.failed, true);
-    assertEquals(Deno.exitCode, 1);
-    const joined = errs.join("\n");
-    assertStringIncludes(joined, "✖");
-    assertStringIncludes(joined, "bad");
-  } finally {
-    console.error = originalError;
-    Deno.exitCode = 0;
-  }
-});
-
-// Non-interactive scaffolding tests. These exercise the WebsiteOptions path
-// where all booleans are set, skipping all confirm prompts. They use temp
-// directories and clean up after. `denoConfigContent` calls `latest()` which
-// needs network, so these require --allow-net.
-
-Deno.test("website with all options set scaffolds without prompts", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  const originalCwd = Deno.cwd();
-  try {
-    Deno.chdir(tmpDir);
-    await createDir("test-app");
-    await website("test-app", {
-      zed: true,
-      vscode: false,
-      tailwind: true,
-      skills: false,
-    });
-    assert(await fileExists(join(tmpDir, "test-app", "deno.json")));
-    assert(await fileExists(join(tmpDir, "test-app", "app.ts")));
-    assert(await fileExists(join(tmpDir, "test-app", "app", "root.tsx")));
-  } finally {
-    Deno.chdir(originalCwd);
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-Deno.test("tailwind: true produces src/styles.css and static/styles.css", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  const originalCwd = Deno.cwd();
-  try {
-    Deno.chdir(tmpDir);
-    await createDir("tw-app");
-    await website("tw-app", { tailwind: true, skills: false });
-    assert(await fileExists(join(tmpDir, "tw-app", "src", "styles.css")));
-    assert(await fileExists(join(tmpDir, "tw-app", "static", "styles.css")));
-  } finally {
-    Deno.chdir(originalCwd);
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-Deno.test("tailwind: false does not produce Tailwind files", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  const originalCwd = Deno.cwd();
-  try {
-    Deno.chdir(tmpDir);
-    await createDir("no-tw-app");
-    await website("no-tw-app", { tailwind: false, skills: false });
-    assert(!await fileExists(join(tmpDir, "no-tw-app", "src", "styles.css")));
-    assert(
-      !await fileExists(join(tmpDir, "no-tw-app", "static", "styles.css")),
+Deno.test("Tailwind adds the entry, watch/build scripts and stylesheet link", async () => {
+  await scaffold({ tailwind: true }, async (dir) => {
+    const pkg = JSON.parse(await Deno.readTextFile(join(dir, "package.json")));
+    assertEquals(pkg.devDependencies.tailwindcss, "^4");
+    assertEquals(pkg.devDependencies["@tailwindcss/cli"], "^4");
+    assertStringIncludes(pkg.scripts.dev, "concurrently -k");
+    assertStringIncludes(
+      pkg.scripts["dev:css"],
+      "-o public/styles.css --watch",
     );
-  } finally {
-    Deno.chdir(originalCwd);
-    await Deno.remove(tmpDir, { recursive: true });
-  }
+    assertStringIncludes(
+      pkg.scripts.build,
+      "-o public/styles.css && vite build",
+    );
+    assertEquals(
+      await Deno.readTextFile(join(dir, "src/styles.css")),
+      '@import "tailwindcss";\n',
+    );
+    assertStringIncludes(
+      await Deno.readTextFile(join(dir, "app/root.tsx")),
+      '<link rel="stylesheet" href="/styles.css" />',
+    );
+    assertEquals((await paths(dir)).includes("static/"), false);
+    assertEquals(
+      await Deno.readTextFile(join(dir, "pnpm-workspace.yaml")),
+      'allowBuilds:\n  "@parcel/watcher": true\n',
+    );
+  });
 });
 
-Deno.test("zed: true produces .zed/settings.json; zed: false does not", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  const originalCwd = Deno.cwd();
-  try {
-    Deno.chdir(tmpDir);
-    await createDir("zed-true");
-    await website("zed-true", { zed: true, skills: false });
-    assert(await fileExists(join(tmpDir, "zed-true", ".zed", "settings.json")));
-
-    await createDir("zed-false");
-    await website("zed-false", { zed: false, skills: false });
-    assert(!await dirExists(join(tmpDir, "zed-false", ".zed")));
-  } finally {
-    Deno.chdir(originalCwd);
-    await Deno.remove(tmpDir, { recursive: true });
-  }
+Deno.test("Tailwind off omits all its dependencies, styles and scripts", async () => {
+  const pkg = await packageContent(false, "pnpm", fetchMetadata);
+  assertEquals(pkg.includes("tailwind"), false);
+  assertEquals(pkg.includes("concurrently"), false);
+  assertEquals(pkg.includes("dev:css"), false);
 });
 
-Deno.test("skills: false does not attempt a bundle install", async () => {
-  const tmpDir = await Deno.makeTempDir();
-  const originalCwd = Deno.cwd();
-  const originalExitCode = Deno.exitCode;
-  try {
-    Deno.chdir(tmpDir);
-    Deno.exitCode = 0;
-    await createDir("no-skills-app");
-    await website("no-skills-app", { zed: false, vscode: false, tailwind: false, skills: false });
-    // No bundle install attempted: exit code stays 0, no .agents dir created
+Deno.test("install runs the chosen package manager in the project and skips manual install", async () => {
+  let installedAt: string | undefined;
+  await scaffold(
+    { packageManager: "npm", install: true },
+    (dir, logs) => {
+      assertEquals(installedAt, dir);
+      assertEquals(logs.join("\n").includes("npm install"), false);
+      assertEquals(Deno.exitCode, 0);
+    },
+    {
+      install: (pm, cwd) => {
+        assertEquals(pm, "npm");
+        installedAt = cwd;
+        return Promise.resolve({ success: true, code: 0 });
+      },
+    },
+  );
+});
+
+for (const fail of ["exit", "spawn"]) {
+  Deno.test(`install ${fail} failure preserves the scaffold and prints recovery`, async () => {
+    await scaffold(
+      { packageManager: "pnpm", install: true },
+      async (dir, logs, errors) => {
+        assertEquals(Deno.exitCode, 1);
+        assertStringIncludes(
+          errors.join("\n"),
+          "Dependency installation failed",
+        );
+        assertStringIncludes(logs.join("\n"), "pnpm install");
+        assert((await paths(dir)).includes("server.ts"));
+      },
+      {
+        install: () =>
+          fail === "exit"
+            ? Promise.resolve({ success: false, code: 7 })
+            : Promise.reject(new Error("command not found")),
+      },
+    );
+  });
+}
+
+Deno.test("install is opt-in and skills false does not fetch a bundle", async () => {
+  await scaffold({}, async (dir) => {
+    assertEquals(
+      (await paths(dir)).some((path) => path.startsWith(".agents")),
+      false,
+    );
     assertEquals(Deno.exitCode, 0);
-    assert(!await dirExists(join(tmpDir, "no-skills-app", ".agents")));
-  } finally {
-    Deno.chdir(originalCwd);
-    Deno.exitCode = originalExitCode;
-    await Deno.remove(tmpDir, { recursive: true });
-  }
+  }, {
+    install: () => {
+      throw new Error("must not install");
+    },
+  });
 });
 
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    const info = await Deno.stat(path);
-    return info.isFile;
-  } catch {
-    return false;
-  }
-}
+Deno.test("installBundleForWebsite propagates the result and uses ui main", async () => {
+  const members = [{
+    name: "mcp-builder",
+    target: "/demo/.agents/skills/mcp-builder",
+    warnings: [],
+  }];
+  const stub: BundleFn = (opts) => {
+    assertEquals(opts.cwd, "demo");
+    assertEquals(opts.parsed.ref, "main");
+    return Promise.resolve({ members });
+  };
+  assertEquals(await installBundleForWebsite("demo", stub), {
+    members,
+    failed: false,
+  });
+});
 
-async function dirExists(path: string): Promise<boolean> {
+Deno.test("installBundleForWebsite preserves its non-fatal error contract", async () => {
+  const original = console.error;
+  const exitCode = Deno.exitCode;
+  const errors: string[] = [];
+  console.error = (msg) => errors.push(String(msg));
   try {
-    await Deno.stat(path);
-    return true;
-  } catch {
-    return false;
+    const result = await installBundleForWebsite(
+      "demo",
+      () => Promise.reject(new BundleValidationError("bad skill")),
+    );
+    assertEquals(result, { members: [], failed: true });
+    assertEquals(Deno.exitCode, 1);
+    assertStringIncludes(errors.join("\n"), "bad skill");
+  } finally {
+    console.error = original;
+    Deno.exitCode = exitCode;
   }
-}
+});

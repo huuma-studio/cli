@@ -1,6 +1,5 @@
 import { object, string } from "@huuma/validate";
-
-const _latest = new Map<string, string>();
+import { compare, parse } from "@std/semver";
 
 const jsrMetaSchema = object({
   latest: string(),
@@ -9,23 +8,63 @@ const jsrMetaSchema = object({
 export async function latest(
   module: string,
   fallback: string,
+  fetcher: typeof fetch = fetch,
 ): Promise<string> {
-  if (!_latest.get(module)) {
-    try {
-      _latest.set(
-        module,
-        await fetch(`https://jsr.io/${module}/meta.json`, {
-          headers: {
-            "Accept": "application/json",
-          },
-        }).then((res) => res.json()).then((json) =>
-          jsrMetaSchema.parse(json).latest
-        ),
-      );
-    } catch (_e) {
-      _latest.set(module, fallback);
+  try {
+    const response = await fetcher(`https://jsr.io/${module}/meta.json`, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      return fallback;
     }
+    return jsrMetaSchema.parse(await response.json()).latest;
+  } catch {
+    return fallback;
   }
+}
 
-  return <string> _latest.get(module);
+/** JSR's `latest` excludes prereleases. New projects need the newest usable
+ * UI 0.3 release even while `latest` still points at the Deno-based 0.2 line. */
+export async function latestUI03(
+  fetcher: typeof fetch = fetch,
+): Promise<string> {
+  const fallback = "0.3.0-beta.1";
+  try {
+    const response = await fetcher("https://jsr.io/@huuma/ui/meta.json", {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      return fallback;
+    }
+    const metadata = await response.json();
+    if (
+      !metadata || typeof metadata.versions !== "object" ||
+      metadata.versions === null || Array.isArray(metadata.versions)
+    ) return fallback;
+
+    const versions = Object.entries(metadata.versions).flatMap(
+      ([version, info]) => {
+        if (
+          !info || typeof info !== "object" ||
+          (info as { yanked?: unknown }).yanked === true
+        ) return [];
+        try {
+          const semver = parse(version);
+          return semver.major === 0 && semver.minor === 3
+            ? [{ version, semver }]
+            : [];
+        } catch {
+          return [];
+        }
+      },
+    );
+    versions.sort((a, b) => compare(b.semver, a.semver));
+    return versions[0]?.version ?? fallback;
+  } catch {
+    return fallback;
+  }
 }
